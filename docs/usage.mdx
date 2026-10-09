@@ -71,12 +71,17 @@ The model gets one text with these parts:
    the model to return less data.
 2. The console lines, if there are any, at most 4,000 characters.
 3. The number of MCP calls that the program made.
-4. The hints for the servers whose calls failed, if there are any.
+4. A request to propose a hint, if the run works after earlier tries failed. See
+   [Hints](./hints.mdx#approve-hints-that-the-model-proposes).
+5. The hints for the servers whose calls failed, if there are any.
 
 If the program throws, the first part is the error and the lines of the program where it occurred.
 
 ## Make the model use code-mode
 
-The model can still call MCP tools directly. To make it use `run_code` for every MCP call, turn on the option
-`blockDirectMcp`. Then a direct MCP call gets a denial that tells the model to use `run_code`. See
-[Configuration](./configuration.mdx).
+When a session starts, the plugin tells the model to use `run_code` for MCP calls. The plugin tells it again after
+`/clear` and after a compaction. The model calls an MCP tool directly only when `run_code` fails with an error that
+a changed program cannot fix.
+
+To stop all direct MCP calls, turn on the option `blockDirectMcp`. Then a direct MCP call gets a denial that tells
+the model to use `run_code`. See [Configuration](./configuration.mdx).

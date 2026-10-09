@@ -65,6 +65,10 @@ can find and correct a bad hint.
 When the model learns something about a server, it can propose a hint with `add_hint`. A proposal is one file in a
 `pending/` folder, and it has no effect.
 
+The plugin asks the model for a proposal when a run works after earlier tries failed in the same session. A failed
+try is a failed call to the same server, a failed program or a `search_tools` query that found no tool. The hint
+then helps the next session do the task correctly at the first try.
+
 While proposals wait, a band above the prompt shows "● N proposed hints for code mode" and a **Review** button.
 
 1. Click **Review**. The band shows one card for each proposal, with the server, the tools and the text.
