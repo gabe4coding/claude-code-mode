@@ -77,48 +77,67 @@ export const toValue = (result: unknown, text: string | undefined): unknown => {
 /**
  * A tool result Claude Code saved to a file because it was too large: the
  * model would read only a note with the path, so the program gets the file.
- * `format` is how the file holds the result; `isCut` when it holds part of it.
+ * `format` is how the file holds the result, when the note says; `isCut`
+ * when the note says the file holds part of it.
  */
-export type SavedResult = { path: string; format: 'text' | 'json' | 'blocks'; isCut: boolean }
+export type SavedResult = { path: string; format: 'text' | 'json' | 'blocks' | 'unknown'; isCut: boolean }
 
-// Claude Code's notes, as of 2.1.x: the MCP one ("Format: Plain text", "JSON
-// with schema: …", "JSON array …") and the one for any tool's output.
+// Claude Code's notes as of 2.1.295: the MCP one ("Format: Plain text", "JSON
+// with schema: …", "JSON array …") and the one for any tool's output. They
+// give the format and a path with spaces. A note in another wording is found
+// by the path alone: a path in this session's tool-results/ folder.
 const MCP_SAVED = /^Error: result \([^)]*\) exceeds maximum allowed tokens\. Output has been saved to (.+)\.\nFormat: ([^\n]*)/
 const OUTPUT_SAVED = /^<persisted-output>\n[^\n]*?(?:Full output saved to|were saved to): ([^\n]+)/
+const CUT = /exceeded the persist byte limit|only the first [^\n]* were saved to/
+const PATH = /\/[^\s"'`<>()]+/g
+// A note is short; a longer result that names a path is the tool's own data.
+const MAX_NOTE_CHARS = 8_000
 
 /** The saved result a tool's text names, or undefined for an ordinary result. */
-export const savedResultOf = (text: string): SavedResult | undefined => {
+export const savedResultOf = (text: string, sessionId: string): SavedResult | undefined => {
+  if (sessionId === '' || text.length > MAX_NOTE_CHARS) return undefined
+  const isCut = CUT.test(text)
   const mcp = MCP_SAVED.exec(text)
-  if (mcp) {
+  if (mcp && isSessionResult(mcp[1]!, sessionId)) {
     const format = mcp[2]!.startsWith('JSON array') ? 'blocks' : mcp[2]!.startsWith('JSON') ? 'json' : 'text'
-    return { path: mcp[1]!, format, isCut: text.includes('exceeded the persist byte limit') }
+    return { path: mcp[1]!, format, isCut }
   }
   const output = OUTPUT_SAVED.exec(text)
-  if (output) return { path: output[1]!.trim(), format: 'text', isCut: /^[^\n]*were saved to: /m.test(text) }
-  return undefined
+  if (output && isSessionResult(output[1]!.trim(), sessionId)) return { path: output[1]!.trim(), format: 'text', isCut }
+  const paths = new Set(
+    [...text.matchAll(PATH)].map(m => m[0].replace(/[.,;:!?\]]+$/, '')).filter(p => isSessionResult(p, sessionId)),
+  )
+  return paths.size === 1 ? { path: [...paths][0]!, format: 'unknown', isCut } : undefined
 }
 
-/** True when a real path is a file in this session's `tool-results/` folder. */
-export const isSessionResult = (realPath: string, sessionId: string): boolean => {
-  const parts = realPath.split('/')
+/** True when a path is a file in this session's `tool-results/` folder. */
+export const isSessionResult = (path: string, sessionId: string): boolean => {
+  const parts = path.split('/')
   return sessionId !== '' && parts.at(-2) === 'tool-results' && parts.includes(sessionId) && !parts.includes('..')
 }
 
-/** What the program receives for a saved result, read back from its file. */
-export const savedValue = (format: SavedResult['format'], fileText: string): unknown => {
-  if (format === 'text') return toValue(undefined, fileText)
+const CONTENT_TYPES = new Set(['text', 'image', 'audio', 'resource', 'resource_link', 'document'])
+
+// MCP content blocks, not data that has a `type` field of its own.
+const isBlocks = (v: unknown): v is McpResultLike['content'] =>
+  Array.isArray(v) &&
+  v.some(b => b?.type === 'text') &&
+  v.every(b => b !== null && typeof b === 'object' && CONTENT_TYPES.has((b as { type?: unknown }).type as string))
+
+/** The reply for a saved result, read back from its file. */
+export const savedReply = (format: SavedResult['format'], fileText: string): Reply => {
+  if (format === 'text') return { ok: true, value: toValue(undefined, fileText) }
   let parsed: unknown
   try {
     parsed = JSON.parse(fileText)
   } catch {
-    return fileText
+    // JSON that does not parse was cut; text that is not JSON is the result.
+    if (format === 'unknown') return { ok: true, value: fileText }
+    return { ok: false, error: 'the saved result is not whole' }
   }
-  const isBlocks = (v: unknown): v is McpResultLike['content'] =>
-    Array.isArray(v) && v.every(b => b !== null && typeof b === 'object' && typeof (b as { type?: unknown }).type === 'string')
-  if (format === 'json' || !isBlocks(parsed)) return parsed
+  if (format === 'json' || !isBlocks(parsed)) return { ok: true, value: parsed }
   // Content blocks: joined as the model would read them, like a live result.
-  const reply = mcpReply({ content: parsed, isError: false })
-  return reply.ok ? reply.value : parsed
+  return mcpReply({ content: parsed, isError: false })
 }
 
 const clip = (text: string, max: number): string =>
