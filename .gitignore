@@ -1,0 +1,6 @@
+# Written by Claude Code at each load: the API, built-in tools and the
+# connected MCP tools of the local session.
+.claude-plugin/types/
+
+.DS_Store
+node_modules/
