@@ -18,7 +18,18 @@ export type Hint = {
   identify: string[]
   tools: string[]
   body: string
+  review?: Review
 }
+
+/**
+ * What a proposal carries for the person who judges it, each part from a
+ * named source: `why` from the model, `kind` from a classifier, `seen` and
+ * `flags` from code-mode. Frontmatter of the pending file only: approval
+ * drops it, and the model never sees it.
+ */
+export type Review = { why?: string; kind?: string; seen?: string; flags: string[] }
+
+const REVIEW_FIELD = /^(why|kind|seen|flags)\s*:\s*(.*)$/
 
 /**
  * One MCP tool as hints see it: the server key from its name, the server's
@@ -47,6 +58,15 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
   hint.body = m[2]!.trim()
   let key: ListKey | undefined
   for (const line of m[1]!.split(/\r?\n/)) {
+    const reviewed = line.match(REVIEW_FIELD)
+    if (reviewed) {
+      key = undefined
+      const review: Review = (hint.review ??= { flags: [] })
+      const value = parseJson(reviewed[2]!)
+      if (reviewed[1] === 'flags') review.flags = Array.isArray(value) ? value.filter((f): f is string => typeof f === 'string') : []
+      else if (typeof value === 'string') review[reviewed[1] as 'why' | 'kind' | 'seen'] = value
+      continue
+    }
     const field = line.match(/^(servers|identify|tools)\s*:\s*(.*)$/)
     if (field) {
       key = field[1] as ListKey
@@ -58,6 +78,81 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
     else if (line.trim() !== '') key = undefined
   }
   return hint
+}
+
+const parseJson = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/** Puts the review in a new proposal's frontmatter, one JSON value per line. */
+export const withReview = (text: string, review: Review): string => {
+  const lines = [
+    ...(['why', 'kind', 'seen'] as const).flatMap(k => (review[k] ? [`${k}: ${JSON.stringify(review[k])}`] : [])),
+    ...(review.flags.length > 0 ? [`flags: ${JSON.stringify(review.flags)}`] : []),
+  ]
+  return lines.length === 0 ? text : text.replace('\n---\n', `\n${lines.join('\n')}\n---\n`)
+}
+
+/** A proposal as an active hint file: the same text without the review lines. */
+export const withoutReview = (text: string): string => {
+  const m = text.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?[\s\S]*)$/)
+  if (!m) return text
+  return `${m[1]}${m[2]!.split(/\r?\n/).filter(l => !REVIEW_FIELD.test(l)).join('\n')}${m[3]}`
+}
+
+/** What a proposal can be, for `$.model.classify`. The last is the one to warn about. */
+export const HINT_KINDS = ['argument', 'result format', 'limit', 'error fix', 'other instruction'] as const
+export const OTHER_INSTRUCTION = 'other instruction'
+
+/** The text `$.model.classify` reads: the hint, with what a usage hint is for. */
+export const kindQuestion = (server: string, text: string): string =>
+  `A usage hint proposed for the MCP server "${server}". A usage hint states one fact that helps write a correct call to that server: an argument, a result format, a limit, or an error and its fix. Anything else is an other instruction.\nHint: ${text}`
+
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Plain checks on a proposal's text for things a usage hint does not need.
+ * Unlike the classifier, the text cannot talk them out of a result.
+ * `serverKey` is the hint's server; `otherTools` are the full names of
+ * the other servers' MCP tools.
+ */
+export const textFlags = (text: string, serverKey: string, otherTools: readonly string[]): string[] => {
+  const flags: string[] = []
+  if (/https?:\/\/|\bwww\./i.test(text)) flags.push('It contains a link.')
+  if (/[\w.+-]+@[\w-]+\.[a-z]{2,}/i.test(text)) flags.push('It contains an email address.')
+  if (/[A-Za-z0-9_-]{32,}/.test(text)) flags.push('It contains a long id or key.')
+  if (/\b(approv\w*|permission\w*|confirm\w*|password\w*|credential\w*|api[ _-]?keys?|secrets?|ignore|bypass|override|without asking|do not (ask|tell))\b/i.test(text)) {
+    flags.push('It talks about approval, credentials, or what to tell the person.')
+  }
+  const others = new Set<string>()
+  for (const m of text.matchAll(/mcp__([\w-]+?)__\w+/g)) if (m[1] !== serverKey) others.add(m[0])
+  for (const full of otherTools) {
+    const name = full.split('__').slice(2).join('__')
+    if (name.length >= 6 && /[_A-Z]/.test(name) && new RegExp(`(^|[^\\w])${escapeRegex(name)}($|[^\\w])`).test(text)) others.add(name)
+  }
+  if (others.size > 0) flags.push(`It names a tool of another server: ${[...others].slice(0, 3).join(', ')}.`)
+  return flags
+}
+
+/** The review lines of a card: who says what, the warnings, and where the hint goes. */
+export const reviewLines = (
+  hint: Pick<Hint, 'review' | 'scope'>,
+  dest: { file: string; hints?: number },
+): { text: string; isWarning?: boolean; isDim?: boolean }[] => {
+  const r = hint.review
+  const where = dest.hints === undefined ? `Makes the new hint file ${dest.file}` : `Adds to ${dest.file}, which has ${dest.hints} hint${dest.hints === 1 ? '' : 's'}`
+  const reach = hint.scope === 'project' ? 'in this project only' : 'in all projects'
+  return [
+    ...(r?.why ? [{ text: `Why, in the model's words: ${r.why}` }] : []),
+    ...(r?.seen ? [{ text: `Seen by code-mode: ${r.seen}`, isDim: true }] : []),
+    ...(r?.kind ? [{ text: `Kind, as a classifier guesses: ${r.kind}`, isDim: true }] : []),
+    ...(r?.flags ?? []).map(f => ({ text: `⚠ ${f}`, isWarning: true })),
+    { text: `${where}. It applies ${reach}.`, isDim: true },
+  ]
 }
 
 const globToRegex = (glob: string): RegExp =>
