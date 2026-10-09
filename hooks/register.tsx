@@ -24,8 +24,11 @@ import {
   extractDeclaration,
   formatOutcome,
   isCallable,
+  isSessionResult,
   mcpReply,
   rankTools,
+  savedResultOf,
+  savedValue,
   splitToolName,
   takeMessages,
   toValue,
@@ -35,6 +38,7 @@ import {
 } from './protocol'
 
 const MAX_RESULT_CHARS = 20_000
+const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
 const SEARCH_LIMIT = 15
 
 // macOS only: the sandbox process gets no network. Elsewhere it relies on the
@@ -148,6 +152,28 @@ const HINT_GUARD_DENY =
 async function loadPending($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
   const dirs = (await hintDirs($, projectHints)).filter(d => d.scope !== 'bundled')
   return (await Promise.all(dirs.map(d => readHintFiles($, `${d.dir}/pending`, d.scope)))).flat()
+}
+
+const TOO_LARGE = 'ask the tool for less data (a page, a filter or fewer fields)'
+
+// A result Claude Code saved to a file reaches the model as a note with the
+// path. The program gets the file instead, so it can filter the data. Only a
+// file in this session's tool-results/ is read: the note is tool output, and
+// a server could name any path in it.
+async function loadSaved($: EngineInterface, reply: Reply): Promise<Reply> {
+  const saved = savedResultOf(reply.ok ? (typeof reply.value === 'string' ? reply.value : '') : reply.error)
+  if (saved === undefined) return reply
+  if (saved.isCut) return { ok: false, error: `the result was too large to save whole; ${TOO_LARGE}` }
+  const [stat, sessionId] = await Promise.all([
+    $.fs.stat(saved.path, { resolve: true }).catch(() => undefined),
+    $.session.id().catch(() => ''),
+  ])
+  const real = stat?.realPath
+  if (stat?.kind !== 'file' || real === undefined || !isSessionResult(real, sessionId)) {
+    return { ok: false, error: `the result was saved to a file code-mode does not read; ${TOO_LARGE}` }
+  }
+  if (stat.size > MAX_SAVED_BYTES) return { ok: false, error: `the result is ${stat.size} bytes, more than code-mode loads; ${TOO_LARGE}` }
+  return { ok: true, value: savedValue(saved.format, String(await $.fs.read(real))) }
 }
 
 // Server key -> the names of the tools it offers, for `identify` matching.
@@ -412,6 +438,7 @@ export const register: Register = (on, options) => {
           reply = { ok: false, error: err instanceof Error ? err.message : String(err) }
         }
       }
+      reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${err instanceof Error ? err.message : String(err)}` }))
       if (!reply.ok && isCallable(tool, $.plugin.name)) failed.add(tool)
       await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
     }
