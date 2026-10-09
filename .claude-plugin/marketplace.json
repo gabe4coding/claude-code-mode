@@ -1,0 +1,11 @@
+{
+  "name": "claude-code-mode",
+  "owner": { "name": "gabe4coding" },
+  "plugins": [
+    {
+      "name": "code-mode",
+      "source": "./",
+      "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step."
+    }
+  ]
+}

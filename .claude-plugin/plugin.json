@@ -1,0 +1,39 @@
+{
+  "name": "code-mode",
+  "version": "0.2.0",
+  "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
+  "author": {
+    "name": "gpavanello"
+  },
+  "userConfig": {
+    "node": {
+      "type": "string",
+      "title": "Node.js executable",
+      "description": "Node 20 or later runs the sandbox. A name on PATH or an absolute path.",
+      "default": "node",
+      "required": false
+    },
+    "timeoutSeconds": {
+      "type": "number",
+      "title": "Script timeout (seconds)",
+      "description": "Wall-clock and CPU limit for one run_code script.",
+      "default": 120,
+      "required": false
+    },
+    "blockDirectMcp": {
+      "type": "boolean",
+      "title": "Block direct MCP calls",
+      "description": "Deny MCP tool calls the model makes directly, so it uses run_code. Calls from run_code still go through.",
+      "default": false,
+      "required": false
+    },
+    "approval": {
+      "type": "string",
+      "title": "Approval of nested MCP calls",
+      "description": "program: approving run_code approves the MCP calls inside it that no permission rule decides (deny rules and organization limits still apply). per-call: each nested call has its own permission check; in auto mode this needs allow rules.",
+      "options": ["program", "per-call"],
+      "default": "program",
+      "required": false
+    }
+  }
+}
