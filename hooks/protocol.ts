@@ -174,11 +174,10 @@ export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, a
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
-- await tools["<server>"]["<tool>"](args) -> same call
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
-A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel. There is no require, fetch, process, filesystem or timers: only MCP tools. Approving this program approves the MCP calls it makes; permission rules still apply to each call.
+A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel. There is no require, fetch, process, filesystem or timers: only MCP tools.
 
 Find tools, their argument types and usage hints with search_tools first. When you learn something a later program needs (a result format, a limit, a fix), propose it with add_hint.
 

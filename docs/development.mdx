@@ -1,0 +1,60 @@
+---
+title: Development
+description: Repo layout, tests and release rules for contributors.
+---
+
+# Development
+
+The full repo is the plugin. Claude Code loads the hooks module from `hooks/hooks.json`.
+
+## Layout
+
+| Path | What it contains |
+| --- | --- |
+| `.claude-plugin/` | The plugin manifest (`plugin.json`, with the options) and the marketplace manifest. |
+| `hooks/register.tsx` | The tools, the permission path of nested calls, the band, the `add_hint` row and the hint-file guard. |
+| `hooks/protocol.ts` | Pure helpers: the protocol of the sandbox, the result text, the tool search, the tool descriptions. |
+| `hooks/hints.ts` | Pure helpers for hint files: read, match, format and write. |
+| `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
+| `hints/` | The bundled hints. |
+| `tests/` | The tests of the hooks, the sandbox and the docs. |
+| `docs/` | The user docs. |
+
+## Tests
+
+Run all three checks before each commit:
+
+```bash
+claude plugin test .
+```
+
+```bash
+node tests/runner.integration.mjs
+```
+
+```bash
+node tests/docs.check.mjs
+```
+
+- `claude plugin test .` tests the hooks with a fake host. The test kit cannot start processes.
+- `tests/runner.integration.mjs` tests the real sandbox with Node.
+- `tests/docs.check.mjs` checks the rules for the docs.
+
+CI (`.github/workflows/test.yml`) runs the last two checks on Linux for each push to `main` and each pull request.
+CI cannot run `claude plugin test .`. CI has no macOS job, so run the checks on a Mac for a change to the macOS
+network block.
+
+To develop with the engine types in your editor, load the plugin once with `claude --plugin-dir .`. Claude Code then
+writes `.claude-plugin/types/`, which `tsconfig.json` uses.
+
+## Release
+
+1. Increase `version` in `.claude-plugin/plugin.json`. Claude Code caches a plugin by its version, so without a new
+   version, users do not get the change.
+2. Run `claude plugin validate .`.
+3. Run the three checks.
+
+## More
+
+[`CODING_STANDARDS.md`](../CODING_STANDARDS.md) has the full rules for code, tests, the text that the model reads,
+and docs.
