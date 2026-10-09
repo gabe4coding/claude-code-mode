@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="code-mode">
+  <title>code-mode</title>
+  <!-- tile, braces for the program, three calls that fold into one result -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0F172A"/>
+  <g fill="none" stroke="#2DD4BF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 84 64 Q 60 64 60 88 L 60 112 Q 60 128 44 128 Q 60 128 60 144 L 60 168 Q 60 192 84 192"/>
+    <path d="M 172 64 Q 196 64 196 88 L 196 112 Q 196 128 212 128 Q 196 128 196 144 L 196 168 Q 196 192 172 192"/>
+  </g>
+  <g fill="#2DD4BF">
+    <circle cx="100" cy="96" r="10"/>
+    <circle cx="100" cy="128" r="10"/>
+    <circle cx="100" cy="160" r="10"/>
+  </g>
+  <g fill="none" stroke="#2DD4BF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" opacity="0.7">
+    <path d="M 112 96 Q 132 96 140 120"/>
+    <path d="M 112 128 L 138 128"/>
+    <path d="M 112 160 Q 132 160 140 136"/>
+  </g>
+  <circle cx="156" cy="128" r="16" fill="#FBBF24"/>
+</svg>

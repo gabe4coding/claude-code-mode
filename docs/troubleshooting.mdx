@@ -1,0 +1,70 @@
+---
+title: Troubleshooting
+description: Common errors of run_code, search_tools and add_hint, their causes and fixes, and the known limits.
+---
+
+# Troubleshooting
+
+## Errors
+
+### A nested call fails with "no verdict" in auto mode
+
+```
+The server-side auto mode classifier gave no verdict for mcp__…
+```
+
+Cause: auto mode denies a nested call that no allow rule matches.
+
+Fix: add an allow rule for the tool. See [Auto mode needs allow rules](./permissions.mdx#auto-mode-needs-allow-rules).
+
+### "the sandbox exited without a result"
+
+Cause: Node did not start or stopped before the program returned. The `stderr` part of the result gives the reason.
+
+- If `stderr` contains `bad option: --permission`, the Node version is older than 22.13. Install a newer Node, or
+  set the option `node` to a newer executable.
+- If `stderr` contains `not found`, Claude Code cannot find `node`. Set the option `node` to an absolute path.
+
+See [Configuration](./configuration.mdx).
+
+### "timeout after … ms"
+
+Cause: the program ran longer than `timeoutSeconds`.
+
+Fix: make the program do less work in one run, or increase `timeoutSeconds`.
+
+### "more characters cut, return less data"
+
+Cause: the return value is longer than 20,000 characters.
+
+Fix: the model must return only the fields that it needs. If you see this often, ask the model to filter in the
+program.
+
+### "only MCP tools … can be called"
+
+Cause: the program called a built-in tool, such as `Bash`, or a code-mode tool. A program can call only MCP tools.
+
+### "hint files steer the model, so they cannot be written with file tools"
+
+Cause: the model tried to write a hint file, or ran a Bash command that names a hint folder. The
+[guard](./hints.mdx#safety-rules) denies this.
+
+Fix: let the model propose the hint with `add_hint`, then approve it in the band. Or edit the hint file in your own
+editor.
+
+### "project hints are off"
+
+Cause: the model proposed a `project` hint, and the option `projectHints` is off.
+
+Fix: let the model propose a `user` hint, or turn on `projectHints` for a project that you trust.
+
+## Limits
+
+- `search_tools` reads argument types from a types file that Claude Code writes. Claude Code writes it in an
+  interactive session with hot reload or with `--plugin-dir`. It does not write it for headless `claude -p` runs.
+  It is not known yet if it writes it for a plugin from a marketplace.
+- Without the types file, `search_tools` tells the model to use ToolSearch for the schema. ToolSearch puts the full
+  tool definition into the context, so the program saves fewer tokens.
+- A nested call cannot pass an argument with the name `tool`. The plugin API uses this name for the tool name.
+- On Linux, the sandbox has no network block. See [Sandbox](./how-it-works.mdx#sandbox).
+- The `add_hint` row with buttons is not tested in the terminal yet.

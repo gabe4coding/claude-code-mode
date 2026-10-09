@@ -1,0 +1,107 @@
+---
+title: Hints
+description: Write usage hints for MCP servers, approve the hints that the model proposes, and know why the safety rules exist.
+---
+
+# Hints
+
+Each MCP server has its own result formats, required arguments and limits. A hint tells the model about them, so
+that its next program is correct the first time. The model sees the hints of a server at two times:
+
+- In the result of `search_tools`, for the servers that the search finds.
+- In the result of `run_code`, for the servers whose calls failed.
+
+## Write a hint
+
+1. Make the folder `~/.claude/code-mode/hints/` if it does not exist.
+2. Make one file for each server, for example `gmail.md`.
+3. Write the front matter and one bullet for each fact.
+
+```markdown
+---
+servers: [Gmail]
+identify: [search_threads]
+---
+- search_threads takes a Gmail search query in `query`, for example "from:me newer_than:7d".
+```
+
+The hint applies in the next call of `search_tools` or `run_code`. You do not have to start a new session.
+
+To find the tool names for `identify`, ask the model to run `search_tools` for the server.
+
+## Front matter
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `servers` | `servers` or `identify` | Finds the server by its name. |
+| `identify` | `servers` or `identify` | Finds the server by a tool that it has. |
+| `tools` | No | Limits the hint to some tools of the server. |
+
+`*` is a wildcard in all three fields.
+
+`servers` matches the server name that `/mcp` shows, or the `<server>` part of `mcp__<server>__<tool>`. Case and
+punctuation do not count. A name with no `*` also matches the end of a name. Thus `Datadog` matches
+`claude.ai Datadog`, `claude_ai_Datadog` and `plugin:engineering:datadog`.
+
+Always use `identify`. In the desktop app, a claude.ai connector has a UUID name, for example
+`mcp__fcef2cd1-…__getJiraIssue`. `servers` cannot find it, but a server with the tool `getJiraIssue` is Jira in every
+session. Use a tool name that only this server has.
+
+A hint file with no `servers`, `identify` or `tools` applies to no server.
+
+## Where hints come from
+
+| Source | Folder | Loads |
+| --- | --- | --- |
+| Bundled | `hints/` in the plugin | Always |
+| Your own | `~/.claude/code-mode/hints/` | Always |
+| The project | `<project>/.claude/code-mode/hints/` | Only when the option `projectHints` is on |
+
+The plugin bundles hints for Datadog and Jira. Each hint that the model sees shows the path of its file. Thus you
+can find and correct a bad hint.
+
+## Approve hints that the model proposes
+
+When the model learns something about a server, it can propose a hint with `add_hint`. A proposal is one file in a
+`pending/` folder, and it has no effect.
+
+While proposals wait, a band above the prompt shows "● N proposed hints for code mode" and a **Review** button.
+
+1. Click **Review**. The band shows one card for each proposal, with the server, the tools and the text.
+2. Read the text. Approve only a hint that you can write yourself.
+3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal.
+
+The band shows the proposals of all sessions, closed and headless (`claude -p`) sessions too. Where Claude Code
+draws plugin tool results, the `add_hint` row also shows the proposal with the same buttons. The desktop app does
+not draw them, so there only the band shows proposals.
+
+To approve a proposal by hand, move its bullets into the hint file of the server. To discard it, delete its file in
+`pending/`.
+
+The model proposes a `user` hint by default. A `project` hint goes to the project folder, and only when
+`projectHints` is on.
+
+## Safety rules
+
+The model follows hints as it follows a `CLAUDE.md` file. Thus a person who can write a hint can control what the
+model does with your MCP tools. These rules make a bad hint less probable:
+
+- **Project hints are off by default.** A person who can commit to a project can put a hint there. Turn on
+  `projectHints` only for projects that you trust.
+- **A proposal has no effect until you approve it.** A tool result, for example a Slack message or a Jira issue, can
+  contain text that tells the model to save a hint. Such text cannot make a standing instruction.
+- **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
+  NotebookEdit on files in the hint folders. It checks the path as written and its real path through symbolic links.
+- **The guard also denies Bash commands that name a hint folder.** This includes read-only commands, because a text
+  check cannot find the difference. The model can use the Read tool to read hints.
+- **Each hint shows its source file.**
+
+Your own editor is not a Claude tool, so you can edit hint files by hand.
+
+These rules are not a full security boundary. The Bash check is best effort, because a shell command can make a
+path in many ways. Another plugin, a settings hook or a command that you run can also write to the hint folders.
+For a stronger rule against the file tools of Claude, add a deny rule to `~/.claude/settings.json`:
+
+```json
+{ "permissions": { "deny": ["Edit(~/.claude/code-mode/hints/**)"] } }
+```
