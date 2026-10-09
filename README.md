@@ -22,8 +22,9 @@ claude --plugin-dir /path/to/claude-code-mode
 
 | Tool | What it does |
 |---|---|
-| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. Gives the name, a one-line description and, when known, the argument types. |
-| `mcp__code-mode__run_code` | Runs the body of an async JavaScript function. In the body, `await call("mcp__<server>__<tool>", args)` or `await tools["<server>"]["<tool>"](args)` calls a tool. `console.log` output comes back after the result. |
+| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. Gives the name, a one-line description and, when known, the argument types and the [usage hints](#usage-hints) for the servers. |
+| `mcp__code-mode__run_code` | Runs the body of an async JavaScript function. In the body, `await call("mcp__<server>__<tool>", args)` or `await tools["<server>"]["<tool>"](args)` calls a tool. `console.log` output comes back after the result. When a call fails, the usage hints for that server come after the result. |
+| `mcp__code-mode__add_hint` | Proposes a usage hint for a server. A proposal has no effect until you approve it in the band above the prompt. |
 
 Example program:
 
@@ -35,9 +36,66 @@ const [resources, user] = await Promise.all([
 return { resourceCount: resources.length, hasAccountId: Boolean(user.account_id) }
 ```
 
+## Usage hints
+
+Each MCP server has its own result formats, required arguments and limits. Usage hints tell the model about them. Hints are markdown files with a short frontmatter:
+
+```markdown
+---
+servers: [Datadog]
+identify: [analyze_datadog_logs]
+tools: [analyze_datadog_*]
+---
+- Results are TSV text inside <TSV_DATA> tags, not JSON.
+- DDSQL has no substr and no INTERVAL.
+```
+
+A hint applies to a server when `servers` or `identify` finds it:
+
+- `servers` matches the server name as `/mcp` lists it, or the `<server>` part of `mcp__<server>__<tool>`. A name with no `*` also matches the end of the name, so `Datadog` matches `claude.ai Datadog`, `claude_ai_Datadog` and `plugin:engineering:datadog`.
+- `identify` finds the server by a tool that it offers. Use it always: in the desktop app, claude.ai connectors have UUID names (`mcp__fcef2cd1-…__getJiraIssue`), so `servers` cannot find them, but a server that offers `getJiraIssue` is Jira in every session. Pick a tool name that only that server has.
+- `tools` is optional. It limits the hint to some tools of the server. `*` is a wildcard in all three fields.
+- `search_tools` shows the hints of the servers it returns. `run_code` shows the hints of the servers whose calls failed.
+
+### Where hints come from
+
+| Source | Folder | Loads |
+|---|---|---|
+| Bundled | `hints/` in this plugin | Always |
+| Your own | `~/.claude/code-mode/hints/` | Always |
+| The project | `<project>/.claude/code-mode/hints/` | Only when the option `projectHints` is on |
+
+To add a hint for an MCP server that you use, write a file in `~/.claude/code-mode/hints/`, for example `gmail.md`. One file per server is easiest. `search_tools` shows the tool names to use in `identify`.
+
+### Hints from the model need your approval
+
+The model can propose a hint with `add_hint` when it learns something about a server. Each proposal is one file in a `pending/` folder, and it has no effect.
+
+While proposals wait, a band above the prompt shows "● N proposed hints for code mode" and a **Review** button. **Review** opens one card for each proposal, with the server, the tools and the hint text, and two buttons:
+
+- **Approve** adds the proposal to the active hint file of that server (for example `~/.claude/code-mode/hints/gmail.md`) and removes it from `pending/`.
+- **Discard** removes the proposal.
+
+When no proposal waits, the band does not show. The band reads `pending/` in every interactive session, so it also shows proposals from headless runs (`claude -p`) and from sessions that are closed. The model cannot press the buttons, and a guard stops it from writing hint files directly (see below).
+
+Where a surface lets plugins draw tool results, the `add_hint` row also shows the proposal with the same two buttons. The desktop app does not, so there only the band shows it. (The terminal is not tested yet.)
+
+To approve a proposal by hand, move its lines into the server's hint file. To discard it, delete the file.
+
+### Why the safety rules
+
+The model follows hints, as it follows a CLAUDE.md file. So whoever can write a hint can steer what the model does with your MCP tools:
+
+- **Project hints are off by default.** Anyone who can commit to a project could put a hint there. Turn on `projectHints` only for projects that you trust. Claude Code uses the same rule for `autoMode`, which it does not read from project settings.
+- **Proposals from the model need your approval.** A tool result, for example a Slack message or a Jira ticket, can contain text that tells the model to save a hint. Because a proposal has no effect until you approve it, such text cannot plant a standing instruction.
+- **The model cannot write hint files with its own tools.** An active hint is only a file, so the model could otherwise skip the approval. A guard in the mod denies Write, Edit and NotebookEdit on files in `~/.claude/code-mode/hints/` and `<project>/.claude/code-mode/hints/`. It checks the path as written, after `~` and `..`, and its real path through symbolic links. It also denies Bash commands that name a hint folder, read-only ones too, because a text check cannot tell reading from writing; use the Read tool to read hints. The Bash check is best effort: a shell command can build a path in ways that a text check does not see. Your own editor is not a Claude tool, so you can still edit hint files by hand.
+- **Each hint shows its source file**, so you can find and fix it.
+
+These rules make a bad hint less likely. They are not a hard security boundary: another plugin, a settings hook, or a command that you run yourself can still write to the hint folders. For a stronger rule against Claude's file tools, also add a deny rule to `~/.claude/settings.json`, for example `"permissions": { "deny": ["Edit(~/.claude/code-mode/hints/**)"] }`.
+
 ## How it works
 
-1. At `session.start`, the mod registers the two tools.
+1. At `session.start`, the mod registers its three tools. `ui.render` hooks draw the band above the prompt and the `add_hint` row.
 2. `run_code` starts `runtime/runner.mjs` in a new Node process.
 3. When the program calls a tool, the runner writes a request line to stdout.
 4. The mod checks the call with `$.tool.check` and then does it (see [Permissions](#permissions)). Then the mod writes the result to a reply file in a temporary folder.
@@ -119,6 +177,7 @@ Set the options in `/config` or in `pluginConfigs["code-mode"].options` in setti
 | `node` | `node` | The Node.js executable (Node 20 or later). |
 | `timeoutSeconds` | `120` | The wall-clock and CPU limit for one program. |
 | `blockDirectMcp` | `false` | Denies direct MCP calls from the model, so that it must use `run_code`. Calls from `run_code` are not blocked. |
+| `projectHints` | `false` | Also loads usage hints from `.claude/code-mode/hints/` in the project. See [Usage hints](#usage-hints). |
 | `approval` | `program` | `program`: approving `run_code` approves the nested MCP calls that no rule decides. `per-call`: each nested call has its own check. In auto mode, both values need allow rules (see [Permissions](#permissions)). |
 
 ## Limits

@@ -1,7 +1,8 @@
 {
   "name": "code-mode",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
+  "types": "./types/index.d.ts",
   "author": {
     "name": "gpavanello"
   },
@@ -33,6 +34,13 @@
       "description": "program: approving run_code approves the MCP calls inside it that no permission rule decides (deny rules and organization limits still apply). per-call: each nested call has its own permission check; in auto mode this needs allow rules.",
       "options": ["program", "per-call"],
       "default": "program",
+      "required": false
+    },
+    "projectHints": {
+      "type": "boolean",
+      "title": "Load project hints",
+      "description": "Also load usage hints from .claude/code-mode/hints/ in the project. Off by default: anyone who can commit to the project could use them to steer the model.",
+      "default": false,
       "required": false
     }
   }
