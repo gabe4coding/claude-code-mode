@@ -1,6 +1,6 @@
 {
   "name": "code-mode",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
   "types": "./types/index.d.ts",
   "author": {

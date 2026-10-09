@@ -1,6 +1,18 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
-import { MARK, extractDeclaration, isCallable, mcpReply, rankTools, splitToolName, takeMessages, toValue } from '../hooks/protocol'
+import {
+  MARK,
+  extractDeclaration,
+  isCallable,
+  isSessionResult,
+  mcpReply,
+  rankTools,
+  savedResultOf,
+  savedReply,
+  splitToolName,
+  takeMessages,
+  toValue,
+} from '../hooks/protocol'
 
 const RUN = 'mcp__code-mode__run_code'
 
@@ -62,6 +74,60 @@ describe('protocol', () => {
     expect(mcpReply({ content: [{ type: 'text', text: '{"a":1}' }], isError: false })).toEqual({ ok: true, value: { a: 1 } })
     expect(mcpReply({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } })).toEqual({ ok: true, value: { b: 2 } })
     expect(mcpReply({ content: [{ type: 'text', text: 'bad' }], isError: true })).toEqual({ ok: false, error: 'bad' })
+  })
+
+  test('savedResultOf reads both notes of a saved result', () => {
+    const S = 's-1'
+    const mcp = (format: string, tail = '') =>
+      `Error: result (60,000 characters) exceeds maximum allowed tokens. Output has been saved to /h/${S}/tool-results/mcp-fake-big-1.txt.\nFormat: ${format}\nUse jq …${tail}`
+    expect(savedResultOf(mcp('Plain text'), S)).toEqual({ path: `/h/${S}/tool-results/mcp-fake-big-1.txt`, format: 'text', isCut: false })
+    expect(savedResultOf(mcp('JSON with schema: {}'), S)?.format).toBe('json')
+    expect(savedResultOf(mcp('JSON array'), S)?.format).toBe('blocks')
+    expect(savedResultOf(mcp('JSON', '\nNote: the output exceeded the persist byte limit; …'), S)?.isCut).toBe(true)
+    const output = `<persisted-output>\nOutput too large (61.2KB). Full output saved to: /h/${S}/tool-results/b.txt\n\nPreview`
+    expect(savedResultOf(output, S)).toEqual({ path: `/h/${S}/tool-results/b.txt`, format: 'text', isCut: false })
+    // A path with a space works in the known wordings.
+    expect(savedResultOf(mcp('Plain text').replace('/h/', '/h a/'), S)?.path).toBe(`/h a/${S}/tool-results/mcp-fake-big-1.txt`)
+  })
+
+  test('savedResultOf finds a note in another wording by its path', () => {
+    const S = 's-1'
+    expect(savedResultOf(`Result too big; stored at /h/${S}/tool-results/r.json.`, S)).toEqual({
+      path: `/h/${S}/tool-results/r.json`,
+      format: 'unknown',
+      isCut: false,
+    })
+    // The same path twice is one file; two files, another session or a long result are not a note.
+    expect(savedResultOf(`See /h/${S}/tool-results/r.json, then jq '/h/${S}/tool-results/r.json'`, S)?.path).toBe(`/h/${S}/tool-results/r.json`)
+    expect(savedResultOf(`/h/${S}/tool-results/a.txt and /h/${S}/tool-results/b.txt`, S)).toBe(undefined)
+    expect(savedResultOf('stored at /h/s-2/tool-results/r.json', S)).toBe(undefined)
+    expect(savedResultOf(`stored at /h/${S}/tool-results/r.json ${'x'.repeat(9000)}`, S)).toBe(undefined)
+    expect(savedResultOf(`stored at /h/${S}/tool-results/r.json`, '')).toBe(undefined)
+    expect(savedResultOf('{"a":1}', S)).toBe(undefined)
+  })
+
+  test('isSessionResult accepts only this session\'s tool-results files', () => {
+    expect(isSessionResult('/h/.claude/projects/p/s-1/tool-results/a.txt', 's-1')).toBe(true)
+    expect(isSessionResult('/h/.claude/projects/p/s-2/tool-results/a.txt', 's-1')).toBe(false)
+    expect(isSessionResult('/h/.ssh/id_rsa', 's-1')).toBe(false)
+    expect(isSessionResult('/h/s-1/tool-results/x/a.txt', 's-1')).toBe(false)
+    expect(isSessionResult('/h/tool-results/a.txt', '')).toBe(false)
+  })
+
+  test('savedReply parses the file as its format says', () => {
+    const value = (v: unknown) => ({ ok: true, value: v })
+    expect(savedReply('text', '[1,2]')).toEqual(value([1, 2]))
+    expect(savedReply('text', 'plain')).toEqual(value('plain'))
+    expect(savedReply('json', '{"a":1}')).toEqual(value({ a: 1 }))
+    expect(savedReply('blocks', JSON.stringify([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]))).toEqual(value('one\ntwo'))
+    expect(savedReply('unknown', JSON.stringify([{ type: 'text', text: '[3]' }]))).toEqual(value([3]))
+    expect(savedReply('unknown', '[INFO] plain text')).toEqual(value('[INFO] plain text'))
+    // Data with a `type` field of its own is not content blocks.
+    const messages = [{ type: 'message', text: 'hi' }]
+    expect(savedReply('blocks', JSON.stringify(messages))).toEqual(value(messages))
+    expect(savedReply('unknown', JSON.stringify(messages))).toEqual(value(messages))
+    // JSON that does not parse was cut.
+    expect(savedReply('json', '{"cut": ')).toEqual({ ok: false, error: 'the saved result is not whole' })
   })
 
   test('rankTools scores name hits above description hits', () => {
@@ -182,6 +248,61 @@ describe('search_tools', () => {
     expect(text).toContain('mcp__mail__list')
     expect(text).not.toContain('Bash')
     expect(text).not.toContain(RUN)
+  })
+})
+
+describe('saved results', () => {
+  const SESSION = 'sess-1'
+  const DIR = `/home/u/.claude/projects/p/${SESSION}/tool-results`
+  const note = (path: string, format = 'JSON with schema: {}') =>
+    `Error: result (60,000 characters) exceeds maximum allowed tokens. Output has been saved to ${path}.\nFormat: ${format}\nUse jq …`
+
+  // A server whose result Claude Code saved to a file, and the files there.
+  // `links` maps a path to the file it leads to.
+  const savedServer = (on: On, result: string, files: Record<string, string>, links: Record<string, string> = {}) => {
+    on('tool.check', () => ({ decision: 'allow' }))
+    on('tool.call', { tool: 'mcp__fake__big' }, () => ({ result }))
+    on('session.id', () => ({ value: SESSION }))
+    on('fs.stat', ($, e) => {
+      const real = links[e.path] ?? e.path
+      if (!(real in files)) throw new Error('ENOENT')
+      return { value: { kind: 'file', size: files[real]!.length, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
+    })
+    on('fs.read', ($, e) => ({ value: files[e.path]! }))
+  }
+
+  test('the program gets the saved file, not the note', async ($, on) => {
+    const path = `${DIR}/mcp-fake-big-1.txt`
+    savedServer(on, note(path), { [path]: JSON.stringify({ messages: [{ text: 'hi' }] }) })
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__big' }) }))
+    expect(text).toContain('"text": "hi"')
+    expect(text).not.toContain('exceeds maximum allowed tokens')
+  })
+
+  test('a note in another wording still gives the saved file', async ($, on) => {
+    const path = `${DIR}/mcp-fake-big-2.json`
+    savedServer(on, `Too large. Stored at ${path} for later.`, { [path]: '[{"id":7}]' })
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__big' }) }))
+    expect(text).toContain('"id": 7')
+  })
+
+  test('a note that names a file outside this session is not read', async ($, on) => {
+    savedServer(on, note('/home/u/.ssh/id_rsa'), { '/home/u/.ssh/id_rsa': 'secret' })
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__big' }) }))
+    expect(text).not.toContain('secret')
+    expect(text).toContain('exceeds maximum allowed tokens')
+  })
+
+  test('a link in tool-results/ to a file outside is not read', async ($, on) => {
+    const link = `${DIR}/mcp-fake-big-3.txt`
+    savedServer(on, note(link), { '/home/u/.ssh/id_rsa': 'secret' }, { [link]: '/home/u/.ssh/id_rsa' })
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__big' }) }))
+    expect(text).not.toContain('secret')
+    expect(text).toContain('code-mode does not read')
   })
 })
 
