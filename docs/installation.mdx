@@ -1,0 +1,81 @@
+---
+title: Installation
+description: Install code-mode in Claude Code, check that it works, and keep it up to date.
+---
+
+# Installation
+
+## Requirements
+
+- Claude Code. The plugin is tested with Claude Code 2.1.295.
+- Node.js 22.13 or later. The sandbox uses the Node permission model (`--permission`), and Node 22.13 is the first
+  version with this flag. Node 20 does not accept it.
+- macOS or Linux. On Linux, the sandbox has no network block. See [Sandbox](./how-it-works.mdx#sandbox).
+
+If `node` on your `PATH` is older than 22.13, set the option `node` to a newer executable. See
+[Configuration](./configuration.mdx).
+
+## Install from the marketplace
+
+Type these commands at the prompt of a Claude Code session:
+
+```
+/plugin marketplace add gabe4coding/claude-code-mode
+/plugin install code-mode@claude-code-mode
+```
+
+Then start a new session. The plugin adds its tools when a session starts.
+
+You can also install from a shell:
+
+```bash
+claude plugin marketplace add gabe4coding/claude-code-mode
+```
+
+```bash
+claude plugin install code-mode@claude-code-mode
+```
+
+## Run from a local folder
+
+To try a change, or to run the plugin without the marketplace, load it from a clone:
+
+```bash
+claude --plugin-dir /path/to/claude-code-mode
+```
+
+With `--plugin-dir`, Claude Code also writes the types of the connected MCP tools. Then `search_tools` can show
+the argument types. See [Limits](./troubleshooting.mdx#limits).
+
+## Check that it works
+
+1. Start a new session.
+2. Ask the model: "Use search_tools with an empty query".
+3. The result lists your connected MCP tools.
+
+If the list is empty, no MCP server is connected. Run `/mcp` to see your servers.
+
+If you use auto mode, read [Permissions](./permissions.mdx) before the first program. In auto mode, nested calls
+need allow rules.
+
+## Update
+
+Claude Code caches a plugin by its version. To get a new version, update the marketplace and the plugin:
+
+```bash
+claude plugin marketplace update claude-code-mode
+```
+
+```bash
+claude plugin update code-mode@claude-code-mode
+```
+
+Then start a new session.
+
+## Uninstall
+
+```bash
+claude plugin uninstall code-mode@claude-code-mode
+```
+
+Your hint files stay in `~/.claude/code-mode/hints/`. Delete this folder if you do not need them.

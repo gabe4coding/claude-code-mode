@@ -1,0 +1,74 @@
+---
+title: Permissions
+description: How Claude Code approves a program and its nested calls, and the allow rules that auto mode needs.
+---
+
+# Permissions
+
+Your permission rules apply to each MCP call in a program, as they apply to a direct call.
+
+## In short
+
+- **Manual mode:** approve the `run_code` call. You see the full program in the prompt. With the default
+  `approval: program`, this approval also covers the nested calls that no rule decides.
+- **Auto mode:** add an allow rule for each MCP tool that your programs use. Without an allow rule, auto mode
+  denies a nested call. See [Auto mode needs allow rules](#auto-mode-needs-allow-rules).
+- **Deny rules** always apply. A denied nested call throws an error in the program.
+
+## The check of a nested call
+
+Claude Code checks the `run_code` call as any other tool call. Then the plugin checks each nested call against your
+rules:
+
+| Result of the check | What the plugin does |
+| --- | --- |
+| A deny rule matches | Denies the call. The program gets an error. |
+| An allow rule matches | Does the call as a direct call. |
+| No rule, `approval: program` | Does the call. Your approval of the program covers it. |
+| No rule, `approval: per-call` | Does the call as a direct call, so Claude Code asks you. |
+| Your organization sets a limit | Does the call as a direct call, so Claude Code asks you. |
+
+## Results by permission mode
+
+| Mode | Nested call with an allow rule | Nested call with no rule |
+| --- | --- | --- |
+| Manual (default) | Runs. | `program`: runs, covered by your approval of `run_code`. `per-call`: you get a prompt for each call. |
+| Auto | Runs. | Denied. |
+
+## Auto mode needs allow rules
+
+In auto mode, Claude Code sends each MCP call that a plugin starts to the classifier. The classifier judges only
+actions that the model asked for. Thus it gives no verdict for a nested call, and Claude Code denies the call:
+
+```
+The server-side auto mode classifier gave no verdict for mcp__…: the request that produced this action did not ask for one.
+```
+
+The option `approval` cannot change this. It is a limit of Claude Code, and the plugin does not try to go around it.
+
+Add an allow rule for each MCP tool that you use from `run_code`, in `~/.claude/settings.json`:
+
+```json
+{ "permissions": { "allow": ["mcp__claude_ai_Jira__getJiraIssue", "mcp__claude_ai_Jira__searchJiraIssuesUsingJql"] } }
+```
+
+- Allow single read-only tools when you can. A rule for a full server (`"mcp__claude_ai_Jira"`) also allows its
+  write tools, for example create, update and delete.
+- An allow rule applies to every call of the tool: direct calls from the model and calls in other sessions too.
+- Add each name of a server. In the desktop app, a claude.ai connector can have a UUID name
+  (`mcp__fcef2cd1-…__getJiraIssue`). In terminal and headless sessions it has a `claude_ai_` name
+  (`mcp__claude_ai_Jira__getJiraIssue`). A rule matches only the name that it contains.
+- To get the exact name of a tool in the current session, run `search_tools`.
+
+### Related Claude Code issues
+
+Both issues were open, with no fix, on 2026-10-09:
+
+| Issue | What it reports |
+| --- | --- |
+| [anthropics/claude-code#100575](https://github.com/anthropics/claude-code/issues/100575) | Auto mode refuses the `$.tool.call` of a plugin with "no verdict", unless an allow rule matches (Claude Code 2.1.294). It proposes three fixes. |
+| [anthropics/claude-code#99214](https://github.com/anthropics/claude-code/issues/99214) | Auto mode refuses the `$.mcp.call` of a plugin with the same error (Claude Code 2.1.286). The reporter says that a project allow rule did not help. |
+
+The plugin uses `$.tool.call` for a nested call with an allow rule, so the allow rule works. It uses `$.mcp.call`
+for a nested call with no rule and `approval: program`. When Claude Code fixes one of these issues, test the plugin
+again in auto mode without allow rules.

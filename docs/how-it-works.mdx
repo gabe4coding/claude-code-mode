@@ -1,0 +1,43 @@
+---
+title: How it works
+description: The path of one run_code call, from the program to the result, and the four layers of the sandbox.
+---
+
+# How it works
+
+## One run
+
+1. When a session starts, the plugin adds its three tools. Hooks for the user interface draw the band and the
+   `add_hint` row.
+2. The model calls `run_code`. Claude Code does the normal permission check of this call.
+3. The plugin starts `runtime/runner.mjs` in a new Node process, the sandbox.
+4. When the program calls a tool, the sandbox writes a request line to its standard output.
+5. The plugin checks the nested call against your permission rules and then does it. See
+   [Permissions](./permissions.mdx).
+6. The plugin writes the result to a reply file in a temporary folder. The sandbox reads the file, and the program
+   continues.
+7. When the program returns, the plugin sends the [result](./usage.mdx#the-result) to the model and deletes the
+   temporary folder.
+
+The result goes back through a file, because the plugin API (`$.process.spawn`) writes the standard input of a
+process only one time.
+
+## Sandbox
+
+The sandbox has four layers:
+
+| Layer | What it stops |
+| --- | --- |
+| A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. |
+| The Node permission model (`--permission`) | The process can read only the runner file and its temporary folder. It cannot write files or start processes or workers. |
+| `sandbox-exec`, on macOS only | The process has no network access. |
+| `ulimit -t` and a timer | A CPU limit stops busy loops. A wall-clock limit stops programs that wait too long. |
+
+Only strings go between the host and the `vm` context. The global object of the context has no prototype. Thus the
+program cannot get to the `Function` constructor of the host through `constructor.constructor`.
+
+The `vm` module of Node is not a security boundary by itself. The other layers make the risk smaller. On Linux,
+the sandbox has no network block, but the `vm` context still has no `fetch`.
+
+The option `timeoutSeconds` sets the CPU limit and the wall-clock limit. The minimum is 5 seconds. See
+[Configuration](./configuration.mdx).
