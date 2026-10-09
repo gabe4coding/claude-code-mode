@@ -1,11 +1,8 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="code-mode logo" width="128" height="128">
+  <img src="docs/assets/banner.svg" alt="code-mode: many MCP calls, one program, one small result" width="100%">
 </p>
 
-<h1 align="center">code-mode</h1>
-
 <p align="center">
-  <b>Many MCP calls. One program. One small result.</b><br>
   A Claude Code plugin: the model writes one JavaScript program that calls your MCP tools in a sandbox.
   Only the return value goes back into the context.
 </p>
