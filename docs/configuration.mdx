@@ -1,0 +1,24 @@
+---
+title: Configuration
+description: Every option of the code-mode plugin and its default.
+---
+
+# Configuration
+
+To see and change the options, run `/config` in a session, or this command in a shell:
+
+```bash
+claude plugin configure code-mode@claude-code-mode
+```
+
+The options are in `pluginConfigs["code-mode"].options` in your Claude Code settings. All options are optional.
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `node` | `node` | The Node.js executable for the sandbox: a name on `PATH` or an absolute path. It must be Node 22.13 or later. |
+| `timeoutSeconds` | `120` | The wall-clock limit and the CPU limit for one program, in seconds. The minimum is 5. |
+| `blockDirectMcp` | `false` | If `true`, the plugin denies the MCP calls that the model makes directly, so the model must use `run_code`. Nested calls are not blocked. |
+| `approval` | `program` | `program`: your approval of `run_code` covers the nested calls that no rule decides. `per-call`: each nested call has its own check. See [Permissions](./permissions.mdx). |
+| `projectHints` | `false` | If `true`, the plugin also loads hints from `.claude/code-mode/hints/` in the project. Turn it on only for projects that you trust. See [Hints](./hints.mdx#safety-rules). |
+
+A change to an option reloads the plugin.

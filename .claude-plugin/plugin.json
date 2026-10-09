@@ -1,6 +1,6 @@
 {
   "name": "code-mode",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
   "types": "./types/index.d.ts",
   "author": {
@@ -10,14 +10,14 @@
     "node": {
       "type": "string",
       "title": "Node.js executable",
-      "description": "Node 20 or later runs the sandbox. A name on PATH or an absolute path.",
+      "description": "Node 22.13 or later runs the sandbox. A name on PATH or an absolute path.",
       "default": "node",
       "required": false
     },
     "timeoutSeconds": {
       "type": "number",
-      "title": "Script timeout (seconds)",
-      "description": "Wall-clock and CPU limit for one run_code script.",
+      "title": "Program timeout (seconds)",
+      "description": "Wall-clock and CPU limit for one run_code program. Minimum 5.",
       "default": 120,
       "required": false
     },
