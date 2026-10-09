@@ -142,7 +142,7 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
 }
 
 const HINT_GUARD_DENY =
-  'code-mode: hint files steer the model, so they cannot be written with file tools. Propose a hint with add_hint; the person approves it in the band above the prompt.'
+  'code-mode: hint files steer the model, so they cannot be written with file tools. Propose the hint with add_hint instead.'
 
 // Proposals waiting in the user's (and, when on, the project's) pending/.
 async function loadPending($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
@@ -189,7 +189,7 @@ export const register: Register = (on, options) => {
       inputSchema: {
         type: 'object',
         properties: {
-          code: { type: 'string', description: 'Body of an async JavaScript function. Use call() or tools.<server>.<tool>() and return the result.' },
+          code: { type: 'string', description: 'Body of an async JavaScript function.' },
         },
         required: ['code'],
       },

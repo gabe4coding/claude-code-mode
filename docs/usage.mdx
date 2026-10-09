@@ -1,0 +1,76 @@
+---
+title: Usage
+description: The three tools that code-mode gives the model, how a program calls MCP tools, and what comes back.
+---
+
+# Usage
+
+You do not call the tools yourself. Ask the model for a task that needs several MCP calls. The model then finds the
+tools with `search_tools` and writes one program for `run_code`.
+
+Ask, for example:
+
+```text
+Find my open Jira issues that have no update in the last 14 days, and give me their keys and titles.
+```
+
+Without code-mode, the model calls the Jira tools one by one, and each result goes into the context. With
+code-mode, the model writes one program. The program does the loop and the filter, and only the final list goes
+into the context.
+
+## The tools
+
+| Tool | What it does |
+| --- | --- |
+| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types. It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
+| `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
+| `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
+
+`search_tools` and `run_code` load in every session. `add_hint` loads only when the model needs it.
+
+## Programs
+
+A program is the body of an async JavaScript function. In the program:
+
+- `await call("mcp__<server>__<tool>", args)` calls an MCP tool and gives its result.
+- `await tools["<server>"]["<tool>"](args)` is the same call in a different form.
+- `console.log(...)` adds a line to the console output.
+- `return value` sets the result. The model gets the value as JSON.
+
+An example program:
+
+```js
+const [resources, user] = await Promise.all([
+  call("mcp__claude_ai_Jira__getAccessibleAtlassianResources", {}),
+  call("mcp__claude_ai_Jira__atlassianUserInfo", {}),
+])
+return { resourceCount: resources.length, hasAccountId: Boolean(user.account_id) }
+```
+
+What a call gives:
+
+- If the tool gives structured content, the call gives that object.
+- If the tool gives text that is JSON, the call gives the parsed value.
+- Else the call gives the text.
+- If the call fails or a permission rule denies it, the call throws an `Error`. The program can catch it.
+
+A program can call only MCP tools. It cannot call built-in tools such as `Bash` or `Read`, or the code-mode tools.
+It has no `require`, `fetch`, `process`, timers or file system.
+
+## The result
+
+The model gets one text with these parts:
+
+1. The return value as formatted JSON, at most 20,000 characters. A longer value is cut, with a note that tells
+   the model to return less data.
+2. The console lines, if there are any, at most 4,000 characters.
+3. The number of MCP calls that the program made.
+4. The hints for the servers whose calls failed, if there are any.
+
+If the program throws, the first part is the error and the lines of the program where it occurred.
+
+## Make the model use code-mode
+
+The model can still call MCP tools directly. To make it use `run_code` for every MCP call, turn on the option
+`blockDirectMcp`. Then a direct MCP call gets a denial that tells the model to use `run_code`. See
+[Configuration](./configuration.mdx).
