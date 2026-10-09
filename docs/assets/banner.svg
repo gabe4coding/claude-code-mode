@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-label="code-mode: many MCP calls, one program, one small result">
+  <title>code-mode</title>
+  <rect width="1280" height="400" rx="24" fill="#0A0A0A"/>
+  <rect x="0.5" y="0.5" width="1279" height="399" rx="23.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.1"/>
+
+  <!-- mark -->
+  <g transform="translate(64 120) scale(0.625)">
+    <g stroke-width="14" stroke-linecap="round">
+      <path d="M 56 64 L 148 64" stroke="#3F3F46"/>
+      <path d="M 76 96 L 136 96" stroke="#52525B"/>
+      <path d="M 76 128 L 156 128" stroke="#71717A"/>
+    </g>
+    <g fill="none" stroke="#4ADE80" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 196 60 L 196 156 Q 196 184 168 184 L 68 184"/>
+      <path d="M 96 156 L 68 184 L 96 212"/>
+    </g>
+  </g>
+
+  <!-- wordmark with cursor -->
+  <g font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
+    <text x="244" y="204" font-size="72" font-weight="700" fill="#FAFAFA" letter-spacing="-1">code-mode</text>
+    <rect x="644" y="152" width="32" height="58" fill="#4ADE80"/>
+    <text x="248" y="252" font-size="17" fill="#A1A1AA">Many MCP calls. One program. One small result.</text>
+    <text x="248" y="292" font-size="14" fill="#52525B" letter-spacing="1.5">A CLAUDE CODE PLUGIN</text>
+  </g>
+
+  <!-- terminal transcript -->
+  <g transform="translate(790 64)" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+    <rect width="426" height="272" rx="14" fill="#141414" stroke="#FFFFFF" stroke-opacity="0.08"/>
+    <text x="22" y="40" fill="#FAFAFA"><tspan fill="#4ADE80">›</tspan> run_code</text>
+    <g fill="#71717A">
+      <text x="38" y="76">call  github.list_prs</text>
+      <text x="38" y="102">call  jira.search</text>
+      <text x="38" y="128">call  slack.history</text>
+      <text x="38" y="154">call  datadog.logs</text>
+      <text x="38" y="180">…     11 more calls</text>
+    </g>
+    <g fill="#3B7A50" text-anchor="end">
+      <text x="400" y="76">sandbox</text>
+      <text x="400" y="102">sandbox</text>
+      <text x="400" y="128">sandbox</text>
+      <text x="400" y="154">sandbox</text>
+      <text x="400" y="180">sandbox</text>
+    </g>
+    <line x1="22" y1="202" x2="404" y2="202" stroke="#FFFFFF" stroke-opacity="0.08"/>
+    <text x="22" y="236" fill="#4ADE80" font-weight="700">↵ return <tspan fill="#FAFAFA" font-weight="400">{ risky: 2, owners: […] }</tspan></text>
+    <text x="400" y="258" fill="#52525B" text-anchor="end" font-size="12">only this goes into the context</text>
+  </g>
+</svg>
