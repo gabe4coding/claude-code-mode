@@ -54,6 +54,12 @@ What a call gives:
 - Else the call gives the text.
 - If the call fails or a permission rule denies it, the call throws an `Error`. The program can catch it.
 
+A large result works the same way. If a tool result is too large for the context, Claude Code saves it to a file.
+The model then gets only a note with the path. In a program, the plugin reads that file and the call gives the full
+result. The plugin reads only files in the `tool-results` folder of the current session, up to 4 MiB. If the file
+is larger, or Claude Code saved only part of the result, the call throws an `Error`. Then ask the tool for less
+data, for example one page or fewer fields.
+
 A program can call only MCP tools. It cannot call built-in tools such as `Bash` or `Read`, or the code-mode tools.
 It has no `require`, `fetch`, `process`, timers or file system.
 
