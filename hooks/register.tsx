@@ -23,12 +23,14 @@ import {
   SEARCH_DESCRIPTION,
   extractDeclaration,
   formatOutcome,
+  hintNudge,
   isCallable,
   isSessionResult,
   mcpReply,
   rankTools,
   savedResultOf,
   savedReply,
+  sessionContext,
   splitToolName,
   takeMessages,
   toValue,
@@ -202,12 +204,53 @@ const displayName = (names: Map<string, string>, server: string): string | undef
   return name !== undefined && name !== server ? name : undefined
 }
 
+// Per session: servers whose calls failed and have not worked since, and
+// search_tools queries that found nothing. A run that works after them is the
+// moment to propose a hint (hintNudge).
+type Tries = { failedServers: Set<string>; missedSearches: string[] }
+const triesBySession = new Map<string, Tries>()
+
+async function triesOf($: EngineInterface): Promise<Tries> {
+  const id = await $.session.id().catch(() => '')
+  let tries = triesBySession.get(id)
+  if (!tries) triesBySession.set(id, (tries = { failedServers: new Set(), missedSearches: [] }))
+  return tries
+}
+
+async function recordMissedSearch($: EngineInterface, query: string): Promise<void> {
+  const tries = await triesOf($)
+  if (query.trim() !== '' && tries.missedSearches.length < 5) tries.missedSearches.push(query.trim().slice(0, 60))
+}
+
+// After earlier tries, the first run with a call that works asks for a hint:
+// for each server whose calls failed (earlier or in this run) and now work,
+// and for the searches that found nothing. Each is named once.
+async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<string>): Promise<string> {
+  const tries = await triesOf($)
+  const serverOf = (tools: Set<string>) => new Set([...tools].flatMap(t => splitToolName(t)?.server ?? []))
+  const failedNow = serverOf(failed)
+  const learned = [...serverOf(worked)].filter(s => tries.failedServers.has(s) || failedNow.has(s))
+  for (const s of failedNow) if (!learned.includes(s)) tries.failedServers.add(s)
+  for (const s of learned) tries.failedServers.delete(s)
+  if (worked.size === 0) return ''
+  const nudge = hintNudge(learned, tries.missedSearches)
+  tries.missedSearches = []
+  return nudge
+}
+
 export const register: Register = (on, options) => {
   const opts = options as Options
   const node = opts.node || 'node'
   const timeoutSeconds = Math.max(5, Number(opts.timeoutSeconds) || 120)
   const programApproval = opts.approval !== 'per-call'
   const projectHints = opts.projectHints === true
+
+  // The model reads this at the start of the session and after /clear or a
+  // compaction: MCP calls go through run_code, direct calls only as a fallback.
+  on('classic.SessionStart', async ($, e, next) => {
+    const r = await next(e)
+    return { ...r, additionalContext: [...(r.additionalContext ?? []), sessionContext(opts.blockDirectMcp === true)] }
+  }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -380,7 +423,10 @@ export const register: Register = (on, options) => {
     const limit = Math.min(100, Math.max(1, Number(input.limit) || SEARCH_LIMIT))
     const all = (await $.tool.list()).filter(t => t.mcp && isCallable(t.name, $.plugin.name))
     const found = rankTools(all, query, limit)
-    if (found.length === 0) return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
+    if (found.length === 0) {
+      await recordMissedSearch($, query)
+      return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
+    }
 
     const typesFile = `${$.plugin.root}/.claude-plugin/types/claude-code-mcp/index.d.ts`
     const dts = (await $.fs.exists(typesFile)) ? await $.fs.read(typesFile).catch(() => '') : ''
@@ -411,6 +457,7 @@ export const register: Register = (on, options) => {
     let stderr = ''
     const answers: Promise<void>[] = []
     const failed = new Set<string>()
+    const worked = new Set<string>()
 
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
       calls++
@@ -440,7 +487,7 @@ export const register: Register = (on, options) => {
         }
       }
       reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${err instanceof Error ? err.message : String(err)}` }))
-      if (!reply.ok && isCallable(tool, $.plugin.name)) failed.add(tool)
+      if (isCallable(tool, $.plugin.name)) (reply.ok ? worked : failed).add(tool)
       await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
     }
 
@@ -481,7 +528,10 @@ export const register: Register = (on, options) => {
         hintText = ''
       }
     }
-    const tail = hintText === '' ? '' : `\n\n${hintText}`
+    // A program that failed (a wrong result shape, a throw) is a failed try for every server it called.
+    const isDone = outcome?.t === 'done'
+    const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set()).catch(() => '')
+    const tail = [nudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS)}${tail}` }
   }).catch(() => ({ deny: 'code-mode: run_code failed; see the debug log.' }))
 

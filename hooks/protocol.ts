@@ -236,7 +236,7 @@ const dedent = (block: string): string => {
   return [lines[0], ...lines.slice(1).map(l => l.slice(Math.min(cut, l.length - l.trimStart().length)))].join('\n')
 }
 
-export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it instead of direct MCP tool calls when a task needs several calls, loops, filtering or joining of results: intermediate data stays out of the context.
+export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, and get back only what it returns. Use it instead of direct MCP tool calls, for one call or many: intermediate data stays out of the context.
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
@@ -245,7 +245,7 @@ The program is the body of an async function. Available:
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel. There is no require, fetch, process, filesystem or timers: only MCP tools.
 
-Find tools, their argument types and usage hints with search_tools first. When you learn something a later program needs (a result format, a limit, a fix), propose it with add_hint.
+Find tools, their argument types and usage hints with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })
@@ -253,3 +253,20 @@ const open = issues.filter(i => i.state !== "Done")
 return open.map(i => ({ id: i.id, title: i.title }))`
 
 export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types. Use an empty query to list all MCP tools.`
+
+/** Added to the context at session start: MCP calls go through run_code first. */
+export const sessionContext = (blockDirectMcp: boolean): string =>
+  blockDirectMcp
+    ? 'code-mode: call MCP tools only from run_code, and find them with search_tools. Direct MCP tool calls are denied.'
+    : 'code-mode: use run_code for MCP tool calls, and find tools with search_tools. Call an MCP tool directly only when run_code fails with an error that a changed program cannot fix.'
+
+/**
+ * The note after a run that worked where earlier tries did not: the servers
+ * whose calls failed before and work now, and the searches that found nothing.
+ */
+export const hintNudge = (servers: readonly string[], missedSearches: readonly string[]): string => {
+  if (servers.length === 0 && missedSearches.length === 0) return ''
+  const failed = servers.length === 0 ? [] : [`Calls to ${servers.join(', ')} failed earlier and work now.`]
+  const missed = missedSearches.length === 0 ? [] : [`search_tools found nothing for ${missedSearches.map(q => JSON.stringify(q)).join(', ')}.`]
+  return `## Worth a hint\n\n${[...failed, ...missed].join(' ')} If you know what made it work (the search words, the tool, an argument, a format), propose it with add_hint, one short fact per hint, so the next session gets it right the first time.`
+}
