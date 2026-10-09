@@ -1,0 +1,30 @@
+# Runs the checks that need no Claude Code: the real sandbox and the doc rules.
+# `claude plugin test .` (the hooks) runs only on a contributor's machine.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Linux only: no sandbox-exec here, so the macOS network block is not tested.
+    # 22.13 is the first Node with a stable --permission flag.
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.13", "24"]
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node tests/runner.integration.mjs
+      - run: node tests/docs.check.mjs
