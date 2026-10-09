@@ -180,7 +180,7 @@ The program is the body of an async function. Available:
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel. There is no require, fetch, process, filesystem or timers: only MCP tools. Approving this program approves the MCP calls it makes; permission rules still apply to each call.
 
-Find tools and their argument types with search_tools first.
+Find tools, their argument types and usage hints with search_tools first. When you learn something a later program needs (a result format, a limit, a fix), propose it with add_hint.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })
