@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import {
   MARK,
   extractDeclaration,
+  hintNudge,
   isCallable,
   isSessionResult,
   mcpReply,
@@ -128,6 +129,15 @@ describe('protocol', () => {
     expect(savedReply('unknown', JSON.stringify(messages))).toEqual(value(messages))
     // JSON that does not parse was cut.
     expect(savedReply('json', '{"cut": ')).toEqual({ ok: false, error: 'the saved result is not whole' })
+  })
+
+  test('hintNudge names the servers that work now and the searches that missed', () => {
+    expect(hintNudge([], [])).toBe('')
+    const text = hintNudge(['fake'], ['jira ticket'])
+    expect(text).toContain('Calls to fake failed earlier and work now.')
+    expect(text).toContain('search_tools found nothing for "jira ticket".')
+    expect(text).toContain('add_hint')
+    expect(hintNudge([], ['x'])).not.toContain('Calls to')
   })
 
   test('rankTools scores name hits above description hits', () => {
@@ -363,5 +373,75 @@ describe('blockDirectMcp', () => {
     fakeServer(on)
     const direct = await $.tool.call({ tool: 'mcp__fake__echo', n: 1 })
     expect(textOf(direct)).toContain('echoed')
+  })
+})
+
+describe('session start', () => {
+  // The settings hooks beneath: one of them adds its own context, which stays.
+  const settingsHooks = (on: On) => on('classic.SessionStart', () => ({ additionalContext: ['from settings'] }))
+
+  test('tells the model to use run_code first and call directly only on errors', async ($, on) => {
+    settingsHooks(on)
+    const r = await $.classic.SessionStart({ source: 'startup' })
+    expect(r.additionalContext?.[0]).toBe('from settings')
+    const text = (r.additionalContext ?? []).join('\n')
+    expect(text).toContain('use run_code for MCP tool calls')
+    expect(text).toContain('only when run_code fails')
+  })
+
+  test('with blockDirectMcp, offers no direct fallback', { options: { blockDirectMcp: true } }, async ($, on) => {
+    settingsHooks(on)
+    const r = await $.classic.SessionStart({ source: 'clear' })
+    const text = (r.additionalContext ?? []).join('\n')
+    expect(text).toContain('call MCP tools only from run_code')
+    expect(text).not.toContain('directly only when')
+  })
+})
+
+describe('hint nudge', () => {
+  // The plugin keeps tries per session: each test is its own session.
+  let sessions = 0
+  const session = (on: On) => {
+    const id = `nudge-${++sessions}`
+    on('session.id', () => ({ value: id }))
+  }
+  const run = async ($: Engine, ...calls: { tool: string; args?: Record<string, unknown> }[]) =>
+    textOf(await $.tool.call({ tool: RUN, code: scenario(...calls) }))
+
+  test('a run that works after a failed call asks for a hint, one time', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__fail' })).not.toContain('Worth a hint')
+    const after = await run($, { tool: 'mcp__fake__echo' })
+    expect(after).toContain('## Worth a hint')
+    expect(after).toContain('Calls to fake failed earlier and work now.')
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+
+  test('a failed call and a working call to one server in one run ask for a hint', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__fail' }, { tool: 'mcp__fake__echo' })).toContain('Calls to fake')
+  })
+
+  test('a run that works the first time asks for nothing', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+
+  test('searches that found nothing are named after the next run that works', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo the args', mcp: true }] }))
+    const miss = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'ticket' }))
+    expect(miss).toContain('No MCP tool matches')
+    const after = await run($, { tool: 'mcp__fake__echo' })
+    expect(after).toContain('search_tools found nothing for "ticket".')
+    expect(after).not.toContain('Calls to')
   })
 })
