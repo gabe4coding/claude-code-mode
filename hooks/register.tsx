@@ -28,7 +28,7 @@ import {
   mcpReply,
   rankTools,
   savedResultOf,
-  savedValue,
+  savedReply,
   splitToolName,
   takeMessages,
   toValue,
@@ -161,19 +161,20 @@ const TOO_LARGE = 'ask the tool for less data (a page, a filter or fewer fields)
 // file in this session's tool-results/ is read: the note is tool output, and
 // a server could name any path in it.
 async function loadSaved($: EngineInterface, reply: Reply): Promise<Reply> {
-  const saved = savedResultOf(reply.ok ? (typeof reply.value === 'string' ? reply.value : '') : reply.error)
+  const text = reply.ok ? (typeof reply.value === 'string' ? reply.value : '') : reply.error
+  if (!text.includes('tool-results/')) return reply
+  const sessionId = await $.session.id().catch(() => '')
+  const saved = savedResultOf(text, sessionId)
   if (saved === undefined) return reply
   if (saved.isCut) return { ok: false, error: `the result was too large to save whole; ${TOO_LARGE}` }
-  const [stat, sessionId] = await Promise.all([
-    $.fs.stat(saved.path, { resolve: true }).catch(() => undefined),
-    $.session.id().catch(() => ''),
-  ])
+  const stat = await $.fs.stat(saved.path, { resolve: true }).catch(() => undefined)
   const real = stat?.realPath
   if (stat?.kind !== 'file' || real === undefined || !isSessionResult(real, sessionId)) {
     return { ok: false, error: `the result was saved to a file code-mode does not read; ${TOO_LARGE}` }
   }
   if (stat.size > MAX_SAVED_BYTES) return { ok: false, error: `the result is ${stat.size} bytes, more than code-mode loads; ${TOO_LARGE}` }
-  return { ok: true, value: savedValue(saved.format, String(await $.fs.read(real))) }
+  const loaded = savedReply(saved.format, String(await $.fs.read(real)))
+  return loaded.ok ? loaded : { ok: false, error: `${loaded.error}; ${TOO_LARGE}` }
 }
 
 // Server key -> the names of the tools it offers, for `identify` matching.
