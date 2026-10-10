@@ -4,9 +4,10 @@
 // stdin:  {"code": "...", "timeoutMs": 60000}
 // stdout: one line per message, each "\u0001cm " + JSON:
 //           {"t":"call","id":1,"tool":"mcp__x__y","args":{...}}
+//           {"t":"recall","id":2,"ref":4}
 //           {"t":"done","value":"<json>","logs":[...]}
 //           {"t":"error","message":"...","logs":[...]}
-// The host answers call <id> by writing <exchange dir>/r<id>.json:
+// The host answers call or recall <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
 //
 // The script runs in a vm context with no require, process, fetch or timers.
@@ -42,6 +43,10 @@ const post = (kind, a, b, c) => {
     if (kind === 'call') {
       const id = Number(a)
       emit({ t: 'call', id, tool: String(b), args: JSON.parse(String(c)) })
+      waiting.add(id)
+    } else if (kind === 'recall') {
+      const id = Number(a)
+      emit({ t: 'recall', id, ref: Number(b) })
       waiting.add(id)
     } else if (kind === 'done') {
       finish({ t: 'done', value: String(a), logs: JSON.parse(String(b)) })
@@ -91,7 +96,15 @@ const BOOTSTRAP = String.raw`
         : args => call('mcp__' + server + '__' + tool, args),
     }),
   })
+  // recall(n): the result of call #n from this session again, with no new call
+  const recall = ref => new Promise((resolve, reject) => {
+    if (!Number.isInteger(ref)) throw new TypeError('recall(n): n must be the number of a result')
+    const id = ++nextId
+    waiting.set(id, { resolve, reject })
+    post('recall', String(id), String(ref))
+  })
   globalThis.call = call
+  globalThis.recall = recall
   globalThis.tools = tools
 
   globalThis.__deliver = (id, text) => {

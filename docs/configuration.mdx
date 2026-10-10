@@ -20,5 +20,7 @@ The options are in `pluginConfigs["code-mode"].options` in your Claude Code sett
 | `blockDirectMcp` | `false` | If `true`, the plugin denies the MCP calls that the model makes directly, so the model must use `run_code`. Nested calls are not blocked. |
 | `approval` | `program` | `program`: your approval of `run_code` covers the nested calls that no rule decides. `per-call`: each nested call has its own check. See [Permissions](./permissions.mdx). |
 | `projectHints` | `false` | If `true`, the plugin also loads hints from `.claude/code-mode/hints/` in the project. Turn it on only for projects that you trust. See [Hints](./hints.mdx#safety-rules). |
+| `projection` | `true` | The result of a run shows the size and the shape of each MCP result. A later program can read a result again with `recall(n)`. If `false`, the result shows only the number of MCP calls. See [Output projection](./usage.mdx#output-projection). |
+| `metrics` | `false` | If `true`, the plugin writes one line with sizes and counts for each run to `~/.claude/code-mode/metrics/`. See [Output projection](./usage.mdx#output-projection). |
 
 A change to an option reloads the plugin.

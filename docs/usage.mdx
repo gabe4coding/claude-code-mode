@@ -71,12 +71,61 @@ The model gets one text with these parts:
 1. The return value as formatted JSON, at most 20,000 characters. A longer value is cut, with a note that tells
    the model to return less data.
 2. The console lines, if there are any, at most 4,000 characters.
-3. The number of MCP calls that the program made.
+3. One line for each MCP call that the program made, with its size and its shape. See
+   [Output projection](#output-projection).
 4. A request to propose a hint, if the run works after earlier tries failed. See
    [Hints](./hints.mdx#approve-hints-that-the-model-proposes).
 5. The hints for the servers whose calls failed, if there are any.
 
 If the program throws, the first part is the error and the lines of the program where it occurred.
+
+## Output projection
+
+Output projection is on by default. To turn it off, set the option `projection` to `false`.
+
+The program is the filter: the model writes it for the task, so it keeps the exact values. A filter can miss the
+data that the model needs, because the model wrote it before it saw the data. Output projection lets the model
+see what it removed, and fix the filter without a new MCP call.
+
+The last part of the result has one line for each MCP call:
+
+```text
+--- 2 MCP calls: 184k characters in, 2k out ---
+#4 mcp__slack__search 181k {messages: [312 × {ts, text, user, …+5}], next_cursor}
+#5 mcp__slack__user failed
+await recall(n) returns result #n again, with no new call.
+```
+
+1. `#4` is the number of the result in the session.
+2. `181k` is the size of the result, in characters of JSON.
+3. The shape shows the keys and the array lengths, not the values.
+
+The shape shows the keys of an object only if they are field names, such as `status` or `next_cursor`. If the keys
+are data, for example emails, ids or the names of services, the shape shows only the number of keys. Then the data
+stays out of the context, as the program intended.
+
+The plugin keeps the newest 50 results of the session in memory, up to 8 million characters. A larger result is not
+kept. The results stay until the session ends. A later program can read one again with `await recall(4)`. Then the
+line says how old the result is, for example `recalled: #4 (12 min old)`. If the data changes often, the model must
+call the tool again.
+
+A call to `recall` makes no MCP call and no permission check, because the call that made the result was approved.
+This is also true with `approval` set to `per-call`. A failed call is not kept. If the plugin cannot read the session
+id, it keeps the results only until the run ends.
+
+The line also tells the model these facts:
+
+- A call is the same as an earlier call, with the same tool and arguments.
+- The program returned nothing, but its calls returned data.
+- The return value was cut. Then the plugin keeps the whole value, and the note gives its number for `recall`.
+
+To measure the experiment, set the option `metrics` to `true`. The plugin then writes one line for each run to
+`~/.claude/code-mode/metrics/<session id>.jsonl`. A line has sizes and counts only: no data, no arguments and no
+program. To compare sessions with `projection` on and off, run this command:
+
+```bash
+node scripts/projection-report.mjs
+```
 
 ## Make the model use code-mode
 

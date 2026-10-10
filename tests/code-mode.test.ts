@@ -2,6 +2,8 @@ import { describe, expect, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import {
   MARK,
+  callKey,
+  charCount,
   extractDeclaration,
   hintNudge,
   isCallable,
@@ -10,6 +12,7 @@ import {
   rankTools,
   savedResultOf,
   savedReply,
+  shapeOf,
   splitToolName,
   takeMessages,
   toValue,
@@ -140,6 +143,35 @@ describe('protocol', () => {
     expect(hintNudge([], ['x'])).not.toContain('Calls to')
   })
 
+  test('shapeOf shows keys, array lengths and nesting, not values', () => {
+    const value = { messages: [{ ts: '1', text: 'secret', user: 'u' }, { ts: '2', reactions: [{ name: 'x' }] }], next: 'c', total: 2 }
+    expect(shapeOf(value)).toBe('{messages: [2 × {ts, text, user, reactions: [1]}], next, total}')
+    expect(shapeOf(value)).not.toContain('secret')
+    expect(shapeOf([])).toBe('[]')
+    expect(shapeOf('a\nb')).toBe('text, 2 lines')
+    expect(shapeOf(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i % 2 ? i : String(i)])))).toBe('{k0, k1, k2, k3, k4, k5, k6, k7, …+2}')
+  })
+
+  test('shapeOf hides keys that are data', () => {
+    expect(shapeOf({ 'alice@example.com': { n: 1 } })).toBe('{1 key}')
+    expect(shapeOf({ 'OPS-17': 1, 'OPS-42': 2 })).toBe('{2 keys}')
+    expect(shapeOf({ U0001: { name: 'a' }, U0002: { name: 'b' } })).toBe('{2 keys}')
+    expect(shapeOf({ checkout: 1140, search: 1500, payments: 1940 })).toBe('{3 keys}')
+    expect(shapeOf({ bySvc: { checkout: 1, search: 2, payments: 3 }, total: 6 })).toBe('{bySvc: {3 keys}, total}')
+    expect(shapeOf([{ id: '1', name: 'x', email: 'y' }, { id: '2', name: 'z', email: 'w' }])).toBe('[2 × {id, name, email}]')
+    expect(shapeOf({ id: '1', name: 'x', email: 'y' })).toBe('{3 keys}')
+    expect(shapeOf({ ok: true, total: 2, items: [] })).toBe('{ok, total, items: []}')
+  })
+
+  test('callKey ignores the order of keys', () => {
+    expect(callKey('mcp__x__y', { a: 1, b: { c: 2, d: 3 } })).toBe(callKey('mcp__x__y', { b: { d: 3, c: 2 }, a: 1 }))
+    expect(callKey('mcp__x__y', { a: 1 })).not.toBe(callKey('mcp__x__y', { a: 2 }))
+  })
+
+  test('charCount is short', () => {
+    expect([charCount(812), charCount(18_400), charCount(1_230_000)]).toEqual(['812', '18k', '1.2M'])
+  })
+
   test('rankTools scores name hits above description hits', () => {
     const tools = [
       { name: 'mcp__a__list_issues', description: 'Lists things' },
@@ -185,30 +217,40 @@ const fakeHost = (on: On) => {
     if (e.argv[0] === 'rm') removed.push(String(e.argv[2]))
     return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? `${XDIR}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  const written: Record<string, string> = {}
   on('fs.write', ($, e) => {
+    written[e.path] = e.text
     waiters.get(e.path)?.(e.text)
     return { value: undefined }
   })
   on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
     spawned.push([...e.argv])
     const { code } = JSON.parse(e.input ?? '{}') as { code: string }
-    const { calls } = JSON.parse(code) as { calls: { tool: string; args: Record<string, unknown> }[] }
+    const { calls, returns } = JSON.parse(code) as { calls: Step[]; returns?: unknown }
     const replies = calls.map((_, i) => new Promise<string>(resolve => waiters.set(`${XDIR}/r${i + 1}.json`, resolve)))
-    const lines = calls.map((c, i) => `${MARK}${JSON.stringify({ t: 'call', id: i + 1, tool: c.tool, args: c.args })}\n`)
+    const lines = calls.map((c, i) =>
+      `${MARK}${JSON.stringify('recall' in c ? { t: 'recall', id: i + 1, ref: c.recall } : { t: 'call', id: i + 1, tool: c.tool, args: c.args })}\n`)
     // Split the output mid-line to check the plugin's line buffering.
     const out = `log line from node\n${lines.join('')}`
     const cut = Math.floor(out.length / 2)
     yield { stream: 'stdout', text: out.slice(0, cut) }
     yield { stream: 'stdout', text: out.slice(cut) }
-    const value = (await Promise.all(replies)).map(t => JSON.parse(t))
+    const got = (await Promise.all(replies)).map(t => JSON.parse(t))
+    const value = returns === undefined ? got : returns
     yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
     return { value: { code: 0, signal: null } }
   })
-  return { removed, spawned, ran }
+  return { removed, spawned, ran, written }
 }
 
-const scenario = (...calls: { tool: string; args?: Record<string, unknown> }[]) =>
-  JSON.stringify({ calls: calls.map(c => ({ args: {}, ...c })) })
+type Step = { tool: string; args: Record<string, unknown> } | { recall: number }
+
+const scenario = (...calls: ({ tool: string; args?: Record<string, unknown> } | { recall: number })[]) =>
+  JSON.stringify({ calls: calls.map(c => ('recall' in c ? c : { args: {}, ...c })) })
+
+// A scenario whose program returns `returns` instead of the replies.
+const returning = (returns: unknown, ...calls: { tool: string; args?: Record<string, unknown> }[]) =>
+  JSON.stringify({ calls: calls.map(c => ({ args: {}, ...c })), returns })
 
 describe('run_code', () => {
   test('routes sandbox calls to MCP tools and returns the value', async ($, on) => {
@@ -361,6 +403,131 @@ describe('saved results', () => {
     const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__big' }) }))
     expect(text).not.toContain('secret')
     expect(text).toContain('code-mode does not read')
+  })
+})
+
+describe('output projection', () => {
+  // Results stay from one run to the next only in a session with an id; the
+  // test kit has none unless a test gives one.
+  const ON = { options: { projection: true } }
+
+  test('with projection off, the footer only counts the calls', { options: { projection: false } }, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) }))
+    expect(text).toContain('--- 1 MCP call ---')
+    expect(text).not.toContain('recall(')
+  })
+
+  test('the footer gives each result a number, its size and its shape', ON, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }) }))
+    expect(text).toContain('--- 2 MCP calls: ')
+    expect(text).toMatch(/#1 mcp__fake__echo \d+ \{echoed: \{n\}\}/)
+    expect(text).toContain('- mcp__fake__fail failed')
+    expect(text).toContain('await recall(n) returns result #n again')
+  })
+
+  test('recall(n) in a later run returns the kept result with no new call', ON, async ($, on) => {
+    on('session.id', () => ({ value: 'sess-p' }))
+    const server = fakeServer(on)
+    fakeHost(on)
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 7 } }) })
+    const before = server.paths.length
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ recall: 1 }, { recall: 9 }) }))
+    expect(server.paths.length).toBe(before)
+    expect(text).toContain('"n": 7')
+    expect(text).toContain('no result #9 in this session')
+    expect(text).toContain('--- 0 MCP calls, 2 recalls: ')
+    expect(text).toContain('recalled: #1 (0 s old)')
+  })
+
+  test('is on by default', async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) }))
+    expect(text).toContain('await recall(n) returns result #n again')
+  })
+
+  test('without a session id, a result is kept only for its own run', ON, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    on('session.id', () => ({ value: '' }))
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 7 } }) })
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ recall: 1 }) }))
+    expect(text).not.toContain('"n": 7')
+    expect(text).toContain('no result #1 in this session')
+  })
+
+  test('a result larger than the limit is not kept', ON, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: returning('x'.repeat(8_000_001)) }))
+    expect(text).toContain('more characters cut; return less data')
+    expect(text).not.toContain('recall(1)')
+  })
+
+  test('recall() is off when projection is off', { options: { projection: false } }, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ recall: 1 }) }))
+    expect(text).toContain('recall() is off')
+  })
+
+  test('a call equal to an earlier one names it', ON, async ($, on) => {
+    on('session.id', () => ({ value: 'sess-p' }))
+    fakeServer(on)
+    fakeHost(on)
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { a: 1, b: 2 } }) })
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { b: 2, a: 1 } }) }))
+    expect(text).toContain('#2 mcp__fake__echo')
+    expect(text).toContain('the same call as #1')
+  })
+
+  test('an empty result after calls that returned data says so', ON, async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const text = textOf(await $.tool.call({ tool: RUN, code: returning([], { tool: 'mcp__fake__echo', args: { n: 1 } }) }))
+    expect(text).toContain('The result is empty, but the calls returned data')
+  })
+
+  test('a cut result is kept whole and recall gives it back', ON, async ($, on) => {
+    on('session.id', () => ({ value: 'sess-p' }))
+    fakeServer(on)
+    fakeHost(on)
+    const big = Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))
+    const cut = textOf(await $.tool.call({ tool: RUN, code: returning(big, { tool: 'mcp__fake__echo' }) }))
+    expect(cut).toContain('more characters cut; await recall(2) returns the whole result')
+    const again = textOf(await $.tool.call({ tool: RUN, code: returning({ last: 'see replies' }, { tool: 'mcp__fake__echo', args: { x: 1 } }) }))
+    expect(again).toContain('#3 mcp__fake__echo')
+  })
+
+  test('metrics: one line per run with counts and sizes, no data', { options: { projection: true, metrics: true } }, async ($, on) => {
+    fakeServer(on)
+    const files = fakeHost(on).written
+    on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+    on('session.id', () => ({ value: 'sess-m' }))
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }) })
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }, { recall: 1 }) })
+    const text = files['/home/u/.claude/code-mode/metrics/sess-m.jsonl']!
+    const lines = text.trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.length).toBe(2)
+    expect(lines[1]).toMatchObject({ projection: true, ok: true, calls: 1, repeats: 1, recalls: 1, recallMisses: 0, cut: false })
+    expect(text).not.toContain('s3')
+  })
+
+  test('metrics count repeats with projection off too', { options: { metrics: true, projection: false } }, async ($, on) => {
+    fakeServer(on)
+    const files = fakeHost(on).written
+    on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+    on('session.id', () => ({ value: 'sess-o' }))
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
+    const lines = files['/home/u/.claude/code-mode/metrics/sess-o.jsonl']!.trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.map(l => l.repeats)).toEqual([0, 1])
+    expect(lines[1].projection).toBe(false)
   })
 })
 

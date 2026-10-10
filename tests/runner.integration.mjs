@@ -28,7 +28,9 @@ const LAUNCH = [
 const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
 
-const echo = m => (m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } })
+const echo = m =>
+  m.t === 'recall' ? (m.ref === 4 ? { ok: true, value: { recalled: m.ref } } : { ok: false, error: `no result #${m.ref}` })
+  : m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
 const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env } = {}) => {
@@ -49,7 +51,7 @@ const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = 
         buffer = buffer.slice(i + 1)
         if (!line.startsWith(MARK)) continue
         const m = JSON.parse(line.slice(MARK.length))
-        if (m.t !== 'call') outcome = m
+        if (m.t !== 'call' && m.t !== 'recall') outcome = m
         else {
           calls++
           setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(answer(m))), 10)
@@ -132,6 +134,15 @@ const cases = {
     assert.equal(r.calls, 2)
   },
 
+  'recall reads a kept result through the same bridge': async () => {
+    const r = await run(`
+      const kept = await recall(4)
+      const gone = await recall(5).catch(e => e.message)
+      const bad = await Promise.resolve().then(() => recall("4")).catch(e => e.name)
+      return [kept, gone, bad]`)
+    assert.deepEqual(value(r), [{ recalled: 4 }, 'no result #5', 'TypeError'])
+  },
+
   'failed call throws': async () =>
     assert.equal(value(await run('try { await call("mcp__s__fail") } catch (e) { return e.message }')), 'boom'),
 
@@ -143,6 +154,7 @@ const cases = {
       'return globalThis.constructor.constructor("return process")().pid',
       'return this.constructor.constructor("return process")().pid',
       'return call.constructor("return 1")()',
+      'return recall.constructor("return 1")()',
       'try { await call("mcp__s__fail") } catch (e) { return e.constructor.constructor("return process")().pid }',
       'return (await call("mcp__s__t")).constructor.constructor("return process")().pid',
     ]) assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)
