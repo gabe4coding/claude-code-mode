@@ -40,10 +40,14 @@ node tests/docs.check.mjs
 - `tests/runner.integration.mjs` tests the real sandbox with Node.
 - `tests/docs.check.mjs` checks the rules for the docs.
 
-CI (`.github/workflows/test.yml`) runs the last two checks on Linux for each push to `main` and each pull request.
-For each pull request, CI also runs `tests/version.check.mjs`. This check fails if the plugin changed and its
-version did not increase. CI cannot run `claude plugin test .`. CI has no macOS job, so run the checks on a Mac for a change to the macOS
-network block.
+CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` and each pull request:
+
+- It runs the sandbox test on Linux and on macOS. Only macOS has `sandbox-exec`, so only the macOS job tests the
+  network block.
+- It runs `claude plugin test .` with a fixed Claude Code version. To use a newer version, run the tests with it on
+  your machine first, then change the version in the workflow.
+- For each pull request, it runs `tests/version.check.mjs`. This check fails if the plugin changed and its version
+  did not increase.
 
 To develop with the engine types in your editor, load the plugin once with `claude --plugin-dir .`. Claude Code then
 writes `.claude-plugin/types/`, which `tsconfig.json` uses. Git does not track this folder, so make it again in each
@@ -55,6 +59,9 @@ npx -p typescript tsc -p tsconfig.json
 
 `tsconfig.json` does not load the types of your connected MCP tools. The plugin does not use them, and many MCP
 tools make the type check fail.
+
+CI does not run the type check. Claude Code writes the types only in a session that is logged in, and CI has no
+login.
 
 ## Release
 

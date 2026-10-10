@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,10 +29,12 @@ const MARK = '\u0001cm '
 
 const echo = m => (m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } })
 
-const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo } = {}) => {
+// `script` replaces the runner, to test what the launch allows the process.
+const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env } = {}) => {
   const xdir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-it-'))
   return new Promise(resolve => {
-    const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, RUNNER, xdir])
+    const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir], { env })
+    child.stdin.on('error', () => {}) // a probe exits without reading stdin
     child.stdin.end(JSON.stringify({ code, timeoutMs }))
     let buffer = ''
     let calls = 0
@@ -57,6 +60,47 @@ const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo } = {}) =>
     })
   })
 }
+
+// Runs in place of the runner, with the same launch: it tries what a program
+// that got out of the vm context could do, and returns each error code.
+const PROBE = String.raw`
+import fs from 'node:fs'
+import net from 'node:net'
+import cp from 'node:child_process'
+import { Worker } from 'node:worker_threads'
+const xdir = process.argv[2]
+const attempt = async f => { try { await f(); return 'allowed' } catch (e) { return e.code ?? e.message } }
+const result = {
+  write: await attempt(() => fs.writeFileSync(xdir + '/probe.txt', 'x')),
+  read: await attempt(() => fs.readFileSync('/etc/hosts')),
+  spawn: await attempt(() => cp.execFileSync('/bin/echo', ['x'])),
+  worker: await attempt(() => new Worker('1', { eval: true }).terminate()),
+  connect: await attempt(() => new Promise((resolve, reject) => {
+    const socket = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1', () => { socket.end(); resolve() })
+    socket.on('error', reject)
+  })),
+}
+process.stdout.write('\u0001cm ' + JSON.stringify({ t: 'done', value: JSON.stringify(result), logs: [] }) + '\n')
+`
+
+const probe = async () => {
+  // The real path: on macOS the temp dir is under a link, and --allow-fs-read takes real paths.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-probe-')))
+  const server = net.createServer(socket => socket.end())
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    fs.writeFileSync(path.join(dir, 'probe.mjs'), PROBE)
+    const r = await run('', { script: path.join(dir, 'probe.mjs'), env: { ...process.env, PROBE_PORT: String(server.address().port) } })
+    assert.equal(r.outcome?.t, 'done', `the probe did not finish: exit ${r.exit}`)
+    return JSON.parse(r.outcome.value)
+  } finally {
+    server.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// The network block exists only where sandbox-exec does (macOS).
+const HAS_SANDBOX_EXEC = fs.existsSync('/usr/bin/sandbox-exec')
 
 const value = r => (r.outcome?.t === 'done' ? JSON.parse(r.outcome.value) : undefined)
 const failure = r => (r.outcome?.t === 'error' ? r.outcome.message : undefined)
@@ -110,7 +154,21 @@ const cases = {
   },
 
   'syntax error': async () => assert.match(failure(await run('return )(')), /SyntaxError/),
+
+  'the process cannot write, read other files, or start processes': async () => {
+    const r = await probe()
+    assert.deepEqual(
+      { write: r.write, read: r.read, spawn: r.spawn, worker: r.worker },
+      { write: 'ERR_ACCESS_DENIED', read: 'ERR_ACCESS_DENIED', spawn: 'ERR_ACCESS_DENIED', worker: 'ERR_ACCESS_DENIED' },
+    )
+  },
+
+  ...(HAS_SANDBOX_EXEC
+    ? { 'the process has no network (sandbox-exec)': async () => assert.equal((await probe()).connect, 'EPERM') }
+    : {}),
 }
+
+if (!HAS_SANDBOX_EXEC) console.log('skip  the process has no network: no sandbox-exec here')
 
 let failed = 0
 for (const [name, fn] of Object.entries(cases)) {
