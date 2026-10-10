@@ -1,6 +1,6 @@
 {
   "name": "code-mode",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
   "types": "./types/index.d.ts",
   "author": {
@@ -40,6 +40,20 @@
       "type": "boolean",
       "title": "Load project hints",
       "description": "Also load usage hints from .claude/code-mode/hints/ in the project. Off by default: anyone who can commit to the project could use them to steer the model.",
+      "default": false,
+      "required": false
+    },
+    "projection": {
+      "type": "boolean",
+      "title": "Output projection",
+      "description": "After each run, show the size and shape of each MCP result and keep the results in memory, so a later program can read one again with recall(n) and make no new call.",
+      "default": true,
+      "required": false
+    },
+    "metrics": {
+      "type": "boolean",
+      "title": "Record run metrics",
+      "description": "Write one line per run_code run to ~/.claude/code-mode/metrics/: sizes and counts only, no data. For the output projection experiment.",
       "default": false,
       "required": false
     }
