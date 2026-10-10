@@ -18,6 +18,8 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
 | `hints/` | The bundled hints. |
 | `tests/` | The tests of the hooks, the sandbox and the docs. |
+| `bench/` | The output projection bench: a fake MCP server, its data with traps, and the runner. |
+| `scripts/` | `projection-report.mjs`: compares your runs with output projection on and off, from the metrics files. |
 | `docs/` | The user docs. |
 
 ## Tests
@@ -64,6 +66,22 @@ tools make the type check fail.
 
 CI does not run the type check. Claude Code writes the types only in a session that is logged in, and CI has no
 login.
+
+## Output projection bench
+
+The bench measures what output projection changes. It runs six tasks in headless Claude Code against a fake MCP
+server, with `projection` off and on. Each task has traps that make a first filter miss: pages, nested fields, bots,
+text results and results larger than 20,000 characters.
+
+To run 3 runs of each task in each arm, run this command:
+
+```bash
+node bench/run.mjs
+```
+
+Each run costs API usage, about $0.11 with Opus. Use `--reps`, `--tasks`, `--model` and `--parallel` to change the
+size. A run loads only this plugin and the fake server, with direct MCP calls blocked. The runner prints a table and
+writes one row per run to `results.jsonl`.
 
 ## Release
 
