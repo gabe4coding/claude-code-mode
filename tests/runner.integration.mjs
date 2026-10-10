@@ -1,5 +1,5 @@
 // Integration test for the real sandbox, under Node (the plugin test kit has
-// no processes). Starts runtime/runner.mjs the way hooks/register.ts does and
+// no processes). Starts runtime/runner.mjs the way hooks/register.tsx does and
 // answers its calls by writing reply files.
 //
 //   node tests/runner.integration.mjs
@@ -14,7 +14,8 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
 
-// Keep in step with LAUNCH and NO_NETWORK in hooks/register.ts.
+// Copies of LAUNCH and NO_NETWORK in hooks/register.tsx and of MARK in the
+// runner and hooks/protocol.ts. The first case fails when a copy differs.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
@@ -61,6 +62,17 @@ const value = r => (r.outcome?.t === 'done' ? JSON.parse(r.outcome.value) : unde
 const failure = r => (r.outcome?.t === 'error' ? r.outcome.message : undefined)
 
 const cases = {
+  'the copies match the plugin': () => {
+    const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
+    const src = read('hooks/register.tsx')
+    const block = src.match(/const LAUNCH = \[\n([\s\S]*?)\n\]\.join\('\\n'\)/)
+    assert.ok(block, 'LAUNCH not found in hooks/register.tsx')
+    assert.deepEqual(block[1].split('\n').map(l => l.trim().replace(/^'(.*)',?$/, '$1')), LAUNCH.split('\n'), 'LAUNCH differs')
+    assert.ok(src.includes(`const NO_NETWORK = '${NO_NETWORK}'`), 'NO_NETWORK differs')
+    assert.equal(MARK, '\u0001cm ')
+    for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts']) assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
+  },
+
   'returns a value': async () => assert.equal(value(await run('return 1 + 1')), 2),
 
   'parallel calls and console': async () => {
