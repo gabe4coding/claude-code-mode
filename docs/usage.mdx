@@ -25,8 +25,9 @@ into the context.
 | `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types. It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
 | `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
 | `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
+| `mcp__code-mode__remove_hint` | Hides a wrong hint in the current session and proposes to remove it from its hint file. See [Remove a hint that is wrong](./hints.mdx#remove-a-hint-that-is-wrong). |
 
-`search_tools` and `run_code` load in every session. `add_hint` loads only when the model needs it.
+`search_tools` and `run_code` load in every session. `add_hint` and `remove_hint` load only when the model needs them.
 
 ## Programs
 

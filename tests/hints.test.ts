@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { activePathOf, appendHint, hintApplies, hintFileName, isUnder, parseHint, pendingFileName, pendingPathOf, resolvePath, reviewLines, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { activePathOf, appendHint, findItem, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removeFromFile, resolvePath, reviewLines, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -9,9 +9,10 @@ const USER_DIR = `${HOME}/.claude/code-mode/hints`
 // paths to text; `written` records each write the plugin makes.
 const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string, string> = {}, onWrite?: (path: string, text: string) => void, withRm = true) => {
   const written: Record<string, string> = {}
+  const checked: string[] = []
   const all = () => ({ ...files, ...written })
   on('env.get', () => ({ value: HOME }))
-  on('fs.exists', ($, e) => ({ value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
+  on('fs.exists', ($, e) => (checked.push(e.path), { value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
   on('fs.list', ($, e) => {
     const prefix = `${e.path}/`
     const names = new Set<string>()
@@ -50,7 +51,7 @@ const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string
     }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { written, removed }
+  return { written, removed, checked }
 }
 
 const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
@@ -407,7 +408,7 @@ describe('the band above the prompt', () => {
       mock.store(on)
       fakeHome(on, { [PENDING_A]: A, [PENDING_B]: B })
       const ui = await $.ui.mount(band(surface))
-      expect(JSON.stringify(await ui.drawn())).toContain('2 proposed hints for code mode')
+      expect(JSON.stringify(await ui.drawn())).toContain('2 hint proposals for code mode')
       await ui.press({ key: 'review' })
       const drawn = JSON.stringify(await ui.drawn())
       expect(drawn).toContain('Things')
@@ -426,9 +427,143 @@ describe('the band above the prompt', () => {
       await ui.press({ key: 'approve-0' })
       expect(fs.written[`${USER_DIR}/things.md`]).toBe(A)
       expect(fs.removed).toEqual([PENDING_A])
-      expect(JSON.stringify(await ui.drawn())).toContain('1 proposed hint for code mode')
+      expect(JSON.stringify(await ui.drawn())).toContain('1 hint proposal for code mode')
     })
   }
+})
+
+describe('remove_hint', () => {
+  const MAIL = 'mcp__aaaa-1111__send_message'
+  const ID = 'toolu_01REMove234567'
+  const FILE = '---\nservers: [Mail]\n---\n- Mail returns JSON.\n- Pass ids as strings.\n'
+  const search = async ($: Engine) => textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' }))
+  const remove = ($: Engine, path: string, text: string) =>
+    $.tool.call({ tool: 'mcp__code-mode__remove_hint', tool_use_id: ID, path, text, why: 'It returns TSV now.' } as never)
+  const band = {
+    plugin: 'code-mode', surface: 'terminal' as const, component: 'AbovePrompt' as const,
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 90 } as never,
+  }
+  // The bundled hint folder: the first folder the plugin looks for hints in.
+  const bundledDir = async ($: Engine, checked: readonly string[]): Promise<string> => {
+    await search($)
+    return checked.find(p => p.endsWith('/hints') && p !== USER_DIR)!
+  }
+
+  test('hintItems, findItem and removeFromFile work on one hint at a time', () => {
+    const body = 'Intro line.\n- First hint\n  goes on here.\n- Second hint.'
+    expect(hintItems(body)).toEqual(['Intro line.', '- First hint\n  goes on here.', '- Second hint.'])
+    expect(findItem(body, 'First hint goes on here.').item).toBe('- First hint\n  goes on here.')
+    expect(findItem(body, '- Second hint.').item).toBe('- Second hint.')
+    expect(findItem(body, 'hint').error).toContain('text matches no hint in the file. Its hints:\n- Intro line.')
+    expect(findItem('- Same start one.\n- Same start two.', 'Same start').error).toContain('more than one')
+    expect(removeFromFile(FILE, 'Mail returns JSON.')).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
+    expect(removeFromFile('---\nservers: [Mail]\n---\n- Only one.\n', 'Only one.')).toBe(undefined)
+  })
+
+  test('a removal proposal names its file and parses back', () => {
+    const hint = parseHint(FILE, '/plugin/hints/mail.md', 'bundled')
+    expect(hintRef(hint)).toBe('bundled:mail.md')
+    expect(hintRef({ ...hint, scope: 'user' })).toBe('/plugin/hints/mail.md')
+    const proposal = parseHint(removalProposal(hint, '- Mail returns JSON.', { why: 'W.', flags: [] }), '/p.md', 'user')
+    expect(proposal.remove).toBe('bundled:mail.md')
+    expect(proposal.servers).toEqual(['Mail'])
+    expect(proposal.body).toBe('- Mail returns JSON.')
+    expect(reviewLines(proposal, { file: 'mail.md', hints: 2, isRemoval: true }).at(-1)).toEqual({
+      text: 'Removes this hint from mail.md, which has 2 hints. It applies in all projects.', isDim: true,
+    })
+  })
+
+  test('hides the hint in this session at once and proposes the removal', async ($, on) => {
+    const path = `${USER_DIR}/mail-hide.md`
+    const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const r = textOf(await remove($, path, 'Mail returns JSON.'))
+    expect(r).toContain('Hid the hint in this session')
+    expect(r).toContain(`pending: ${USER_DIR}/pending/mail-hide.remove--`)
+    const [pending, text] = Object.entries(fs.written)[0]!
+    expect(parseHint(text, pending, 'user').remove).toBe(path)
+    expect(fs.written[path]).toBe(undefined)
+    const shown = await search($)
+    expect(shown).not.toContain('Mail returns JSON.')
+    expect(shown).toContain('Pass ids as strings.')
+  })
+
+  test('says which hints a file has when the text matches none, and refuses a path that is not a hint file', async ($, on) => {
+    const path = `${USER_DIR}/mail-miss.md`
+    const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    expect(textOf(await remove($, path, 'Mail returns XML.'))).toContain('Its hints:\n- Mail returns JSON.\n- Pass ids as strings.')
+    expect(textOf(await remove($, '/etc/passwd', 'root'))).toContain('is not a hint file')
+    expect(Object.keys(fs.written)).toEqual([])
+  })
+
+  test('Approve takes the hint out of its file; the last hint removes the file', async ($, on) => {
+    mock.store(on)
+    const path = `${USER_DIR}/mail-approve.md`
+    const fs = fakeHome(on, { [path]: FILE, [`${USER_DIR}/one.md`]: '---\nservers: [Mail]\n---\n- Only one.\n' }, { [MAIL]: 'claude.ai Mail' })
+    await remove($, path, 'Mail returns JSON.')
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('"Remove · ","Mail"')
+    expect(drawn).toContain('Removes this hint from mail-approve.md, which has 2 hints.')
+    await ui.press({ key: 'approve-0' })
+    expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
+
+    await $.tool.call({ tool: 'mcp__code-mode__remove_hint', tool_use_id: 'toolu_01ONEhint23456', path: `${USER_DIR}/one.md`, text: 'Only one.', why: 'W.' } as never)
+    await ui.press({ key: 'approve-0' })
+    expect(fs.removed).toContain(`${USER_DIR}/one.md`)
+  })
+
+  test('Approve of a bundled hint records it in removed.json, which hides it in every session', async ($, on) => {
+    mock.store(on)
+    const files: Record<string, string> = {}
+    const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
+    const path = `${await bundledDir($, fs.checked)}/mail-bundled.md`
+    files[path] = FILE
+    await remove($, path, 'Pass ids as strings.')
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    expect(JSON.stringify(await ui.drawn())).toContain('Removes this hint from the bundled mail-bundled.md')
+    await ui.press({ key: 'approve-0' })
+    expect(JSON.parse(fs.written[`${USER_DIR}/removed.json`]!)).toEqual([{ file: 'mail-bundled.md', hint: 'Pass ids as strings.' }])
+    expect(fs.written[path]).toBe(undefined)
+  })
+
+  test('removed.json hides a bundled hint', async ($, on) => {
+    const files: Record<string, string> = { [`${USER_DIR}/removed.json`]: JSON.stringify([{ file: 'mail-gone.md', hint: 'Mail returns JSON.' }]) }
+    const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
+    files[`${await bundledDir($, fs.checked)}/mail-gone.md`] = FILE
+    const shown = await search($)
+    expect(shown).not.toContain('Mail returns JSON.')
+    expect(shown).toContain('Pass ids as strings.')
+  })
+
+  test('the remove_hint row shows the removal, and Approve says the hint is removed', async ($, on) => {
+    mock.store(on)
+    const path = `${USER_DIR}/mail-row.md`
+    const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const output = textOf(await remove($, path, 'Mail returns JSON.'))
+    const ui = await $.ui.mount({
+      plugin: 'code-mode', surface: 'terminal', component: 'ToolResult', requestId: ID,
+      props: { tool_use_id: ID, tool: 'mcp__code-mode__remove_hint', output, isErrored: false },
+    })
+    expect(JSON.stringify(await ui.drawn())).toContain('"Proposed removal of a usage hint"," (","user"')
+    await ui.press({ key: 'approve' })
+    expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
+    expect(JSON.stringify(await ui.drawn())).toContain('✓ Hint removed')
+  })
+
+  test('Discard keeps the file and shows the hint again', async ($, on) => {
+    mock.store(on)
+    const path = `${USER_DIR}/mail-keep.md`
+    const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    await remove($, path, 'Mail returns JSON.')
+    expect(await search($)).not.toContain('Mail returns JSON.')
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    await ui.press({ key: 'discard-0' })
+    expect(fs.written[path]).toBe(undefined)
+    expect(await search($)).toContain('Mail returns JSON.')
+  })
 })
 
 describe('the hint-file guard', () => {
