@@ -93,6 +93,13 @@ async function hintDirs($: EngineInterface, projectHints: boolean): Promise<{ sc
   return dirs
 }
 
+// The scope of a proposal: a pending file is in the user or the project hint
+// folder, and a project is often under HOME, so test the user folder itself.
+async function scopeOf($: EngineInterface, path: string): Promise<HintScope> {
+  const userDir = (await hintDirs($, false)).find(d => d.scope === 'user')?.dir
+  return userDir !== undefined && isUnder(path, userDir) ? 'user' : 'project'
+}
+
 async function readHintFiles($: EngineInterface, dir: string, scope: HintScope): Promise<Hint[]> {
   if (!(await $.fs.exists(dir).catch(() => false))) return []
   const entries = await $.fs.list(dir).catch(() => [])
@@ -546,7 +553,7 @@ export const register: Register = (on, options) => {
     if (decision?.action === 'discarded') return <Text dimColor>{decision.isRemoval ? 'Removal discarded. The hint stays.' : 'Hint discarded.'}</Text>
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
-    const scope = path.includes('/.claude/code-mode/hints/') && !path.startsWith(String(await $.env.get('HOME').catch(() => ''))) ? 'project' : 'user'
+    const scope = await scopeOf($, path)
     const hint = parseHint(String(await $.fs.read(path)), path, scope)
     const decide = (action: 'approved' | 'discarded') => decidePending($, path, action, projectHints)
     const lines = await cardLines($, hint)
