@@ -13,6 +13,7 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | --- | --- |
 | `.claude-plugin/` | The plugin manifest (`plugin.json`, with the options) and the marketplace manifest. |
 | `hooks/register.tsx` | The tools, the permission path of nested calls, the band, the `add_hint` row and the hint-file guard. |
+| `hooks/session-start.sh` | The SessionStart hook: the text that tells the model to use `run_code`. |
 | `hooks/protocol.ts` | Pure helpers: the protocol of the sandbox, the result text, the tool search, the tool descriptions. |
 | `hooks/hints.ts` | Pure helpers for hint files: read, match, format and write. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |

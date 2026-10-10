@@ -55,7 +55,6 @@ import {
   rankTools,
   savedResultOf,
   savedReply,
-  sessionContext,
   shapeOf,
   splitToolName,
   takeMessages,
@@ -444,12 +443,8 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The model reads this at the start of the session and after /clear or a
-  // compaction: MCP calls go through run_code, direct calls only as a fallback.
-  on('classic.SessionStart', async ($, e, next) => {
-    const r = await next(e)
-    return { ...r, additionalContext: [...(r.additionalContext ?? []), sessionContext(opts.blockDirectMcp === true)] }
-  }).catch(($, e, next) => next(e))
+  // The SessionStart context is hooks/session-start.sh, a command hook:
+  // Claude Code skips a hooks module's classic.SessionStart.
 
   on('session.start', async ($, e, next) => {
     await $.tool.register({
