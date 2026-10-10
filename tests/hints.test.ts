@@ -334,6 +334,21 @@ describe('add_hint and its approval row', () => {
     })
   }
 
+  test('the row of a project proposal says project when the project is under HOME', { options: { projectHints: true } }, async ($, on) => {
+    mock.store(on)
+    const repo = `${HOME}/repo`
+    on('session.root', () => ({ value: repo }))
+    fakeHome(on, {}, { [TOOL]: 'claude.ai Things' })
+    classifyAs(on, 'argument')
+    const r = await $.tool.call({ tool: 'mcp__code-mode__add_hint', server: 'bbbb-2222', text: 'Pass ids as strings.', why: WHY, scope: 'project' })
+    const output = textOf(r)
+    expect(output).toContain(`pending: ${repo}/.claude/code-mode/hints/pending/`)
+    const ui = await $.ui.mount({ ...row('terminal'), props: { ...row('terminal').props, output } })
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('"Proposed usage hint"," (","project"')
+    expect(drawn).toContain('It applies in this project only.')
+  })
+
   test('Approve drops the review from a new hint file', async ($, on) => {
     mock.store(on)
     const fs = fakeHome(on, { [PENDING]: REVIEWED })
