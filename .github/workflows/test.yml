@@ -7,6 +7,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, for hooks-latest. A run by hand also runs it.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,6 +50,24 @@ jobs:
         with:
           node-version: "24"
       - run: npm install --global @anthropic-ai/claude-code@2.1.296
+      - run: claude plugin test .
+
+  hooks-latest:
+    # The hooks with the newest Claude Code: users get each release at once,
+    # and the hooks job tests a fixed one. Not on pull requests, so a release
+    # cannot make a change that is not related to it fail. When it fails, fix
+    # the plugin and raise the version in the hooks job.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: hooks (newest Claude Code)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: npm install --global @anthropic-ai/claude-code@latest
+      - run: claude --version
       - run: claude plugin test .
 
   version:

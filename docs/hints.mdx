@@ -47,7 +47,10 @@ Always use `identify`. In the desktop app, a claude.ai connector has a UUID name
 `mcp__fcef2cd1-…__getJiraIssue`. `servers` cannot find it, but a server with the tool `getJiraIssue` is Jira in every
 session. Use a tool name that only this server has.
 
-A hint file with no `servers`, `identify` or `tools` applies to no server.
+A hint file with no `servers`, `identify` or `tools` applies to no server. The debug log (`claude --debug`) names
+each of these files.
+
+A list can also be JSON, for example `servers: ["Data, Dog"]`. Use JSON when a name contains a comma.
 
 ## Where hints come from
 
