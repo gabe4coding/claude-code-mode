@@ -1,3 +1,12 @@
 {
-  "extends": "./.claude-plugin/types/tsconfig.json"
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    // No claude-code-mcp: it types the MCP tools connected on the machine that
+    // wrote it, and hundreds of them make the checks too deep. The plugin
+    // calls MCP tools by a name it gets at run time.
+    "types": ["claude-code", "claude-code-tools"],
+    // Also here: without .claude-plugin/types/ the base is missing, and tsc
+    // would write .js files beside the sources.
+    "noEmit": true
+  }
 }
