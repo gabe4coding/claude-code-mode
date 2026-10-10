@@ -18,12 +18,14 @@ enforces; the others rely on discipline.
   refuse them, because they change what auto mode approves.
 
 ## Tests and commits
-- Before every commit, run all three checks. `[test: CI runs the last two, not the first]`
+- Before every commit, run all three checks. `[test: CI runs all three]`
   - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
-- CI (`.github/workflows/test.yml`) runs on Linux, where `sandbox-exec` does not exist. A change to the macOS
-  network block needs a run on a Mac.
+- CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS. Only macOS has `sandbox-exec`,
+  so only the macOS job tests the network block. CI pins the Claude Code version for `claude plugin test .`.
+- The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
+  Run it after a change to types or to the engine API that the hooks use.
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
   public. Use `fake`, `example.atlassian.net` and similar.
 

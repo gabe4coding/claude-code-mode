@@ -658,7 +658,10 @@ export const register: Register = (on, options) => {
     const code = String((e as unknown as { code?: unknown }).code ?? '')
     if (code.trim() === '') return { result: 'Error: code is empty.' }
 
-    const runner = `${$.plugin.root}/runtime/runner.mjs`
+    // The real path: Node's --permission stops a main script whose path goes
+    // through a link (a linked ~/.claude or plugin folder) before it starts.
+    const bundled = `${$.plugin.root}/runtime/runner.mjs`
+    const runner = await $.fs.stat(bundled, { resolve: true }).then(s => s.realPath ?? bundled, () => bundled)
     const made = await $.process.run(['mktemp', '-d', '-t', 'code-mode'])
     const xdir = made.stdout.trim()
     if (made.exitCode !== 0 || xdir === '') return { result: `Error: could not make a temp dir: ${made.stderr}` }
