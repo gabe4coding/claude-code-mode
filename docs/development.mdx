@@ -46,6 +46,8 @@ CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` 
   network block.
 - It runs `claude plugin test .` with a fixed Claude Code version. To use a newer version, run the tests with it on
   your machine first, then change the version in the workflow.
+- Each Monday, it also runs `claude plugin test .` with the newest Claude Code release. If this job fails, a new
+  release changed something that the plugin uses. Fix the plugin, then increase the fixed version.
 - For each pull request, it runs `tests/version.check.mjs`. This check fails if the plugin changed and its version
   did not increase.
 
