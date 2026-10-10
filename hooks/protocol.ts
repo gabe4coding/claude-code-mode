@@ -4,9 +4,10 @@
 export const MARK = '\u0001cm '
 
 export type RunnerCall = { t: 'call'; id: number; tool: string; args: Record<string, unknown> }
+export type RunnerRecall = { t: 'recall'; id: number; ref: number }
 export type RunnerDone = { t: 'done'; value: string; logs: string[] }
 export type RunnerError = { t: 'error'; message: string; logs: string[] }
-export type RunnerMessage = RunnerCall | RunnerDone | RunnerError
+export type RunnerMessage = RunnerCall | RunnerRecall | RunnerDone | RunnerError
 
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
@@ -143,8 +144,11 @@ export const savedReply = (format: SavedResult['format'], fileText: string): Rep
   return mcpReply({ content: parsed, isError: false })
 }
 
-const clip = (text: string, max: number): string =>
-  text.length <= max ? text : `${text.slice(0, max)}\n… [${text.length - max} more characters cut; return less data]`
+const clip = (text: string, max: number, whole?: number): string => {
+  if (text.length <= max) return text
+  const fix = whole === undefined ? 'return less data' : `await recall(${whole}) returns the whole result: return a part of it`
+  return `${text.slice(0, max)}\n… [${text.length - max} more characters cut; ${fix}]`
+}
 
 const pretty = (json: string): string => {
   try {
@@ -160,21 +164,172 @@ export const formatOutcome = (
   calls: number,
   stderr: string,
   maxChars: number,
+  projection?: Projection,
 ): string => {
   const parts: string[] = []
   if (outcome === undefined) {
     parts.push('Error: the sandbox exited without a result.')
     if (stderr.trim() !== '') parts.push(`stderr:\n${clip(stderr.trim(), 2000)}`)
   } else if (outcome.t === 'done') {
-    parts.push(clip(pretty(outcome.value), maxChars))
+    parts.push(clip(pretty(outcome.value), maxChars, projection?.wholeRef))
   } else {
     const message = /^\w*Error: /.test(outcome.message) ? outcome.message : `Error: ${outcome.message}`
     parts.push(clip(message, 4000))
   }
   const logs = outcome?.logs ?? []
   if (logs.length > 0) parts.push(`--- console (${logs.length} lines) ---\n${clip(logs.join('\n'), 4000)}`)
-  parts.push(`--- ${calls} MCP call${calls === 1 ? '' : 's'} ---`)
+  parts.push(projection === undefined ? `--- ${calls} MCP call${calls === 1 ? '' : 's'} ---` : projectionFooter(projection, outcome))
   return parts.join('\n\n')
+}
+
+/**
+ * One nested call as the run's footer shows it: its number in the session
+ * (`ref`, absent when it failed or was not kept), its size and shape, and the
+ * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none).
+ */
+export type CallRecord = { ref?: number; tool: string; ok: boolean; chars: number; shape?: string; repeatOf?: number }
+
+/**
+ * What a run with output projection reports: its calls, the results it read
+ * again with recall() and how old each one was, and the number of a cut result.
+ */
+export type Projection = { calls: CallRecord[]; recalls: number; recalled: { ref: number; ageMs: number }[]; wholeRef?: number }
+
+const MAX_SHAPE_CHARS = 200
+const MAX_KEYS = 8
+const SAMPLE = 20
+
+const isEmpty = (v: unknown): boolean =>
+  v === null || v === undefined || v === '' ||
+  (Array.isArray(v) ? v.every(isEmpty) : typeof v === 'object' && Object.values(v as object).every(isEmpty))
+
+// The keys of many objects in first-seen order, each with its first value that is not empty.
+const mergeObjects = (items: Record<string, unknown>[]): Record<string, unknown> => {
+  const merged: Record<string, unknown> = {}
+  for (const item of items) for (const [k, v] of Object.entries(item)) if (!(k in merged) || isEmpty(merged[k])) merged[k] = v
+  return merged
+}
+
+// A key that reads as a field name: `status`, `next_cursor`, `realName`. Ids,
+// emails, ticket keys and other data used as keys do not.
+const isFieldName = (key: string): boolean => /^[A-Za-z_$][A-Za-z0-9_$]{0,39}$/.test(key) && (key.match(/\d/g)?.length ?? 0) <= 2
+
+const kindOf = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v === 'object' ? `{${Object.keys(v as object).sort().join(',')}}` : typeof v
+
+// A map from data to values, such as error counts by service or users by
+// name: three keys or more whose values are all of one kind. A record's
+// fields differ in kind.
+const isMap = (o: Record<string, unknown>): boolean => {
+  const values = Object.values(o)
+  return values.length >= 3 && values.every(v => kindOf(v) === kindOf(values[0]))
+}
+
+// The keys of an object are shown only when they are field names: keys that
+// are data would put the data into the context, which the program kept out.
+// The merged items of an array are records (their keys repeat), so only the
+// spelling of their keys counts.
+const shapeAt = (v: unknown, depth: number, isRecord = false): string => {
+  if (v === null || v === undefined) return 'null'
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]'
+    if (depth >= 2) return `[${v.length}]`
+    const sample = v.slice(0, SAMPLE)
+    const objects = sample.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x))
+    // The items are at the array's own depth: a list of records shows their keys.
+    const inner = objects.length === sample.length ? shapeAt(mergeObjects(objects), depth, objects.length > 1) : shapeAt(sample[0], depth + 1)
+    return `[${v.length} × ${inner}]`
+  }
+  if (typeof v === 'object') {
+    const keys = Object.keys(v)
+    if (keys.length === 0) return '{}'
+    const hidden = !keys.every(isFieldName) || (!isRecord && isMap(v as Record<string, unknown>))
+    if (depth >= 2 || hidden) return `{${keys.length} key${keys.length === 1 ? '' : 's'}}`
+    const fields = keys.slice(0, MAX_KEYS).map(k => {
+      const inner = (v as Record<string, unknown>)[k]
+      return inner !== null && typeof inner === 'object' ? `${k}: ${shapeAt(inner, depth + 1)}` : k
+    })
+    const more = keys.length > MAX_KEYS ? [`…+${keys.length - MAX_KEYS}`] : []
+    return `{${[...fields, ...more].join(', ')}}`
+  }
+  if (typeof v === 'string') {
+    const lines = v.split('\n').length
+    return depth === 0 ? `text, ${lines} line${lines === 1 ? '' : 's'}` : 'string'
+  }
+  return typeof v
+}
+
+/** The structure of a value in one short line: keys, array lengths, nesting to depth 2. */
+export const shapeOf = (v: unknown): string => {
+  const shape = shapeAt(v, 0)
+  return shape.length <= MAX_SHAPE_CHARS ? shape : `${shape.slice(0, MAX_SHAPE_CHARS)}…`
+}
+
+/** A character count, short: 812, 18k, 1.2M. */
+export const charCount = (n: number): string =>
+  n < 1000 ? String(n) : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`
+
+/** True when a program returned nothing although its calls returned data: a filter that missed. */
+export const missedData = (outcome: RunnerDone | RunnerError | undefined, calls: readonly CallRecord[]): boolean => {
+  if (outcome?.t !== 'done' || !calls.some(c => c.ok && c.chars > 2)) return false
+  try {
+    return isEmpty(JSON.parse(outcome.value))
+  } catch {
+    return false
+  }
+}
+
+const MAX_CALL_LINES = 8
+
+// JSON with sorted keys, so two calls with the same arguments match.
+const stable = (v: unknown): string =>
+  Array.isArray(v) ? `[${v.map(stable).join(',')}]`
+  : v !== null && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}`
+  : JSON.stringify(v) ?? 'null'
+
+/** The identity of a call: the tool and its arguments. Two equal keys are the same call. */
+export const callKey = (tool: string, args: Record<string, unknown>): string => `${tool}\n${stable(args)}`
+
+const callLine = (c: CallRecord): string => {
+  const id = c.ref === undefined ? '-' : `#${c.ref}`
+  if (!c.ok) return `${id} ${c.tool} failed`
+  const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
+  return `${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()
+}
+
+// Many calls: one line per tool, with the shape of its first result.
+const groupLines = (calls: readonly CallRecord[]): string[] => {
+  const byTool = new Map<string, CallRecord[]>()
+  for (const c of calls) byTool.set(c.tool, [...(byTool.get(c.tool) ?? []), c])
+  return [...byTool].map(([tool, group]) => {
+    const kept = group.filter(c => c.ref !== undefined).map(c => c.ref!)
+    const ids = kept.length === 0 ? '-' : kept.length === 1 ? `#${kept[0]}` : `#${kept[0]}…#${kept.at(-1)}`
+    const failed = group.filter(c => !c.ok).length
+    const chars = group.reduce((n, c) => n + c.chars, 0)
+    const first = group.find(c => c.ok)
+    const failures = failed === 0 ? '' : `, ${failed} failed`
+    return `${ids} ${tool} ×${group.length}${failures} ${charCount(chars)} ${first?.shape ?? ''}`.trimEnd()
+  })
+}
+
+/** How old a kept result is, short: 40 s old, 12 min old, 3 h old. */
+export const age = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 60 ? `${s} s old` : s < 3600 ? `${Math.round(s / 60)} min old` : `${Math.round(s / 3600)} h old`
+}
+
+/** The footer of a run with output projection: what came in, what went out, and how to get it again. */
+export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerError | undefined): string => {
+  const n = p.calls.length
+  const inChars = p.calls.reduce((sum, c) => sum + c.chars, 0)
+  const outChars = outcome?.t === 'done' ? outcome.value.length : 0
+  const recalls = p.recalls === 0 ? '' : `, ${p.recalls} recall${p.recalls === 1 ? '' : 's'}`
+  const head = `--- ${n} MCP call${n === 1 ? '' : 's'}${recalls}: ${charCount(inChars)} characters in, ${charCount(outChars)} out ---`
+  const recalled = p.recalled.length === 0 ? [] : [`recalled: ${[...new Map(p.recalled.map(r => [r.ref, r])).values()].map(r => `#${r.ref} (${age(r.ageMs)})`).join(', ')}`]
+  if (n === 0) return [head, ...recalled].join('\n')
+  const lines = n <= MAX_CALL_LINES ? p.calls.map(callLine) : groupLines(p.calls)
+  const missed = missedData(outcome, p.calls) ? ['The result is empty, but the calls returned data: check the shapes.'] : []
+  return [head, ...lines, ...recalled, ...missed, 'await recall(n) returns result #n again, with no new call.'].join('\n')
 }
 
 const words = (text: string): string[] =>
