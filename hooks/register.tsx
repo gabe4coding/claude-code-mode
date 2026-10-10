@@ -7,6 +7,7 @@ import {
   REMOVE_HINT_DESCRIPTION,
   activePathOf,
   appendHint,
+  displayName,
   findItem,
   formatHints,
   hintLines,
@@ -27,20 +28,23 @@ import {
   removeFromFile,
   resolvePath,
   reviewLines,
+  serverKeyOf,
   serverLabel,
+  targetsOf,
   textFlags,
+  toolsByServer,
   withReview,
   withoutItems,
   withoutReview,
   type Hint,
   type HintScope,
-  type HintTarget,
   type Review,
 } from './hints'
 import {
   RUN_DESCRIPTION,
   SEARCH_DESCRIPTION,
   extractDeclaration,
+  errorText,
   formatOutcome,
   hintNudge,
   isCallable,
@@ -100,12 +104,22 @@ async function scopeOf($: EngineInterface, path: string): Promise<HintScope> {
   return userDir !== undefined && isUnder(path, userDir) ? 'user' : 'project'
 }
 
+// A file that cannot be read, or that applies to no server, loads as nothing.
+// The debug log says which, so a person can find out why a hint never shows.
 async function readHintFiles($: EngineInterface, dir: string, scope: HintScope): Promise<Hint[]> {
   if (!(await $.fs.exists(dir).catch(() => false))) return []
-  const entries = await $.fs.list(dir).catch(() => [])
+  const entries = await $.fs.list(dir).catch(err => (debugLog($, `cannot list ${dir}: ${errorText(err)}`), []))
   const files = entries.filter(f => f.kind !== 'dir' && f.name.endsWith('.md'))
-  const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f.name}`).catch(() => '')))
-  return files.map((f, i) => parseHint(String(texts[i]), `${dir}/${f.name}`, scope))
+  const texts = await Promise.all(
+    files.map(f => $.fs.read(`${dir}/${f.name}`).catch(err => (debugLog($, `cannot read ${dir}/${f.name}: ${errorText(err)}`), ''))),
+  )
+  return files.map((f, i) => {
+    const hint = parseHint(String(texts[i]), `${dir}/${f.name}`, scope)
+    if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.remove === undefined) {
+      debugLog($, `${hint.path} names no servers, identify or tools in its frontmatter, so it applies to no server`)
+    }
+    return hint
+  })
 }
 
 async function loadHintFiles($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
@@ -113,16 +127,33 @@ async function loadHintFiles($: EngineInterface, projectHints: boolean): Promise
   return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope)))).flat()
 }
 
-// Per session: the hints remove_hint hid (`hintRef` + newline + `hintKey`).
-// They stay hidden in that session whatever the person decides, unless the
-// person discards the removal.
-const hiddenBySession = new Map<string, Set<string>>()
+// A line in the debug log (`claude --debug`). It never throws: a hook that
+// failed can still log.
+function debugLog($: EngineInterface, text: string): void {
+  try {
+    $.ui.log(`code-mode: ${text}`, { to: 'debug' })
+  } catch {
+    // no log in this frame
+  }
+}
 
-async function hiddenOf($: EngineInterface): Promise<Set<string>> {
+// Per session, because one hooks module serves each session of the host (the
+// desktop app runs many). `hidden`: the hints remove_hint hid (`hintRef` +
+// newline + `hintKey`); they stay hidden in that session whatever the person
+// decides, unless the person discards the removal. `tries`: servers whose
+// calls failed and have not worked since, and search_tools queries that found
+// nothing; a run that works after them is the moment to propose a hint
+// (hintNudge). `failedTries` counts the runs with a failed try per server,
+// for the card of a proposal. session.end drops the entry.
+type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number> }
+type SessionState = { hidden: Set<string>; tries: Tries }
+const bySession = new Map<string, SessionState>()
+
+async function sessionOf($: EngineInterface): Promise<SessionState> {
   const id = await $.session.id().catch(() => '')
-  let hidden = hiddenBySession.get(id)
-  if (!hidden) hiddenBySession.set(id, (hidden = new Set()))
-  return hidden
+  let state = bySession.get(id)
+  if (!state) bySession.set(id, (state = { hidden: new Set(), tries: { failedServers: new Set(), missedSearches: [], failedTries: new Map() } }))
+  return state
 }
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
@@ -130,7 +161,7 @@ const removedFile = (userDir: string): string => `${userDir}/removed.json`
 // The hints the model sees: without the ones hidden in this session and the
 // bundled ones the person removed.
 async function loadHints($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
-  const [hints, hidden, dirs] = await Promise.all([loadHintFiles($, projectHints), hiddenOf($), hintDirs($, projectHints)])
+  const [hints, { hidden }, dirs] = await Promise.all([loadHintFiles($, projectHints), sessionOf($), hintDirs($, projectHints)])
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   const removedText = userDir === undefined ? '' : await $.fs.read(removedFile(userDir)).catch(() => '')
   const removed = new Set(parseRemoved(String(removedText)).map(r => `bundled:${r.file}\n${r.hint}`))
@@ -203,7 +234,7 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
 // again in the session that hid it.
 async function discardPending($: EngineInterface, path: string): Promise<void> {
   const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
-  if (hint.remove !== undefined) for (const hidden of hiddenBySession.values()) hidden.delete(`${hint.remove}\n${hintKey(hint.body)}`)
+  if (hint.remove !== undefined) for (const { hidden } of bySession.values()) hidden.delete(`${hint.remove}\n${hintKey(hint.body)}`)
   await $.process.run(['rm', '-f', path])
 }
 
@@ -263,6 +294,12 @@ async function cardLines($: EngineInterface, hint: Hint): Promise<ReturnType<typ
 const HINT_GUARD_DENY =
   'code-mode: hint files steer the model, so they cannot be written with file tools. Propose the hint with add_hint instead.'
 
+// What a hint-file guard that failed answers: it denies, and logs why.
+function guardFailed($: EngineInterface, tool: string, error: { kind: string; message?: string }): { deny: string } {
+  debugLog($, `the hint-file guard on ${tool} failed (${error.kind}): ${error.message ?? 'no message'}`)
+  return { deny: 'code-mode: the hint-file guard failed; try again.' }
+}
+
 // Proposals waiting in the user's (and, when on, the project's) pending/.
 async function loadPending($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
   const dirs = (await hintDirs($, projectHints)).filter(d => d.scope !== 'bundled')
@@ -292,55 +329,8 @@ async function loadSaved($: EngineInterface, reply: Reply): Promise<Reply> {
   return loaded.ok ? loaded : { ok: false, error: `${loaded.error}; ${TOO_LARGE}` }
 }
 
-// Server key -> the names of the tools it offers, for `identify` matching.
-const toolsByServer = (toolNames: readonly string[]): Map<string, string[]> => {
-  const map = new Map<string, string[]>()
-  for (const tool of toolNames) {
-    const split = splitToolName(tool)
-    if (split) map.set(split.server, [...(map.get(split.server) ?? []), split.name])
-  }
-  return map
-}
-
-const targetsOf = (tools: readonly string[], names: Map<string, string>, offered: Map<string, string[]>): HintTarget[] =>
-  tools.flatMap(tool => {
-    const split = splitToolName(tool)
-    return split
-      ? [{ serverKey: split.server, serverName: names.get(tool), serverTools: offered.get(split.server), toolName: split.name }]
-      : []
-  })
-
-// The server key for what the model gave: a key as it is, or the key of a
-// server with that /mcp name ("claude.ai Datadog").
-const serverKeyOf = (server: string, names: Map<string, string>, offered: Map<string, string[]>): string => {
-  if (offered.has(server)) return server
-  const tool = [...names.entries()].find(([, name]) => normalize(name) === normalize(server))?.[0]
-  return (tool === undefined ? undefined : splitToolName(tool)?.server) ?? server
-}
-
-// A server's /mcp name, when the session knows a real one: in the desktop
-// app the name of a claude.ai connector is its UUID, the same as its key.
-const displayName = (names: Map<string, string>, server: string): string | undefined => {
-  const name = [...names.entries()].find(([tool]) => splitToolName(tool)?.server === server)?.[1]
-  return name !== undefined && name !== server ? name : undefined
-}
-
-// Per session: servers whose calls failed and have not worked since, and
-// search_tools queries that found nothing. A run that works after them is the
-// moment to propose a hint (hintNudge). `failedTries` counts the runs with a
-// failed try per server, for the card of a proposal.
-type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number> }
-const triesBySession = new Map<string, Tries>()
-
-async function triesOf($: EngineInterface): Promise<Tries> {
-  const id = await $.session.id().catch(() => '')
-  let tries = triesBySession.get(id)
-  if (!tries) triesBySession.set(id, (tries = { failedServers: new Set(), missedSearches: [], failedTries: new Map() }))
-  return tries
-}
-
 async function recordMissedSearch($: EngineInterface, query: string): Promise<void> {
-  const tries = await triesOf($)
+  const { tries } = await sessionOf($)
   if (query.trim() !== '' && tries.missedSearches.length < 5) tries.missedSearches.push(query.trim().slice(0, 60))
 }
 
@@ -348,7 +338,7 @@ async function recordMissedSearch($: EngineInterface, query: string): Promise<vo
 // for each server whose calls failed (earlier or in this run) and now work,
 // and for the searches that found nothing. Each is named once.
 async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<string>): Promise<string> {
-  const tries = await triesOf($)
+  const { tries } = await sessionOf($)
   const serverOf = (tools: Set<string>) => new Set([...tools].flatMap(t => splitToolName(t)?.server ?? []))
   const failedNow = serverOf(failed)
   const learned = [...serverOf(worked)].filter(s => tries.failedServers.has(s) || failedNow.has(s))
@@ -361,12 +351,34 @@ async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<s
   return nudge
 }
 
+// The engine's types of the connected MCP tools, read again only when the
+// file changes: with hundreds of tools it is large, and search_tools runs often.
+let mcpTypesCache: { key: string; text: string } | undefined
+
+async function mcpTypes($: EngineInterface): Promise<string> {
+  const file = `${$.plugin.root}/.claude-plugin/types/claude-code-mcp/index.d.ts`
+  const stat = await $.fs.stat(file).catch(() => undefined)
+  if (stat?.kind !== 'file') return ''
+  const key = `${file}\n${stat.mtimeMs}\n${stat.size}`
+  if (mcpTypesCache?.key !== key) {
+    const text = String(await $.fs.read(file).catch(err => (debugLog($, `cannot read ${file}: ${errorText(err)}`), '')))
+    mcpTypesCache = { key, text }
+  }
+  return mcpTypesCache.text
+}
+
 export const register: Register = (on, options) => {
   const opts = options as Options
   const node = opts.node || 'node'
   const timeoutSeconds = Math.max(5, Number(opts.timeoutSeconds) || 120)
   const programApproval = opts.approval !== 'per-call'
   const projectHints = opts.projectHints === true
+
+  // One hooks module serves many sessions: drop the state of one that ended.
+  on('session.end', ($, e, next) => {
+    bySession.delete(e.sessionId)
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   // The model reads this at the start of the session and after /clear or a
   // compaction: MCP calls go through run_code, direct calls only as a fallback.
@@ -475,7 +487,7 @@ export const register: Register = (on, options) => {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
     const path = `${target.dir}/pending/${pendingFileName(fileName, input.tool_use_id)}`
-    const failures = (await triesOf($)).failedTries.get(key) ?? 0
+    const failures = (await sessionOf($)).tries.failedTries.get(key) ?? 0
     const review: Review = {
       why,
       kind,
@@ -492,7 +504,7 @@ export const register: Register = (on, options) => {
     return {
       result: `Proposed a ${scope} hint for ${servers[0]}. It has no effect until the person approves it in the band above the prompt (Review, then Approve or Discard). Tell the person.\npending: ${path}`,
     }
-  }).catch(() => ({ deny: 'code-mode: add_hint failed; see the debug log.' }))
+  }).catch(($, e, next) => (debugLog($, `add_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: add_hint failed; see the debug log.' }))
 
   // remove_hint hides the hint in this session at once (a wrong hint misleads
   // each later call) and proposes its removal. The file changes only after
@@ -518,7 +530,7 @@ export const register: Register = (on, options) => {
     const [names, list] = await Promise.all([serverNames($), $.tool.list()])
     const mcpTools = list.filter(t => t.mcp).map(t => t.name)
     const servers = new Set(targetsOf(mcpTools, names, toolsByServer(mcpTools)).filter(t => hintApplies(hint, t)).map(t => t.serverKey))
-    const tries = await triesOf($)
+    const { tries } = await sessionOf($)
     const failures = [...servers].reduce((n, s) => n + (tries.failedTries.get(s) ?? 0), 0)
     const review: Review = {
       why,
@@ -528,12 +540,12 @@ export const register: Register = (on, options) => {
     const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
     const pending = `${target.dir}/pending/${pendingFileName(`${name}.remove.md`, input.tool_use_id)}`
     await $.fs.write(pending, removalProposal(hint, found.item, review))
-    ;(await hiddenOf($)).add(`${hintRef(hint)}\n${hintKey(found.item)}`)
+    ;(await sessionOf($)).hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
     $.ui.invalidate('ui.render')
     return {
       result: `Hid the hint in this session and proposed to remove it from ${path}. The file changes only after the person approves the removal in the band above the prompt. Tell the person.\npending: ${pending}`,
     }
-  }).catch(() => ({ deny: 'code-mode: remove_hint failed; see the debug log.' }))
+  }).catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
 
   // The add_hint and remove_hint rows show the proposal with Approve and
   // Discard, where the surface asks plugins to draw tool results (the desktop
@@ -639,8 +651,7 @@ export const register: Register = (on, options) => {
       return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
     }
 
-    const typesFile = `${$.plugin.root}/.claude-plugin/types/claude-code-mcp/index.d.ts`
-    const dts = (await $.fs.exists(typesFile)) ? await $.fs.read(typesFile).catch(() => '') : ''
+    const dts = await mcpTypes($)
     const blocks = found.map(t => {
       const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
       const args = declaration ?? `(argument types unknown here: ToolSearch "select:${t.name}" shows the schema)`
@@ -652,7 +663,7 @@ export const register: Register = (on, options) => {
     const hintText = formatHints(hintsFor(hints, targetsOf(found.map(t => t.name), names, offered)))
     const tail = hintText === '' ? '' : `\n\n${hintText}`
     return { result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}` }
-  }).catch(() => ({ deny: 'code-mode: search_tools failed; see the debug log.' }))
+  }).catch(($, e, next) => (debugLog($, `search_tools failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: search_tools failed; see the debug log.' }))
 
   on('tool.call', { tool: 'mcp__code-mode__run_code' }, async ($, e) => {
     const code = String((e as unknown as { code?: unknown }).code ?? '')
@@ -697,10 +708,10 @@ export const register: Register = (on, options) => {
             else reply = { ok: true, value: toValue(r.result, r.text) }
           }
         } catch (err) {
-          reply = { ok: false, error: err instanceof Error ? err.message : String(err) }
+          reply = { ok: false, error: errorText(err) }
         }
       }
-      reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${err instanceof Error ? err.message : String(err)}` }))
+      reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${errorText(err)}` }))
       if (isCallable(tool, $.plugin.name)) (reply.ok ? worked : failed).add(tool)
       await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
     }
@@ -725,7 +736,7 @@ export const register: Register = (on, options) => {
       }
       await Promise.allSettled(answers)
     } catch (err) {
-      stderr += `\n${err instanceof Error ? err.message : String(err)}`
+      stderr += `\n${errorText(err)}`
     } finally {
       await $.process.run(['rm', '-rf', xdir]).catch(() => undefined)
     }
@@ -738,7 +749,8 @@ export const register: Register = (on, options) => {
         const [hints, names, list] = await Promise.all([loadHints($, projectHints), serverNames($), $.tool.list()])
         const offered = toolsByServer(list.filter(t => t.mcp).map(t => t.name))
         hintText = formatHints(hintsFor(hints, targetsOf([...failed], names, offered)))
-      } catch {
+      } catch (err) {
+        debugLog($, `cannot load the hints for a failed run: ${errorText(err)}`)
         hintText = ''
       }
     }
@@ -747,7 +759,7 @@ export const register: Register = (on, options) => {
     const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set()).catch(() => '')
     const tail = [nudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS)}${tail}` }
-  }).catch(() => ({ deny: 'code-mode: run_code failed; see the debug log.' }))
+  }).catch(($, e, next) => (debugLog($, `run_code failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: run_code failed; see the debug log.' }))
 
   // Guard: an active hint is just a file, so the model must not write one
   // with its own tools, or add_hint's approval step means nothing. File tools
@@ -755,19 +767,19 @@ export const register: Register = (on, options) => {
   // which is best effort (a shell can spell a path many ways). The person's
   // own editor is not a Claude tool and is not affected.
   // A guard that fails denies the call it guards (next.called: it already passed).
-  const GUARD_FAILED = 'code-mode: the hint-file guard failed; try again.'
+  // Each tool has its own registration, so `claude plugin validate` lists it.
   on('tool.call', { tool: 'Write' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : { deny: GUARD_FAILED }))
+  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Write', next.error)))
   on('tool.call', { tool: 'Edit' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : { deny: GUARD_FAILED }))
+  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Edit', next.error)))
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) =>
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : { deny: GUARD_FAILED }))
+  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'NotebookEdit', next.error)))
   on('tool.call', { tool: 'Bash' }, ($, e, next) =>
     /code-mode\/+hints/i.test(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : { deny: GUARD_FAILED }))
+  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Bash', next.error)))
 
   // Optional: push the model to run_code by refusing its direct MCP calls.
   // Calls this plugin makes (from run_code) pass.

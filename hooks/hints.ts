@@ -1,6 +1,6 @@
 // Usage hints per MCP server: markdown files with a small frontmatter that
 // says which servers (and optionally which tools) they apply to. Pure
-// helpers here; register.tsx reads and writes the files.
+// helpers here; hint-files.ts reads and writes the files.
 //
 //   ---
 //   servers: [Datadog]
@@ -11,6 +11,8 @@
 //
 // A removal proposal names the file of the hint it removes in `remove`, and
 // its body is that one hint.
+
+import { splitToolName } from './protocol'
 
 export type HintScope = 'bundled' | 'user' | 'project'
 
@@ -46,7 +48,12 @@ export type HintTarget = { serverKey: string; serverName?: string; serverTools?:
 /** Lowercase, and every run of other characters as one `_`: "claude.ai Datadog" and "claude_ai_Datadog" agree. */
 export const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
 
+// A JSON list or string as JSON (what add_hint writes, so a value can hold a
+// comma), else a YAML-style list split at commas.
 const parseList = (raw: string): string[] => {
+  const json = parseJson(raw.trim())
+  if (typeof json === 'string') return json === '' ? [] : [json]
+  if (Array.isArray(json)) return json.filter((s): s is string => typeof s === 'string' && s !== '')
   const inner = raw.trim().replace(/^\[/, '').replace(/\]$/, '')
   return inner
     .split(',')
@@ -207,6 +214,41 @@ export const hintApplies = (hint: Hint, target: HintTarget): boolean => {
   }
   if (hint.tools.length > 0 && !hint.tools.some(g => globToRegex(g).test(target.toolName))) return false
   return true
+}
+
+/** Server key -> the names of the tools it offers, for `identify` matching. */
+export const toolsByServer = (toolNames: readonly string[]): Map<string, string[]> => {
+  const map = new Map<string, string[]>()
+  for (const tool of toolNames) {
+    const split = splitToolName(tool)
+    if (split) map.set(split.server, [...(map.get(split.server) ?? []), split.name])
+  }
+  return map
+}
+
+/** Full tool names as hint targets. `names` maps a tool to its server's /mcp name, `offered` comes from toolsByServer. */
+export const targetsOf = (tools: readonly string[], names: Map<string, string>, offered: Map<string, string[]>): HintTarget[] =>
+  tools.flatMap(tool => {
+    const split = splitToolName(tool)
+    return split
+      ? [{ serverKey: split.server, serverName: names.get(tool), serverTools: offered.get(split.server), toolName: split.name }]
+      : []
+  })
+
+/** The server key for what the model gave: a key as it is, or the key of a server with that /mcp name ("claude.ai Datadog"). */
+export const serverKeyOf = (server: string, names: Map<string, string>, offered: Map<string, string[]>): string => {
+  if (offered.has(server)) return server
+  const tool = [...names.entries()].find(([, name]) => normalize(name) === normalize(server))?.[0]
+  return (tool === undefined ? undefined : splitToolName(tool)?.server) ?? server
+}
+
+/**
+ * A server's /mcp name, when the session knows a real one: in the desktop
+ * app the name of a claude.ai connector is its UUID, the same as its key.
+ */
+export const displayName = (names: Map<string, string>, server: string): string | undefined => {
+  const name = [...names.entries()].find(([tool]) => splitToolName(tool)?.server === server)?.[1]
+  return name !== undefined && name !== server ? name : undefined
 }
 
 /** The hints for a set of tools, each once, in the order given (bundled, user, project). */

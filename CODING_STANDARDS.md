@@ -6,7 +6,10 @@ enforces; the others rely on discipline.
 ## Code
 - `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`
   and `hooks/hints.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
-  `hooks/register.tsx`.
+  `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
+  never across an import, and a module that passes `$` to another file does not load.
+- A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
+  debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
 - `LAUNCH` and `NO_NETWORK` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
@@ -23,7 +26,8 @@ enforces; the others rely on discipline.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
 - CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS. Only macOS has `sandbox-exec`,
-  so only the macOS job tests the network block. CI pins the Claude Code version for `claude plugin test .`.
+  so only the macOS job tests the network block. CI pins the Claude Code version for `claude plugin test .`, and
+  a weekly job runs the tests with the newest release.
 - The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
   Run it after a change to types or to the engine API that the hooks use.
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
