@@ -179,7 +179,9 @@ const fakeHost = (on: On) => {
   const waiters = new Map<string, (text: string) => void>()
   const removed: string[] = []
   const spawned: string[][] = []
+  const ran: string[][] = []
   on('process.run', ($, e) => {
+    ran.push([...e.argv])
     if (e.argv[0] === 'rm') removed.push(String(e.argv[2]))
     return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? `${XDIR}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -202,7 +204,7 @@ const fakeHost = (on: On) => {
     yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
     return { value: { code: 0, signal: null } }
   })
-  return { removed, spawned }
+  return { removed, spawned, ran }
 }
 
 const scenario = (...calls: { tool: string; args?: Record<string, unknown> }[]) =>
@@ -229,6 +231,14 @@ describe('run_code', () => {
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
     const runner = host.spawned[0]!.find(a => a.endsWith('/runtime/runner.mjs'))
     expect(runner?.startsWith('/real/')).toBe(true)
+  })
+
+  test('the temp dir template ends in XXXXXX, as GNU mktemp needs', async ($, on) => {
+    fakeServer(on)
+    const host = fakeHost(on)
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
+    const mktemp = host.ran.find(a => a[0] === 'mktemp')
+    expect(mktemp?.at(-1)?.endsWith('XXXXXX')).toBe(true)
   })
 
   test('a denied tool call becomes an error reply', async ($, on) => {
