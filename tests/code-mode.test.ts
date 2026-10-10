@@ -261,14 +261,41 @@ describe('search_tools', () => {
       { name: RUN, description: 'own tool', mcp: true },
       { name: 'Bash', description: 'send commands', mcp: false },
     ] }))
-    on('fs.exists', () => ({ value: true }))
-    on('fs.read', () => ({ value: 'interface McpToolInputs {\n  "mcp__mail__send": { to: string }\n}' }))
+    const dts = 'interface McpToolInputs {\n  "mcp__mail__send": { to: string }\n}'
+    on('fs.stat', () => ({ value: { kind: 'file', size: dts.length, mtimeMs: 1, isLink: false } }))
+    on('fs.read', () => ({ value: dts }))
     const r = await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send email' })
     const text = textOf(r)
     expect(text).toContain('### mcp__mail__send\nSend an email\nargs: { to: string }')
     expect(text).toContain('mcp__mail__list')
     expect(text).not.toContain('Bash')
     expect(text).not.toContain(RUN)
+  })
+
+  test('reads the argument types again only when their file changes', async ($, on) => {
+    on('tool.list', () => ({ value: [{ name: 'mcp__mail__send', description: 'Send an email', mcp: true }] }))
+    let mtimeMs = 1
+    let reads = 0
+    on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs, isLink: false } }))
+    on('fs.read', () => (reads++, { value: `interface McpToolInputs {\n  "mcp__mail__send": { v: ${mtimeMs} }\n}` }))
+    const search = async () => textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' }))
+    await search()
+    expect(await search()).toContain('args: { v: 1 }')
+    expect(reads).toBe(1)
+    mtimeMs = 2
+    expect(await search()).toContain('args: { v: 2 }')
+    expect(reads).toBe(2)
+  })
+})
+
+describe('the debug log', () => {
+  test('a tool that fails says why in the debug log', async ($, on) => {
+    const logs: string[] = []
+    on('ui.log', ($, e) => (logs.push(`${e.to}: ${e.text}`), { value: undefined }))
+    on('tool.list', () => ({ deny: 'no tool list' }))
+    const r = await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' })
+    expect(textOf(r)).toContain('search_tools failed; see the debug log')
+    expect(logs.some(l => l.startsWith('debug: code-mode: search_tools failed (throw): ') && l.includes('no tool list'))).toBe(true)
   })
 })
 

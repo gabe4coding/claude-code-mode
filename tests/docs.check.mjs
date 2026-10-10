@@ -156,6 +156,20 @@ const tests = {
     const problems = USER_DOCS.flatMap(f => docProblems(f))
     assert.deepEqual(problems, [], `${problems.join('\n')}\n\nThe rules are in CODING_STANDARDS.md, section "Docs".`)
   },
+  'bundled hints name their server and have bullets': () => {
+    // The format of docs/hints.mdx. A file that breaks it loads for no server, and nothing else reports it.
+    const dir = path.join(ROOT, 'hints')
+    const problems = fs.readdirSync(dir).filter(f => f.endsWith('.md')).flatMap(f => {
+      const text = fs.readFileSync(path.join(dir, f), 'utf8')
+      const m = text.match(FRONT_MATTER)
+      if (!m) return [`hints/${f}: no front matter`]
+      return [
+        ...(/^(servers|identify)\s*:\s*\S/m.test(m[1]) ? [] : [`hints/${f}: no servers or identify in the front matter`]),
+        ...(/^- \S/m.test(text.slice(m[0].length)) ? [] : [`hints/${f}: no bullet`]),
+      ]
+    })
+    assert.deepEqual(problems, [], problems.join('\n'))
+  },
   'links and anchors resolve': () => {
     const problems = [...USER_DOCS, ...LINK_ONLY].flatMap(linkProblems)
     assert.deepEqual(problems, [], problems.join('\n'))

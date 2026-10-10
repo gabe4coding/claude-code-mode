@@ -52,6 +52,14 @@ Cause: the model tried to write a hint file, or ran a Bash command that names a 
 Fix: let the model propose the hint with `add_hint`, then approve it in the band. Or edit the hint file in your own
 editor.
 
+### "… failed; see the debug log"
+
+Cause: a code-mode tool or the hint-file guard stopped with an error.
+
+Fix: start Claude Code with `claude --debug` and do the step again. The lines that start with `code-mode:` give the
+error. The debug log also names each hint file that the plugin cannot read, and each hint file that applies to no
+server.
+
 ### "project hints are off"
 
 Cause: the model proposed a `project` hint, and the option `projectHints` is off.

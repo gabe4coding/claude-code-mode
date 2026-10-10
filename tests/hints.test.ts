@@ -58,6 +58,14 @@ const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =
   r.deny !== undefined ? `DENY ${r.deny}` : typeof r.result === 'string' ? r.result : (r.text ?? JSON.stringify(r.result))
 
 describe('hint files', () => {
+  test('frontmatter lists can be JSON, so a value can hold a comma', () => {
+    const hint = parseHint('---\nservers: ["Data, Dog", "X"]\ntools: "a_*"\nidentify:\n  - "b, c"\n  - d\n---\n- y', '/h.md', 'user')
+    expect(hint.servers).toEqual(['Data, Dog', 'X'])
+    expect(hint.tools).toEqual(['a_*'])
+    expect(hint.identify).toEqual(['b, c', 'd'])
+    expect(parseHint('---\nservers: [Datadog, Jira]\n---\n- y', '/h.md', 'user').servers).toEqual(['Datadog', 'Jira'])
+  })
+
   test('parseHint reads inline and dash lists', () => {
     const inline = parseHint('---\nservers: [Datadog, "claude.ai Jira"]\ntools: [analyze_*]\n---\n- a hint', '/x.md', 'user')
     expect(inline.servers).toEqual(['Datadog', 'claude.ai Jira'])
@@ -170,6 +178,14 @@ describe('hints in the tools', () => {
     fakeHome(on, { [`${USER_DIR}/mail.md`]: '---\nservers: [Mail]\nidentify: [send_message]\n---\n- Identified.' }, { [MAIL]: 'aaaa-1111' })
     const r = await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' })
     expect(textOf(r)).toContain('Identified.')
+  })
+
+  test('a hint file that applies to no server says so in the debug log', async ($, on) => {
+    const logs: string[] = []
+    on('ui.log', ($, e) => (logs.push(e.text), { value: undefined }))
+    fakeHome(on, { [`${USER_DIR}/plain.md`]: '- No frontmatter here.' }, { [MAIL]: 'claude.ai Mail' })
+    await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' })
+    expect(logs).toContain(`code-mode: ${USER_DIR}/plain.md names no servers, identify or tools in its frontmatter, so it applies to no server`)
   })
 
   test('search_tools shows no hints for other servers', async ($, on) => {
@@ -500,6 +516,17 @@ describe('remove_hint', () => {
     const shown = await search($)
     expect(shown).not.toContain('Mail returns JSON.')
     expect(shown).toContain('Pass ids as strings.')
+  })
+
+  test('the end of a session drops the hints it hid', async ($, on) => {
+    on('session.id', () => ({ value: 'sess-a' }))
+    on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+    const path = `${USER_DIR}/mail-end.md`
+    fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    await remove($, path, 'Mail returns JSON.')
+    expect(await search($)).not.toContain('Mail returns JSON.')
+    await $.session.end({ reason: 'clear', sessionId: 'sess-a', resume: {} as never })
+    expect(await search($)).toContain('Mail returns JSON.')
   })
 
   test('says which hints a file has when the text matches none, and refuses a path that is not a hint file', async ($, on) => {
