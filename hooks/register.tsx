@@ -4,23 +4,33 @@ import {
   ADD_HINT_DESCRIPTION,
   HINT_KINDS,
   OTHER_INSTRUCTION,
+  REMOVE_HINT_DESCRIPTION,
   activePathOf,
   appendHint,
+  findItem,
   formatHints,
   hintLines,
   hintFileName,
+  hintItems,
+  hintKey,
+  hintRef,
   hintsFor,
+  hintApplies,
   isUnder,
   kindQuestion,
   normalize,
   parseHint,
   pendingFileName,
   pendingPathOf,
+  parseRemoved,
+  removalProposal,
+  removeFromFile,
   resolvePath,
   reviewLines,
   serverLabel,
   textFlags,
   withReview,
+  withoutItems,
   withoutReview,
   type Hint,
   type HintScope,
@@ -66,6 +76,7 @@ const LAUNCH = [
 type Options = { node?: string; timeoutSeconds?: number; blockDirectMcp?: boolean; approval?: string; projectHints?: boolean }
 
 const ADD_HINT = 'mcp__code-mode__add_hint'
+const REMOVE_HINT = 'mcp__code-mode__remove_hint'
 const BAND_LIMIT = 5
 
 // Whether the band above the prompt lists the proposals (else one line).
@@ -90,9 +101,39 @@ async function readHintFiles($: EngineInterface, dir: string, scope: HintScope):
   return files.map((f, i) => parseHint(String(texts[i]), `${dir}/${f.name}`, scope))
 }
 
-async function loadHints($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
+async function loadHintFiles($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
   const dirs = await hintDirs($, projectHints)
   return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope)))).flat()
+}
+
+// Per session: the hints remove_hint hid (`hintRef` + newline + `hintKey`).
+// They stay hidden in that session whatever the person decides, unless the
+// person discards the removal.
+const hiddenBySession = new Map<string, Set<string>>()
+
+async function hiddenOf($: EngineInterface): Promise<Set<string>> {
+  const id = await $.session.id().catch(() => '')
+  let hidden = hiddenBySession.get(id)
+  if (!hidden) hiddenBySession.set(id, (hidden = new Set()))
+  return hidden
+}
+
+const removedFile = (userDir: string): string => `${userDir}/removed.json`
+
+// The hints the model sees: without the ones hidden in this session and the
+// bundled ones the person removed.
+async function loadHints($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
+  const [hints, hidden, dirs] = await Promise.all([loadHintFiles($, projectHints), hiddenOf($), hintDirs($, projectHints)])
+  const userDir = dirs.find(d => d.scope === 'user')?.dir
+  const removedText = userDir === undefined ? '' : await $.fs.read(removedFile(userDir)).catch(() => '')
+  const removed = new Set(parseRemoved(String(removedText)).map(r => `bundled:${r.file}\n${r.hint}`))
+  return hints.flatMap(h => {
+    const ref = hintRef(h)
+    const drop = (key: string) => hidden.has(`${ref}\n${key}`) || removed.has(`${ref}\n${key}`)
+    if (!hintItems(h.body).some(i => drop(hintKey(i)))) return [h]
+    const body = withoutItems(h.body, drop)
+    return body === '' ? [] : [{ ...h, body }]
+  })
 }
 
 // Tool name -> server name as /mcp lists it ("claude.ai Datadog"), so a hint
@@ -106,11 +147,44 @@ async function serverNames($: EngineInterface): Promise<Map<string, string>> {
   }
 }
 
+// Approve a removal: take the hint out of its file (and remove a file with no
+// hint left), or, for a bundled hint, add it to removed.json. The file must
+// be directly in a hint folder: a pending file names it, and a pending file
+// is only as safe as the folder it is in.
+async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
+  const ref = hint.remove!
+  const key = hintKey(hint.body)
+  const dirs = await hintDirs($, projectHints)
+  const userDir = dirs.find(d => d.scope === 'user')?.dir
+  if (ref.startsWith('bundled:')) {
+    const file = ref.slice('bundled:'.length)
+    if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
+    const path = removedFile(userDir)
+    const current = parseRemoved(String(await $.fs.read(path).catch(() => '')))
+    if (!current.some(r => r.file === file && r.hint === key)) current.push({ file, hint: key })
+    await $.fs.write(path, `${JSON.stringify(current, null, 2)}\n`)
+    return path
+  }
+  const dir = dirs.find(d => d.scope !== 'bundled' && ref.startsWith(`${d.dir}/`) && !ref.slice(d.dir.length + 1).includes('/'))
+  if (dir === undefined || !ref.endsWith('.md')) throw new Error(`not a hint file: ${ref}`)
+  if (!(await $.fs.exists(ref))) return ref
+  const rest = removeFromFile(String(await $.fs.read(ref)), key)
+  if (rest === undefined) await $.process.run(['rm', '-f', ref])
+  else await $.fs.write(ref, rest)
+  return ref
+}
+
 // Approve: merge the proposal's bullets into the active file beside pending/
 // (or move the whole file when there is none yet), then remove the proposal.
-async function approvePending($: EngineInterface, path: string): Promise<string> {
-  const dest = activePathOf(path)
+async function approvePending($: EngineInterface, path: string, projectHints: boolean): Promise<string> {
   const proposal = String(await $.fs.read(path))
+  const removal = parseHint(proposal, path, 'user')
+  if (removal.remove !== undefined) {
+    const dest = await approveRemoval($, removal, projectHints)
+    await $.process.run(['rm', '-f', path])
+    return dest
+  }
+  const dest = activePathOf(path)
   const current = (await $.fs.exists(dest)) ? String(await $.fs.read(dest)) : undefined
   const bullets = parseHint(proposal, path, 'user').body.split('\n').filter(l => l.trim() !== '').join('\n')
   await $.fs.write(dest, current === undefined ? withoutReview(proposal) : `${current.replace(/\s*$/, '')}\n${bullets}\n`)
@@ -118,15 +192,20 @@ async function approvePending($: EngineInterface, path: string): Promise<string>
   return dest
 }
 
+// Discard: delete the proposal. A discarded removal also shows the hint
+// again in the session that hid it.
 async function discardPending($: EngineInterface, path: string): Promise<void> {
+  const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
+  if (hint.remove !== undefined) for (const hidden of hiddenBySession.values()) hidden.delete(`${hint.remove}\n${hintKey(hint.body)}`)
   await $.process.run(['rm', '-f', path])
 }
 
-// One decision, from the add_hint row or from the band: act on the file,
-// remember the decision by path (the row reads it), and redraw both.
-async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded'): Promise<void> {
-  const dest = action === 'approved' ? await approvePending($, path) : (await discardPending($, path), undefined)
-  await $.store.set(`decision:${path}`, { action, dest })
+// One decision, from the add_hint or remove_hint row or from the band: act
+// on the file, remember the decision by path (the row reads it), and redraw both.
+async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded', projectHints: boolean): Promise<void> {
+  const isRemoval = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user').remove !== undefined
+  const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
+  await $.store.set(`decision:${path}`, { action, dest, isRemoval })
   $.ui.invalidate('ui.render')
 }
 
@@ -157,8 +236,16 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
 }
 
 // The review lines of a proposal's card, with the active file it goes to
-// and how many hints that file has now.
+// (or, for a removal, comes out of) and how many hints that file has now.
 async function cardLines($: EngineInterface, hint: Hint): Promise<ReturnType<typeof reviewLines>> {
+  if (hint.remove !== undefined) {
+    const bundled = hint.remove.startsWith('bundled:')
+    const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
+    const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
+    const text = await $.fs.read(path).catch(() => undefined)
+    const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
+    return reviewLines(hint, { file: bundled ? `the bundled ${name}` : name, hints, isRemoval: true })
+  }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
   const current = (await $.fs.exists(dest).catch(() => false)) ? String(await $.fs.read(dest).catch(() => '')) : undefined
@@ -322,6 +409,19 @@ export const register: Register = (on, options) => {
         required: ['server', 'text', 'why'],
       },
     })
+    await $.tool.register({
+      name: 'remove_hint',
+      description: REMOVE_HINT_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
+          text: { type: 'string', description: 'The hint to remove, as shown.' },
+          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
+        },
+        required: ['path', 'text', 'why'],
+      },
+    })
     return next(e)
   })
 
@@ -333,7 +433,7 @@ export const register: Register = (on, options) => {
   // reason, a classifier's guess of the kind, and what code-mode saw. All of
   // it is advice: none of it approves or refuses a proposal.
   on('tool.call', { tool: ADD_HINT }, async ($, e) => {
-    const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown }
+    const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown; tool_use_id: string }
     const server = typeof input.server === 'string' ? input.server.trim() : ''
     const text = typeof input.text === 'string' ? input.text.trim() : ''
     const why = typeof input.why === 'string' ? input.why.trim().replace(/\s*\n\s*/g, ' ') : ''
@@ -367,7 +467,7 @@ export const register: Register = (on, options) => {
     // A UUID key makes an unreadable file name: name the file by the tool instead.
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
-    const path = `${target.dir}/pending/${pendingFileName(fileName, e.tool_use_id)}`
+    const path = `${target.dir}/pending/${pendingFileName(fileName, input.tool_use_id)}`
     const failures = (await triesOf($)).failedTries.get(key) ?? 0
     const review: Review = {
       why,
@@ -387,29 +487,73 @@ export const register: Register = (on, options) => {
     }
   }).catch(() => ({ deny: 'code-mode: add_hint failed; see the debug log.' }))
 
-  // The add_hint row shows the proposal with Approve and Discard, where the
-  // surface asks plugins to draw tool results (the desktop app does not; the
-  // band above the prompt covers it). A press is the person's own act;
-  // $.store keeps the decision so the row still shows it after a reload.
-  on('ui.render', { component: 'ToolResult', props: { tool: ADD_HINT } }, async ($, e, next) => {
+  // remove_hint hides the hint in this session at once (a wrong hint misleads
+  // each later call) and proposes its removal. The file changes only after
+  // the person approves, as for add_hint: a hidden hint costs one session at
+  // most, a removed one costs every session.
+  on('tool.call', { tool: REMOVE_HINT }, async ($, e) => {
+    const input = e as unknown as { path?: unknown; text?: unknown; why?: unknown; tool_use_id: string }
+    const path = typeof input.path === 'string' ? input.path.trim() : ''
+    const text = typeof input.text === 'string' ? input.text.trim() : ''
+    const why = typeof input.why === 'string' ? input.why.trim().replace(/\s*\n\s*/g, ' ') : ''
+    if (path === '' || text === '' || why === '') return { result: 'Error: path, text and why are required.' }
+    if (why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
+
+    const hint = (await loadHintFiles($, projectHints)).find(h => h.path === path)
+    if (!hint) return { result: `Error: ${path} is not a hint file. Give the path from "[<scope> hint: <path>]".` }
+    const found = findItem(hint.body, text)
+    if (found.item === undefined) return { result: `Error: ${found.error}` }
+    const dirs = await hintDirs($, projectHints)
+    const target = dirs.find(d => d.scope === (hint.scope === 'project' ? 'project' : 'user'))
+    if (!target) return { result: 'Error: the user hint folder is not known (HOME is not set).' }
+
+    // The failed tries on the servers the hint applies to, for the card.
+    const [names, list] = await Promise.all([serverNames($), $.tool.list()])
+    const mcpTools = list.filter(t => t.mcp).map(t => t.name)
+    const servers = new Set(targetsOf(mcpTools, names, toolsByServer(mcpTools)).filter(t => hintApplies(hint, t)).map(t => t.serverKey))
+    const tries = await triesOf($)
+    const failures = [...servers].reduce((n, s) => n + (tries.failedTries.get(s) ?? 0), 0)
+    const review: Review = {
+      why,
+      seen: failures > 0 ? `${failures} run${failures === 1 ? '' : 's'} with a failed try on this server in this session.` : undefined,
+      flags: failures === 0 ? ['No try on this server failed in this session.'] : [],
+    }
+    const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+    const pending = `${target.dir}/pending/${pendingFileName(`${name}.remove.md`, input.tool_use_id)}`
+    await $.fs.write(pending, removalProposal(hint, found.item, review))
+    ;(await hiddenOf($)).add(`${hintRef(hint)}\n${hintKey(found.item)}`)
+    $.ui.invalidate('ui.render')
+    return {
+      result: `Hid the hint in this session and proposed to remove it from ${path}. The file changes only after the person approves the removal in the band above the prompt. Tell the person.\npending: ${pending}`,
+    }
+  }).catch(() => ({ deny: 'code-mode: remove_hint failed; see the debug log.' }))
+
+  // The add_hint and remove_hint rows show the proposal with Approve and
+  // Discard, where the surface asks plugins to draw tool results (the desktop
+  // app does not; the band above the prompt covers it). A press is the
+  // person's own act; $.store keeps the decision so the row still shows it
+  // after a reload.
+  for (const tool of [ADD_HINT, REMOVE_HINT]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string } | undefined
+    const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string; isRemoval?: boolean } | undefined
 
-    if (decision?.action === 'approved') return <Text color="green">✓ Hint approved: {decision.dest}</Text>
-    if (decision?.action === 'discarded') return <Text dimColor>Hint discarded.</Text>
+    if (decision?.action === 'approved') {
+      return <Text color="green">{decision.isRemoval ? '✓ Hint removed' : '✓ Hint approved'}: {decision.dest}</Text>
+    }
+    if (decision?.action === 'discarded') return <Text dimColor>{decision.isRemoval ? 'Removal discarded. The hint stays.' : 'Hint discarded.'}</Text>
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
     const scope = path.includes('/.claude/code-mode/hints/') && !path.startsWith(String(await $.env.get('HOME').catch(() => ''))) ? 'project' : 'user'
     const hint = parseHint(String(await $.fs.read(path)), path, scope)
-    const decide = (action: 'approved' | 'discarded') => decidePending($, path, action)
+    const decide = (action: 'approved' | 'discarded') => decidePending($, path, action, projectHints)
     const lines = await cardLines($, hint)
 
     return (
       <Box flexDirection="column" borderStyle="round" paddingX={1}>
-        <Text bold>Proposed usage hint ({scope})</Text>
+        <Text bold>{hint.remove === undefined ? 'Proposed usage hint' : 'Proposed removal of a usage hint'} ({scope})</Text>
         <Text dimColor>
           server: {hint.servers.join(', ')}
           {hint.identify.length > 0 ? ` · identify: ${hint.identify.join(', ')}` : ''}
@@ -435,7 +579,7 @@ export const register: Register = (on, options) => {
     const pending = await loadPending($, projectHints)
     if (pending.length === 0) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const count = `${pending.length} proposed hint${pending.length === 1 ? '' : 's'} for code mode`
+    const count = `${pending.length} hint proposal${pending.length === 1 ? '' : 's'} for code mode`
 
     if (!(await read($, reviewOpen))) {
       return (
@@ -458,6 +602,7 @@ export const register: Register = (on, options) => {
         {shown.map((p, i) => (
           <Box key={`proposal-${i}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
             <Text dimColor>
+              {p.remove !== undefined ? 'Remove · ' : ''}
               {serverLabel(p)}
               {p.tools.length > 0 ? ` · ${p.tools.join(', ')}` : ''}
               {` · ${p.scope}`}
@@ -465,8 +610,8 @@ export const register: Register = (on, options) => {
             {hintLines(p.body).map(line => <Text>{line}</Text>)}
             {lines[i]!.map(l => <Text color={l.isWarning ? 'yellow' : undefined} dimColor={l.isDim}>{l.text}</Text>)}
             <Box gap={1} marginTop={1}>
-              <Button key={`approve-${i}`} label="Approve" variant="primary" onPress={() => decidePending($, p.path, 'approved')} />
-              <Button key={`discard-${i}`} label="Discard" onPress={() => decidePending($, p.path, 'discarded')} />
+              <Button key={`approve-${i}`} label="Approve" variant="primary" onPress={() => decidePending($, p.path, 'approved', projectHints)} />
+              <Button key={`discard-${i}`} label="Discard" onPress={() => decidePending($, p.path, 'discarded', projectHints)} />
             </Box>
           </Box>
         ))}
