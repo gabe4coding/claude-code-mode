@@ -32,6 +32,9 @@ export const takeMessages = (buffer: string): { messages: RunnerMessage[]; rest:
   return { messages, rest }
 }
 
+/** The message of a thrown value. */
+export const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
 /** True for a tool the sandbox may call: any MCP tool except this plugin's own. */
 export const isCallable = (tool: string, plugin: string): tool is `mcp__${string}__${string}` =>
   tool.startsWith('mcp__') && !tool.startsWith(`mcp__${plugin}__`)
