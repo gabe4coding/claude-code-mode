@@ -76,6 +76,9 @@ const LAUNCH = [
   'fi',
   'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
 ].join('\n')
+// GNU mktemp needs at least three X's at the end of the template. BSD mktemp
+// adds its own suffix and keeps the X's as text, which is also safe.
+const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 
 type Options = { node?: string; timeoutSeconds?: number; blockDirectMcp?: boolean; approval?: string; projectHints?: boolean }
 
@@ -673,7 +676,7 @@ export const register: Register = (on, options) => {
     // through a link (a linked ~/.claude or plugin folder) before it starts.
     const bundled = `${$.plugin.root}/runtime/runner.mjs`
     const runner = await $.fs.stat(bundled, { resolve: true }).then(s => s.realPath ?? bundled, () => bundled)
-    const made = await $.process.run(['mktemp', '-d', '-t', 'code-mode'])
+    const made = await $.process.run(MKTEMP)
     const xdir = made.stdout.trim()
     if (made.exitCode !== 0 || xdir === '') return { result: `Error: could not make a temp dir: ${made.stderr}` }
 
