@@ -4,7 +4,7 @@
 //
 //   node tests/runner.integration.mjs
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
 
-// Copies of LAUNCH and NO_NETWORK in hooks/register.tsx and of MARK in the
+// Copies of LAUNCH, NO_NETWORK and MKTEMP in hooks/register.tsx and of MARK in the
 // runner and hooks/protocol.ts. The first case fails when a copy differs.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
@@ -25,6 +25,7 @@ const LAUNCH = [
   'fi',
   'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
 ].join('\n')
+const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
 
 const echo = m =>
@@ -33,7 +34,8 @@ const echo = m =>
 
 // `script` replaces the runner, to test what the launch allows the process.
 const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env } = {}) => {
-  const xdir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-it-'))
+  // The plugin's own command, so CI runs it on Linux and on macOS.
+  const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
   return new Promise(resolve => {
     const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir], { env })
     child.stdin.on('error', () => {}) // a probe exits without reading stdin
@@ -115,6 +117,7 @@ const cases = {
     assert.ok(block, 'LAUNCH not found in hooks/register.tsx')
     assert.deepEqual(block[1].split('\n').map(l => l.trim().replace(/^'(.*)',?$/, '$1')), LAUNCH.split('\n'), 'LAUNCH differs')
     assert.ok(src.includes(`const NO_NETWORK = '${NO_NETWORK}'`), 'NO_NETWORK differs')
+    assert.ok(src.includes(`const MKTEMP = ${JSON.stringify(MKTEMP).replaceAll('"', "'").replaceAll(',', ', ')}`), 'MKTEMP differs')
     assert.equal(MARK, '\u0001cm ')
     for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts']) assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
   },

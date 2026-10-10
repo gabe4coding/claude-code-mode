@@ -12,7 +12,7 @@ enforces; the others rely on discipline.
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
-- `LAUNCH` and `NO_NETWORK` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
+- `LAUNCH`, `NO_NETWORK` and `MKTEMP` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
   exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
   `[test: runner.integration.mjs fails when a copy differs]`
 - Never weaken a sandbox layer, the hint-file guard or the approval of proposals to make a test pass. Each one is a
