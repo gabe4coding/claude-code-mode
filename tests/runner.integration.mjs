@@ -122,6 +122,24 @@ const cases = {
     for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts']) assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
   },
 
+  // Claude Code skips a hooks module's classic.SessionStart, so the context is a command hook.
+  'the SessionStart hook tells the model to use run_code': () => {
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'))
+    assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /hooks\/session-start\.sh/)
+    const context = env => {
+      const out = execFileSync('/bin/sh', [path.join(ROOT, 'hooks', 'session-start.sh')], { env: { PATH: process.env.PATH, ...env } })
+      const parsed = JSON.parse(String(out))
+      assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart')
+      return parsed.hookSpecificOutput.additionalContext
+    }
+    const byDefault = context({})
+    assert.match(byDefault, /use run_code for MCP tool calls/)
+    assert.match(byDefault, /directly only when run_code fails/)
+    const blocked = context({ CLAUDE_PLUGIN_OPTION_BLOCKDIRECTMCP: 'true' })
+    assert.match(blocked, /call MCP tools only from run_code/)
+    assert.doesNotMatch(blocked, /directly only when/)
+  },
+
   'returns a value': async () => assert.equal(value(await run('return 1 + 1')), 2),
 
   'parallel calls and console': async () => {

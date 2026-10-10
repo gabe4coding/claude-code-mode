@@ -8,6 +8,9 @@ enforces; the others rely on discipline.
   and `hooks/hints.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
+- Context for the model at session start goes in `hooks/session-start.sh`, a command hook in `hooks/hooks.json`.
+  Claude Code's built-in security module skips a hooks module's `classic.SessionStart`, so a module handler never
+  runs. A set option reaches the script as `CLAUDE_PLUGIN_OPTION_<KEY>`.
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
@@ -42,7 +45,8 @@ enforces; the others rely on discipline.
 ## Model-facing text
 The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
 `RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION` and the hint
-preamble in `hooks/hints.ts`, tool results and deny messages, and the bundled hints in `hints/`.
+preamble in `hooks/hints.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
+the bundled hints in `hints/`.
 - Every sentence must change what the model does. Remove facts the model cannot act on (how approval works for the
   person, UI layout, history). The person reads those in `docs/`.
 - Progressive disclosure: put in a description only what the model needs to choose and call the tool. Show the rest
