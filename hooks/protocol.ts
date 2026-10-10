@@ -412,12 +412,6 @@ return open.map(i => ({ id: i.id, title: i.title }))`
 
 export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types. Use an empty query to list all MCP tools.`
 
-/** Added to the context at session start: MCP calls go through run_code first. */
-export const sessionContext = (blockDirectMcp: boolean): string =>
-  blockDirectMcp
-    ? 'code-mode: call MCP tools only from run_code, and find them with search_tools. Direct MCP tool calls are denied.'
-    : 'code-mode: use run_code for MCP tool calls, and find tools with search_tools. Call an MCP tool directly only when run_code fails with an error that a changed program cannot fix.'
-
 /**
  * The note after a run that worked where earlier tries did not: the servers
  * whose calls failed before and work now, and the searches that found nothing.
