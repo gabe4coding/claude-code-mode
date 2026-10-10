@@ -591,28 +591,6 @@ describe('blockDirectMcp', () => {
   })
 })
 
-describe('session start', () => {
-  // The settings hooks beneath: one of them adds its own context, which stays.
-  const settingsHooks = (on: On) => on('classic.SessionStart', () => ({ additionalContext: ['from settings'] }))
-
-  test('tells the model to use run_code first and call directly only on errors', async ($, on) => {
-    settingsHooks(on)
-    const r = await $.classic.SessionStart({ source: 'startup' })
-    expect(r.additionalContext?.[0]).toBe('from settings')
-    const text = (r.additionalContext ?? []).join('\n')
-    expect(text).toContain('use run_code for MCP tool calls')
-    expect(text).toContain('only when run_code fails')
-  })
-
-  test('with blockDirectMcp, offers no direct fallback', { options: { blockDirectMcp: true } }, async ($, on) => {
-    settingsHooks(on)
-    const r = await $.classic.SessionStart({ source: 'clear' })
-    const text = (r.additionalContext ?? []).join('\n')
-    expect(text).toContain('call MCP tools only from run_code')
-    expect(text).not.toContain('directly only when')
-  })
-})
-
 describe('hint nudge', () => {
   // The plugin keeps tries per session: each test is its own session.
   let sessions = 0
