@@ -32,8 +32,8 @@ enforces; the others rely on discipline.
 
 ## Model-facing text
 The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
-`RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION` and the hint preamble in
-`hooks/hints.ts`, tool results and deny messages, and the bundled hints in `hints/`.
+`RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION` and the hint
+preamble in `hooks/hints.ts`, tool results and deny messages, and the bundled hints in `hints/`.
 - Every sentence must change what the model does. Remove facts the model cannot act on (how approval works for the
   person, UI layout, history). The person reads those in `docs/`.
 - Progressive disclosure: put in a description only what the model needs to choose and call the tool. Show the rest
@@ -41,6 +41,7 @@ The text the model reads is part of the product: tool descriptions and input sch
   the limit in the message of a cut result.
 - `run_code` and `search_tools` load in every session (`isDeferred: false`), so each word costs tokens in every
   session. `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
+  `remove_hint` is deferred too: the hint preamble names it, so the model learns of it when it sees a hint.
 - One way to do a thing. The runner also accepts `tools.<server>.<tool>()`, but descriptions show only `call()`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 
@@ -87,6 +88,6 @@ Technical names are allowed: tool names, options, file and product names.
 | sandbox | The Node process that runs one program | VM, container |
 | hint | A usage hint: a note about one server, in a hint file | tip, rule, note |
 | hint file | A markdown file with hints for one server | hint doc |
-| proposal | A hint that `add_hint` wrote to `pending/`, not yet approved | draft, suggestion |
+| proposal | A hint or a removal that `add_hint` or `remove_hint` wrote to `pending/`, not yet approved | draft, suggestion |
 | band | The area above the prompt that lists proposals | banner, bar |
 | allow rule | A `permissions.allow` entry in Claude Code settings | whitelist |
