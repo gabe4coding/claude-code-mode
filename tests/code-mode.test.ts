@@ -178,6 +178,7 @@ const XDIR = '/tmp/code-mode-test'
 const fakeHost = (on: On) => {
   const waiters = new Map<string, (text: string) => void>()
   const removed: string[] = []
+  const spawned: string[][] = []
   on('process.run', ($, e) => {
     if (e.argv[0] === 'rm') removed.push(String(e.argv[2]))
     return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? `${XDIR}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -187,6 +188,7 @@ const fakeHost = (on: On) => {
     return { value: undefined }
   })
   on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+    spawned.push([...e.argv])
     const { code } = JSON.parse(e.input ?? '{}') as { code: string }
     const { calls } = JSON.parse(code) as { calls: { tool: string; args: Record<string, unknown> }[] }
     const replies = calls.map((_, i) => new Promise<string>(resolve => waiters.set(`${XDIR}/r${i + 1}.json`, resolve)))
@@ -200,7 +202,7 @@ const fakeHost = (on: On) => {
     yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
     return { value: { code: 0, signal: null } }
   })
-  return { removed }
+  return { removed, spawned }
 }
 
 const scenario = (...calls: { tool: string; args?: Record<string, unknown> }[]) =>
@@ -218,6 +220,15 @@ describe('run_code', () => {
     expect(text).toContain('hello')
     expect(text).toContain('2 MCP calls')
     expect(host.removed).toEqual([XDIR])
+  })
+
+  test('the sandbox starts the runner by its real path', async ($, on) => {
+    fakeServer(on)
+    const host = fakeHost(on)
+    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: true, realPath: `/real${e.path}` } }))
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
+    const runner = host.spawned[0]!.find(a => a.endsWith('/runtime/runner.mjs'))
+    expect(runner?.startsWith('/real/')).toBe(true)
   })
 
   test('a denied tool call becomes an error reply', async ($, on) => {

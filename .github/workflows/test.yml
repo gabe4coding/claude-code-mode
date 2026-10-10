@@ -1,5 +1,6 @@
-# Runs the checks that need no Claude Code: the real sandbox and the doc rules.
-# `claude plugin test .` (the hooks) runs only on a contributor's machine.
+# Runs the checks of CODING_STANDARDS.md: the real sandbox, the doc rules, the
+# hooks, and on pull requests the version rule. The type check stays on a
+# contributor's machine: its types come from a logged-in Claude Code session.
 name: test
 
 on:
@@ -12,14 +13,18 @@ permissions:
 
 jobs:
   test:
-    # Linux only: no sandbox-exec here, so the macOS network block is not tested.
-    # 22.13 is the first Node with a stable --permission flag.
+    # 22.13 is the first Node with a stable --permission flag. macOS is the
+    # only runner with sandbox-exec, so only it tests the network block.
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node: ["22.13", "24"]
-    name: node ${{ matrix.node }}
-    runs-on: ubuntu-latest
+        include:
+          - os: macos-latest
+            node: "24"
+    name: ${{ matrix.os }} node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,6 +33,20 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: node tests/runner.integration.mjs
       - run: node tests/docs.check.mjs
+
+  hooks:
+    # The hooks against the fake host of claude-code/testing. It needs no login.
+    # Pinned: raise the version on purpose, after the tests pass with it locally.
+    name: hooks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: npm install --global @anthropic-ai/claude-code@2.1.296
+      - run: claude plugin test .
 
   version:
     # A pull request that changes the plugin must raise its version.
