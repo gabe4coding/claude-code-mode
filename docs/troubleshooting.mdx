@@ -38,7 +38,8 @@ Fix: make the program do less work in one run, or increase `timeoutSeconds`.
 Cause: the return value is longer than 20,000 characters.
 
 Fix: the model must return only the fields that it needs. If you see this often, ask the model to filter in the
-program.
+program. If the note gives a `recall(n)` number, the next program can return a part of the whole value with no new
+MCP call.
 
 ### "only MCP tools … can be called"
 

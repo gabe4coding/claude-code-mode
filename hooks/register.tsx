@@ -43,6 +43,7 @@ import {
 import {
   RUN_DESCRIPTION,
   SEARCH_DESCRIPTION,
+  callKey,
   extractDeclaration,
   errorText,
   formatOutcome,
@@ -50,13 +51,17 @@ import {
   isCallable,
   isSessionResult,
   mcpReply,
+  missedData,
   rankTools,
   savedResultOf,
   savedReply,
   sessionContext,
+  shapeOf,
   splitToolName,
   takeMessages,
   toValue,
+  type CallRecord,
+  type Projection,
   type Reply,
   type RunnerDone,
   type RunnerError,
@@ -77,7 +82,15 @@ const LAUNCH = [
   'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
 ].join('\n')
 
-type Options = { node?: string; timeoutSeconds?: number; blockDirectMcp?: boolean; approval?: string; projectHints?: boolean }
+type Options = {
+  node?: string
+  timeoutSeconds?: number
+  blockDirectMcp?: boolean
+  approval?: string
+  projectHints?: boolean
+  projection?: boolean
+  metrics?: boolean
+}
 
 const ADD_HINT = 'mcp__code-mode__add_hint'
 const REMOVE_HINT = 'mcp__code-mode__remove_hint'
@@ -145,15 +158,62 @@ function debugLog($: EngineInterface, text: string): void {
 // nothing; a run that works after them is the moment to propose a hint
 // (hintNudge). `failedTries` counts the runs with a failed try per server,
 // for the card of a proposal. session.end drops the entry.
+// `kept`: the results of nested calls as JSON text, by number, with the time
+// of the call, for recall(n) (output projection). `seen`: the first number of
+// each call key, to find a call that repeats an earlier one. `metrics`: one
+// JSON line per run, when on.
 type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number> }
-type SessionState = { hidden: Set<string>; tries: Tries }
+type Kept = { next: number; results: Map<number, { json: string; at: number }>; chars: number; seen: Map<string, number> }
+type SessionState = { hidden: Set<string>; tries: Tries; kept: Kept; metrics: string[] }
 const bySession = new Map<string, SessionState>()
 
 async function sessionOf($: EngineInterface): Promise<SessionState> {
   const id = await $.session.id().catch(() => '')
   let state = bySession.get(id)
-  if (!state) bySession.set(id, (state = { hidden: new Set(), tries: { failedServers: new Set(), missedSearches: [], failedTries: new Map() } }))
+  if (!state) {
+    state = {
+      hidden: new Set(),
+      tries: { failedServers: new Set(), missedSearches: [], failedTries: new Map() },
+      kept: newKept(),
+      metrics: [],
+    }
+    bySession.set(id, state)
+  }
   return state
+}
+
+const newKept = (): Kept => ({ next: 1, results: new Map(), chars: 0, seen: new Map() })
+
+// What one session keeps for recall(n): the newest results, up to these
+// limits. About 10 MB per session, and the desktop app runs many sessions in
+// one process.
+const MAX_KEPT = 50
+const MAX_KEPT_CHARS = 8_000_000
+const MAX_SEEN = 2000
+
+// Keeps a result and returns its number; the oldest results go first. A
+// result larger than the whole limit is not kept.
+function keep(kept: Kept, json: string): number | undefined {
+  if (json.length > MAX_KEPT_CHARS) return undefined
+  const ref = kept.next++
+  kept.results.set(ref, { json, at: Date.now() })
+  kept.chars += json.length
+  for (const [old, r] of kept.results) {
+    if (kept.results.size <= MAX_KEPT && kept.chars <= MAX_KEPT_CHARS) break
+    if (old === ref) break
+    kept.results.delete(old)
+    kept.chars -= r.json.length
+  }
+  return ref
+}
+
+// One line per run in ~/.claude/code-mode/metrics/<session>.jsonl, for the
+// output projection experiment: sizes and counts only, no data and no arguments.
+async function writeMetrics($: EngineInterface, state: SessionState, line: Record<string, unknown>): Promise<void> {
+  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
+  if (!home || id === '') return
+  state.metrics.push(JSON.stringify(line))
+  await $.fs.write(`${home}/.claude/code-mode/metrics/${id}.jsonl`, `${state.metrics.join('\n')}\n`)
 }
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
@@ -373,6 +433,7 @@ export const register: Register = (on, options) => {
   const timeoutSeconds = Math.max(5, Number(opts.timeoutSeconds) || 120)
   const programApproval = opts.approval !== 'per-call'
   const projectHints = opts.projectHints === true
+  const projection = opts.projection !== false
 
   // One hooks module serves many sessions: drop the state of one that ended.
   on('session.end', ($, e, next) => {
@@ -683,6 +744,15 @@ export const register: Register = (on, options) => {
     const answers: Promise<void>[] = []
     const failed = new Set<string>()
     const worked = new Set<string>()
+    const state = await sessionOf($)
+    // Without a session id, the state above is shared by every session with no
+    // id: results kept there could reach another session. Keep them for this run only.
+    const hasSession = (await $.session.id().catch(() => '')) !== ''
+    const kept = hasSession ? state.kept : newKept()
+    const records = new Map<number, CallRecord>()
+    const recalled: { ref: number; ageMs: number }[] = []
+    let recalls = 0
+    let recallMisses = 0
 
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
       calls++
@@ -713,7 +783,34 @@ export const register: Register = (on, options) => {
       }
       reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${errorText(err)}` }))
       if (isCallable(tool, $.plugin.name)) (reply.ok ? worked : failed).add(tool)
-      await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
+      const text = JSON.stringify(reply)
+      await $.fs.write(`${xdir}/r${id}.json`, text)
+      // A repeat is a call equal to an earlier one that worked, with projection
+      // on or off, so both arms of the experiment count the same. A failed call
+      // is not kept: a new call is the only way to retry it.
+      const key = callKey(tool, args)
+      const repeatOf = kept.seen.get(key)
+      const json = reply.ok ? (JSON.stringify(reply.value) ?? 'null') : ''
+      const chars = json.length
+      const ref = reply.ok && projection ? keep(kept, json) : undefined
+      if (reply.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
+      records.set(id, { ref, tool, ok: reply.ok, chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
+    }
+
+    // recall(n): a result this session kept, with no new call and no new check:
+    // it was approved when the call ran.
+    const answerRecall = async (id: number, ref: number): Promise<void> => {
+      recalls++
+      const found = projection ? kept.results.get(ref) : undefined
+      if (found === undefined) recallMisses++
+      else recalled.push({ ref, ageMs: Date.now() - found.at })
+      const error =
+        !projection ? 'recall() is off: call the tool again'
+        : ref > 0 && ref < kept.next ? `result #${ref} is no longer kept: call the tool again`
+        : `no result #${ref} in this session`
+      // The kept JSON goes into the reply as it is: no parse and no copy of the value.
+      const text = found !== undefined ? `{"ok":true,"value":${found.json}}` : JSON.stringify({ ok: false, error } satisfies Reply)
+      await $.fs.write(`${xdir}/r${id}.json`, text)
     }
 
     try {
@@ -731,6 +828,7 @@ export const register: Register = (on, options) => {
         buffer = taken.rest
         for (const m of taken.messages) {
           if (m.t === 'call') answers.push(answer(m.id, m.tool, m.args))
+          else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
           else outcome = m
         }
       }
@@ -758,7 +856,30 @@ export const register: Register = (on, options) => {
     const isDone = outcome?.t === 'done'
     const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set()).catch(() => '')
     const tail = [nudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
-    return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS)}${tail}` }
+    const callRecords = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
+    // A result too large to show is kept whole, so the next program can page it.
+    const returned = outcome?.t === 'done' ? outcome.value : undefined
+    const outChars = returned?.length ?? 0
+    const isCut = outChars > MAX_RESULT_CHARS
+    const wholeRef = projection && isCut && returned !== undefined ? keep(kept, returned) : undefined
+    const report: Projection | undefined = projection ? { calls: callRecords, recalls, recalled, wholeRef } : undefined
+    if (opts.metrics === true) {
+      await writeMetrics($, state, {
+        ts: new Date().toISOString(),
+        projection,
+        ok: isDone,
+        calls,
+        failedCalls: callRecords.filter(r => !r.ok).length,
+        repeats: callRecords.filter(r => r.repeatOf !== undefined).length,
+        recalls,
+        recallMisses,
+        inChars: callRecords.reduce((n, r) => n + r.chars, 0),
+        outChars,
+        cut: isCut,
+        empty: missedData(outcome, callRecords),
+      }).catch(err => debugLog($, `cannot write the metrics: ${errorText(err)}`))
+    }
+    return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS, report)}${tail}` }
   }).catch(($, e, next) => (debugLog($, `run_code failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: run_code failed; see the debug log.' }))
 
   // Guard: an active hint is just a file, so the model must not write one
