@@ -33,7 +33,7 @@ sandbox. Only the answer goes into the context.
 - **Sandbox**: the program runs in its own Node process, with no file system and a CPU limit. On macOS, it also
   has no network.
 - **Hints**: short notes for each MCP server tell the model about result formats, required arguments and limits.
-  The model can propose a new hint, and you approve it.
+  The model can propose a new hint or the removal of a wrong hint, and you approve it.
 - **Your permission rules apply**: each MCP call in the program gets the normal permission check.
 
 ## Quick start

@@ -69,7 +69,7 @@ The plugin asks the model for a proposal when a run works after earlier tries fa
 try is a failed call to the same server, a failed program or a `search_tools` query that found no tool. The hint
 then helps the next session do the task correctly at the first try.
 
-While proposals wait, a band above the prompt shows "● N proposed hints for code mode" and a **Review** button.
+While proposals wait, a band above the prompt shows "● N hint proposals for code mode" and a **Review** button.
 
 1. Click **Review**. The band shows one card for each proposal, with the server, the tools, the text and a review.
 2. Read the text and the review. Approve only a hint that you can write yourself.
@@ -92,7 +92,7 @@ Each line of the review names its source, so you know whom to trust:
 | Seen by code-mode | The plugin | The number of runs with a failed try on this server, in the session that made the proposal. |
 | Kind | A classifier | `argument`, `result format`, `limit`, `error fix` or `other instruction`. The classifier can be wrong. |
 | ⚠ | The plugin | A warning about the proposal. See the list below. |
-| Last line | The plugin | The hint file that gets the hint, the number of hints in it, and where the hint applies. |
+| Last line | The plugin | The hint file that gets or loses the hint, the number of hints in it, and where the hint applies. |
 
 The plugin shows a warning in these conditions:
 
@@ -112,10 +112,31 @@ card shows no kind.
 
 When you approve a proposal, the plugin removes the review. The hint file gets only the hint.
 
+A removal proposal has no kind. Its only possible warning is the one about failed tries.
+
 ### Scope
 
 The model proposes a `user` hint by default. A `project` hint goes to the project folder, and only when
 `projectHints` is on.
+
+## Remove a hint that is wrong
+
+A hint can become wrong, for example when a tool changes its result format. Then the model can propose to remove
+the hint with `remove_hint`. The model gives the path of the hint file and the text of the hint.
+
+When the model calls `remove_hint`, this occurs:
+
+1. The model does not see the hint again in the current session.
+2. A removal proposal goes to `pending/`. Its card in the band starts with "Remove".
+3. If you click **Approve**, the plugin removes the hint from its hint file. If the file has no hint left, the
+   plugin deletes the file.
+4. If you click **Discard**, the hint file does not change. The model sees the hint again in the session.
+
+The plugin does not change a bundled hint file, because each plugin update replaces the plugin folder. It adds the
+hint to `~/.claude/code-mode/hints/removed.json`, and the hint does not load again. To get the hint back, delete
+its entry from `removed.json`.
+
+To remove a hint by hand, delete its bullet from the hint file in your editor.
 
 ## Safety rules
 
@@ -126,6 +147,8 @@ model does with your MCP tools. These rules make a bad hint less probable:
   `projectHints` only for projects that you trust.
 - **A proposal has no effect until you approve it.** A tool result, for example a Slack message or a Jira issue, can
   contain text that tells the model to save a hint. Such text cannot make a standing instruction.
+- **A removal has no effect on a hint file until you approve it.** Text in a tool result can make the model hide
+  a hint, but only for the current session.
 - **Each proposal shows a review.** It shows why the model proposed the hint, what the plugin saw, and warnings.
   See [The review on each card](#the-review-on-each-card).
 - **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and

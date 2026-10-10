@@ -45,7 +45,14 @@ CI cannot run `claude plugin test .`. CI has no macOS job, so run the checks on 
 network block.
 
 To develop with the engine types in your editor, load the plugin once with `claude --plugin-dir .`. Claude Code then
-writes `.claude-plugin/types/`, which `tsconfig.json` uses.
+writes `.claude-plugin/types/`, which `tsconfig.json` uses. To check the types, run this command:
+
+```bash
+npx -p typescript tsc -p tsconfig.json
+```
+
+`tsconfig.json` does not load the types of your connected MCP tools. The plugin does not use them, and many MCP
+tools make the type check fail.
 
 ## Release
 
