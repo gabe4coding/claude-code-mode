@@ -1,6 +1,6 @@
 // Usage hints per MCP server: markdown files with a small frontmatter that
 // says which servers (and optionally which tools) they apply to. Pure
-// helpers here; register.ts reads and writes the files.
+// helpers here; register.tsx reads and writes the files.
 //
 //   ---
 //   servers: [Datadog]
