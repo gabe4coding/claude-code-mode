@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import {
   ADD_HINT_DESCRIPTION,
+  HINT_KINDS,
+  OTHER_INSTRUCTION,
   activePathOf,
   appendHint,
   formatHints,
@@ -9,14 +11,21 @@ import {
   hintFileName,
   hintsFor,
   isUnder,
+  kindQuestion,
+  normalize,
   parseHint,
   pendingFileName,
   pendingPathOf,
   resolvePath,
+  reviewLines,
   serverLabel,
+  textFlags,
+  withReview,
+  withoutReview,
   type Hint,
   type HintScope,
   type HintTarget,
+  type Review,
 } from './hints'
 import {
   RUN_DESCRIPTION,
@@ -104,7 +113,7 @@ async function approvePending($: EngineInterface, path: string): Promise<string>
   const proposal = String(await $.fs.read(path))
   const current = (await $.fs.exists(dest)) ? String(await $.fs.read(dest)) : undefined
   const bullets = parseHint(proposal, path, 'user').body.split('\n').filter(l => l.trim() !== '').join('\n')
-  await $.fs.write(dest, current === undefined ? proposal : `${current.replace(/\s*$/, '')}\n${bullets}\n`)
+  await $.fs.write(dest, current === undefined ? withoutReview(proposal) : `${current.replace(/\s*$/, '')}\n${bullets}\n`)
   await $.process.run(['rm', '-f', path])
   return dest
 }
@@ -145,6 +154,16 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
   const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
   const dirs = await guardedHintDirs($)
   return candidates.some(c => typeof c === 'string' && dirs.some(d => isUnder(c, d)))
+}
+
+// The review lines of a proposal's card, with the active file it goes to
+// and how many hints that file has now.
+async function cardLines($: EngineInterface, hint: Hint): Promise<ReturnType<typeof reviewLines>> {
+  const dest = activePathOf(hint.path)
+  const file = dest.slice(dest.lastIndexOf('/') + 1)
+  const current = (await $.fs.exists(dest).catch(() => false)) ? String(await $.fs.read(dest).catch(() => '')) : undefined
+  const hints = current === undefined ? undefined : parseHint(current, dest, hint.scope).body.split('\n').filter(l => /^\s*[-*]\s/.test(l)).length
+  return reviewLines(hint, { file, hints })
 }
 
 const HINT_GUARD_DENY =
@@ -197,6 +216,14 @@ const targetsOf = (tools: readonly string[], names: Map<string, string>, offered
       : []
   })
 
+// The server key for what the model gave: a key as it is, or the key of a
+// server with that /mcp name ("claude.ai Datadog").
+const serverKeyOf = (server: string, names: Map<string, string>, offered: Map<string, string[]>): string => {
+  if (offered.has(server)) return server
+  const tool = [...names.entries()].find(([, name]) => normalize(name) === normalize(server))?.[0]
+  return (tool === undefined ? undefined : splitToolName(tool)?.server) ?? server
+}
+
 // A server's /mcp name, when the session knows a real one: in the desktop
 // app the name of a claude.ai connector is its UUID, the same as its key.
 const displayName = (names: Map<string, string>, server: string): string | undefined => {
@@ -206,14 +233,15 @@ const displayName = (names: Map<string, string>, server: string): string | undef
 
 // Per session: servers whose calls failed and have not worked since, and
 // search_tools queries that found nothing. A run that works after them is the
-// moment to propose a hint (hintNudge).
-type Tries = { failedServers: Set<string>; missedSearches: string[] }
+// moment to propose a hint (hintNudge). `failedTries` counts the runs with a
+// failed try per server, for the card of a proposal.
+type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number> }
 const triesBySession = new Map<string, Tries>()
 
 async function triesOf($: EngineInterface): Promise<Tries> {
   const id = await $.session.id().catch(() => '')
   let tries = triesBySession.get(id)
-  if (!tries) triesBySession.set(id, (tries = { failedServers: new Set(), missedSearches: [] }))
+  if (!tries) triesBySession.set(id, (tries = { failedServers: new Set(), missedSearches: [], failedTries: new Map() }))
   return tries
 }
 
@@ -230,6 +258,7 @@ async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<s
   const serverOf = (tools: Set<string>) => new Set([...tools].flatMap(t => splitToolName(t)?.server ?? []))
   const failedNow = serverOf(failed)
   const learned = [...serverOf(worked)].filter(s => tries.failedServers.has(s) || failedNow.has(s))
+  for (const s of failedNow) tries.failedTries.set(s, (tries.failedTries.get(s) ?? 0) + 1)
   for (const s of failedNow) if (!learned.includes(s)) tries.failedServers.add(s)
   for (const s of learned) tries.failedServers.delete(s)
   if (worked.size === 0) return ''
@@ -286,10 +315,11 @@ export const register: Register = (on, options) => {
         properties: {
           server: { type: 'string', description: 'The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.' },
           text: { type: 'string', description: 'The hint: one short, factual sentence.' },
+          why: { type: 'string', description: 'What failed before and what worked, in one sentence.' },
           tools: { type: 'array', items: { type: 'string' }, description: 'Optional: tool names on that server (globs allowed) when the hint is for some tools only.' },
           scope: { type: 'string', enum: ['user', 'project'], description: 'Default "user".' },
         },
-        required: ['server', 'text'],
+        required: ['server', 'text', 'why'],
       },
     })
     return next(e)
@@ -299,14 +329,19 @@ export const register: Register = (on, options) => {
   // which loads only after the person presses Approve on the call's row in
   // the chat. Text in a tool result therefore cannot plant a standing
   // instruction by itself: the model cannot press a button.
+  // The proposal also carries a review for that person (Review): the model's
+  // reason, a classifier's guess of the kind, and what code-mode saw. All of
+  // it is advice: none of it approves or refuses a proposal.
   on('tool.call', { tool: ADD_HINT }, async ($, e) => {
-    const input = e as unknown as { server?: unknown; text?: unknown; tools?: unknown; scope?: unknown }
+    const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown }
     const server = typeof input.server === 'string' ? input.server.trim() : ''
     const text = typeof input.text === 'string' ? input.text.trim() : ''
+    const why = typeof input.why === 'string' ? input.why.trim().replace(/\s*\n\s*/g, ' ') : ''
     const tools = Array.isArray(input.tools) ? input.tools.filter((t): t is string => typeof t === 'string') : []
     const scope = input.scope === 'project' ? 'project' : 'user'
-    if (server === '' || text === '') return { result: 'Error: server and text are required.' }
+    if (server === '' || text === '' || why === '') return { result: 'Error: server, text and why are required.' }
     if (text.length > 500) return { result: 'Error: a hint is one short sentence (500 characters at most).' }
+    if (why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
 
     const dirs = await hintDirs($, projectHints)
     const target = dirs.find(d => d.scope === scope)
@@ -315,9 +350,17 @@ export const register: Register = (on, options) => {
     // Store the server by its /mcp name when the session knows one, and also
     // by one of its tools (`identify`): a tool name stays the same in every
     // session and host, a server key does not.
-    const [names, list] = await Promise.all([serverNames($), $.tool.list()])
-    const offered = toolsByServer(list.filter(t => t.mcp).map(t => t.name)).get(server) ?? []
-    const servers = [displayName(names, server) ?? server]
+    // A classifier that fails or names no kind leaves the kind out.
+    const [names, list, kind] = await Promise.all([
+      serverNames($),
+      $.tool.list(),
+      $.model.classify(kindQuestion(server, text), HINT_KINDS).catch(() => undefined),
+    ])
+    const mcpTools = list.filter(t => t.mcp).map(t => t.name)
+    const byServer = toolsByServer(mcpTools)
+    const key = serverKeyOf(server, names, byServer)
+    const offered = byServer.get(key) ?? []
+    const servers = [displayName(names, key) ?? key]
     const named = tools.find(t => !t.includes('*') && offered.includes(t))
     const longest = [...offered].sort((a, b) => b.length - a.length)[0]
     const identify = named ?? longest
@@ -325,7 +368,19 @@ export const register: Register = (on, options) => {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
     const path = `${target.dir}/pending/${pendingFileName(fileName, e.tool_use_id)}`
-    await $.fs.write(path, appendHint(undefined, servers, identify ? [identify] : [], tools, text))
+    const failures = (await triesOf($)).failedTries.get(key) ?? 0
+    const review: Review = {
+      why,
+      kind,
+      seen: failures > 0 ? `${failures} run${failures === 1 ? '' : 's'} with a failed try on this server in this session.` : undefined,
+      flags: [
+        ...(offered.length === 0 ? ['Its server is not connected in this session.'] : []),
+        ...(failures === 0 ? ['No try on this server failed in this session.'] : []),
+        ...(kind === OTHER_INSTRUCTION ? ['A classifier reads it as an instruction, not as a fact about a call.'] : []),
+        ...textFlags(text, key, mcpTools.filter(t => splitToolName(t)?.server !== key)),
+      ],
+    }
+    await $.fs.write(path, withReview(appendHint(undefined, servers, identify ? [identify] : [], tools, text), review))
     $.ui.invalidate('ui.render') // the band above the prompt counts the proposal
     return {
       result: `Proposed a ${scope} hint for ${servers[0]}. It has no effect until the person approves it in the band above the prompt (Review, then Approve or Discard). Tell the person.\npending: ${path}`,
@@ -347,9 +402,10 @@ export const register: Register = (on, options) => {
     if (decision?.action === 'discarded') return <Text dimColor>Hint discarded.</Text>
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
-    const hint = parseHint(String(await $.fs.read(path)), path, 'user')
-    const decide = (action: 'approved' | 'discarded') => decidePending($, path, action)
     const scope = path.includes('/.claude/code-mode/hints/') && !path.startsWith(String(await $.env.get('HOME').catch(() => ''))) ? 'project' : 'user'
+    const hint = parseHint(String(await $.fs.read(path)), path, scope)
+    const decide = (action: 'approved' | 'discarded') => decidePending($, path, action)
+    const lines = await cardLines($, hint)
 
     return (
       <Box flexDirection="column" borderStyle="round" paddingX={1}>
@@ -360,6 +416,7 @@ export const register: Register = (on, options) => {
           {hint.tools.length > 0 ? ` · tools: ${hint.tools.join(', ')}` : ''}
         </Text>
         <Text>{hint.body}</Text>
+        {lines.map(l => <Text color={l.isWarning ? 'yellow' : undefined} dimColor={l.isDim}>{l.text}</Text>)}
         <Text dimColor>The model sees approved hints in later sessions. Approve only what you would write yourself.</Text>
         <Box>
           <Button key="approve" label="Approve" variant="primary" onPress={() => decide('approved')} />
@@ -391,6 +448,7 @@ export const register: Register = (on, options) => {
     }
 
     const shown = pending.slice(0, BAND_LIMIT)
+    const lines = await Promise.all(shown.map(p => cardLines($, p)))
     return (
       <Box flexDirection="column" gap={1}>
         <Box justifyContent="space-between">
@@ -405,6 +463,7 @@ export const register: Register = (on, options) => {
               {` · ${p.scope}`}
             </Text>
             {hintLines(p.body).map(line => <Text>{line}</Text>)}
+            {lines[i]!.map(l => <Text color={l.isWarning ? 'yellow' : undefined} dimColor={l.isDim}>{l.text}</Text>)}
             <Box gap={1} marginTop={1}>
               <Button key={`approve-${i}`} label="Approve" variant="primary" onPress={() => decidePending($, p.path, 'approved')} />
               <Button key={`discard-${i}`} label="Discard" onPress={() => decidePending($, p.path, 'discarded')} />

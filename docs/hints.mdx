@@ -71,8 +71,8 @@ then helps the next session do the task correctly at the first try.
 
 While proposals wait, a band above the prompt shows "● N proposed hints for code mode" and a **Review** button.
 
-1. Click **Review**. The band shows one card for each proposal, with the server, the tools and the text.
-2. Read the text. Approve only a hint that you can write yourself.
+1. Click **Review**. The band shows one card for each proposal, with the server, the tools, the text and a review.
+2. Read the text and the review. Approve only a hint that you can write yourself.
 3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal.
 
 The band shows the proposals of all sessions, closed and headless (`claude -p`) sessions too. Where Claude Code
@@ -81,6 +81,38 @@ not draw them, so there only the band shows proposals.
 
 To approve a proposal by hand, move its bullets into the hint file of the server. To discard it, delete its file in
 `pending/`.
+
+### The review on each card
+
+Each line of the review names its source, so you know whom to trust:
+
+| Line | Source | What it tells you |
+| --- | --- | --- |
+| Why | The model | What failed before and what worked. Compare it with what you saw in the session. |
+| Seen by code-mode | The plugin | The number of runs with a failed try on this server, in the session that made the proposal. |
+| Kind | A classifier | `argument`, `result format`, `limit`, `error fix` or `other instruction`. The classifier can be wrong. |
+| ⚠ | The plugin | A warning about the proposal. See the list below. |
+| Last line | The plugin | The hint file that gets the hint, the number of hints in it, and where the hint applies. |
+
+The plugin shows a warning in these conditions:
+
+- The server is not connected in the session.
+- No try on the server failed in the session.
+- The classifier reads the hint as an instruction, not as a fact about a call.
+- The text contains a link, an email address, or a long id or key.
+- The text talks about approval, credentials, or what to tell the person.
+- The text names a tool of another server.
+
+The review is advice only. It does not approve or discard a proposal. A warning tells you to read the hint again,
+but it does not prove that the hint is bad. No warning does not prove that the hint is good. The model writes the
+why and the hint, and text in a tool result can control both.
+
+The classifier is one request to the small fast model of Claude Code for each proposal. If the request fails, the
+card shows no kind.
+
+When you approve a proposal, the plugin removes the review. The hint file gets only the hint.
+
+### Scope
 
 The model proposes a `user` hint by default. A `project` hint goes to the project folder, and only when
 `projectHints` is on.
@@ -94,6 +126,8 @@ model does with your MCP tools. These rules make a bad hint less probable:
   `projectHints` only for projects that you trust.
 - **A proposal has no effect until you approve it.** A tool result, for example a Slack message or a Jira issue, can
   contain text that tells the model to save a hint. Such text cannot make a standing instruction.
+- **Each proposal shows a review.** It shows why the model proposed the hint, what the plugin saw, and warnings.
+  See [The review on each card](#the-review-on-each-card).
 - **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
   NotebookEdit on files in the hint folders. It checks the path as written and its real path through symbolic links.
 - **The guard also denies Bash commands that name a hint folder.** This includes read-only commands, because a text
