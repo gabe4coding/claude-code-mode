@@ -9,7 +9,9 @@ enforces; the others rely on discipline.
   `hooks/register.tsx`.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
-- `LAUNCH` and `NO_NETWORK` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. Change both.
+- `LAUNCH` and `NO_NETWORK` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
+  exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
+  `[test: runner.integration.mjs fails when a copy differs]`
 - Never weaken a sandbox layer, the hint-file guard or the approval of proposals to make a test pass. Each one is a
   safety rule (see `docs/hints.mdx` and `docs/how-it-works.mdx`).
 - Make changes to the approval logic (`approval`, `$.mcp.call` path) in manual mode: the auto mode classifier can
@@ -28,6 +30,7 @@ enforces; the others rely on discipline.
 ## Plugin
 - When anything under `hooks/`, `runtime/`, `hints/` or `.claude-plugin/plugin.json` changes, bump `version` in
   `.claude-plugin/plugin.json`: Claude Code caches a plugin per version.
+  `[test: CI runs tests/version.check.mjs on each pull request]`
 - Run `claude plugin validate .` after a change to a manifest.
 
 ## Model-facing text
