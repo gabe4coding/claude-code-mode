@@ -41,7 +41,8 @@ node tests/docs.check.mjs
 - `tests/docs.check.mjs` checks the rules for the docs.
 
 CI (`.github/workflows/test.yml`) runs the last two checks on Linux for each push to `main` and each pull request.
-CI cannot run `claude plugin test .`. CI has no macOS job, so run the checks on a Mac for a change to the macOS
+For each pull request, CI also runs `tests/version.check.mjs`. This check fails if the plugin changed and its
+version did not increase. CI cannot run `claude plugin test .`. CI has no macOS job, so run the checks on a Mac for a change to the macOS
 network block.
 
 To develop with the engine types in your editor, load the plugin once with `claude --plugin-dir .`. Claude Code then
@@ -61,6 +62,7 @@ tools make the type check fail.
    version, users do not get the change.
 2. Run `claude plugin validate .`.
 3. Run the three checks.
+4. Optional: run `node tests/version.check.mjs` to do the version check of CI before you push.
 
 ## More
 
