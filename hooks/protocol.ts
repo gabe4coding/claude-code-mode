@@ -196,10 +196,11 @@ export const formatOutcome = (
 
 /**
  * One nested call as the run's footer shows it: its number in the session
- * (`ref`, absent when it failed or was not kept), its size and shape, and the
- * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none).
+ * (`ref`, absent when it failed or was not kept), its size and shape, the
+ * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none),
+ * and `unfinished` when the run ended before its reply came.
  */
-export type CallRecord = { ref?: number; tool: string; ok: boolean; chars: number; shape?: string; repeatOf?: number }
+export type CallRecord = { ref?: number; tool: string; ok: boolean; chars: number; shape?: string; repeatOf?: number; unfinished?: boolean }
 
 /**
  * What a run with output projection reports: its calls, the results it read
@@ -693,6 +694,7 @@ export const callKey = (tool: string, args: Record<string, unknown>): string => 
 
 const callLine = (c: CallRecord): string => {
   const id = c.ref === undefined ? '-' : `#${c.ref}`
+  if (c.unfinished === true) return `${id} ${c.tool} did not finish`
   if (!c.ok) return `${id} ${c.tool} failed`
   const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
   return `${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()
@@ -705,10 +707,11 @@ const groupLines = (calls: readonly CallRecord[]): string[] => {
   return [...byTool].map(([tool, group]) => {
     const kept = group.filter(c => c.ref !== undefined).map(c => c.ref!)
     const ids = kept.length === 0 ? '-' : kept.length === 1 ? `#${kept[0]}` : `#${kept[0]}…#${kept.at(-1)}`
-    const failed = group.filter(c => !c.ok).length
+    const unfinished = group.filter(c => c.unfinished === true).length
+    const failed = group.filter(c => !c.ok).length - unfinished
     const chars = group.reduce((n, c) => n + c.chars, 0)
     const first = group.find(c => c.ok)
-    const failures = failed === 0 ? '' : `, ${failed} failed`
+    const failures = `${failed === 0 ? '' : `, ${failed} failed`}${unfinished === 0 ? '' : `, ${unfinished} did not finish`}`
     return `${ids} ${tool} ×${group.length}${failures} ${charCount(chars)} ${first?.shape ?? ''}`.trimEnd()
   })
 }

@@ -40,6 +40,7 @@ const echo = m =>
   : m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
+// An `answer` that returns undefined writes no reply: a call that never finishes.
 const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env, lib } = {}) => {
   // The plugin's own command, so CI runs it on Linux and on macOS.
   const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
@@ -61,7 +62,8 @@ const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = 
         if (m.t === 'done' || m.t === 'error') outcome = m
         else {
           calls++
-          setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(answer(m))), 10)
+          const reply = answer(m)
+          if (reply !== undefined) setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(reply)), 10)
         }
       }
     })
@@ -263,6 +265,14 @@ const cases = {
   },
 
   'wall-clock timeout': async () => assert.match(failure(await run('await new Promise(() => {})', { timeoutMs: 500 })), /timeout/),
+
+  'a call with no reply ends at the time limit, and try/catch does not hide it': async () => {
+    const answer = m => (m.tool === 'mcp__s__hang' ? undefined : echo(m))
+    const code = 'await call("mcp__s__a"); try { await call("mcp__s__hang") } catch { return "caught" }'
+    const r = await run(code, { timeoutMs: 500, answer })
+    assert.equal(failure(r), 'timeout after 500 ms')
+    assert.equal(r.calls, 2)
+  },
 
   'cpu limit kills busy loops': async () => {
     const r = await run('while (true) {}', { cpuSeconds: 1, timeoutMs: 60_000 })

@@ -152,15 +152,17 @@ see what it removed, and fix the filter without a new MCP call.
 The last part of the result has one line for each MCP call:
 
 ```text
---- 2 MCP calls: 184k characters in, 2k out ---
+--- 3 MCP calls: 184k characters in, 2k out ---
 #4 mcp__slack__search 181k {messages: [312 × {ts, text, user, …+5}], next_cursor}
-#5 mcp__slack__user failed
+- mcp__slack__user failed
+- mcp__slack__history did not finish
 await recall(n) returns result #n again, with no new call.
 ```
 
 1. `#4` is the number of the result in the session.
 2. `181k` is the size of the result, in characters of JSON.
 3. The shape shows the keys and the array lengths, not the values.
+4. `did not finish` shows a call that had no reply when the run ended. Usually the run stopped at its time limit.
 
 The shape shows the keys of an object only if they are field names, such as `status` or `next_cursor`. If the keys
 are data, for example emails, ids or the names of services, the shape shows only the number of keys. Then the data

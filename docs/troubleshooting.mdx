@@ -43,9 +43,12 @@ Fix: put the file in the project, or add a `Read` allow rule for it. See [Files]
 
 ### "timeout after … ms"
 
-Cause: the program ran longer than `timeoutSeconds`.
+Cause: the program ran longer than `timeoutSeconds`. Often an MCP call did not reply. The run footer then shows
+that call with `did not finish`.
 
-Fix: make the program do less work in one run, or increase `timeoutSeconds`.
+Fix: make the program do less work in one run, or increase `timeoutSeconds`. If a call did not finish, find out
+why its server does not reply. When the program ends, the plugin waits at most 1 second more for its calls. It does not start the calls that
+wait in the queue. A program runs at most 8 calls at one time.
 
 ### "more characters cut, return less data"
 
