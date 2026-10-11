@@ -810,7 +810,7 @@ The program is the body of an async function. Available:
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
 
-Find tools, their argument types, result shapes, usage hints and saved functions with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time. When a working program does a task that comes back (all pages of a search, a join of two tools), propose it with save_function.
+Find tools, their argument types, result shapes, usage hints and saved functions with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time. When a working program does a task that comes back (all pages of a search, a join of two tools), propose it with save_function. Do not wait for the person to ask.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })
@@ -822,10 +822,20 @@ export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give key
 /**
  * The note after a run that worked where earlier tries did not: the servers
  * whose calls failed before and work now, and the searches that found nothing.
+ * Also after a second run with a tool of a server that has no hint (`probed`,
+ * tool names): the first run was often a probe of its arguments or result format.
  */
-export const hintNudge = (servers: readonly string[], missedSearches: readonly string[]): string => {
-  if (servers.length === 0 && missedSearches.length === 0) return ''
+export const hintNudge = (servers: readonly string[], missedSearches: readonly string[], probed: readonly string[] = []): string => {
+  if (servers.length === 0 && missedSearches.length === 0 && probed.length === 0) return ''
   const failed = servers.length === 0 ? [] : [`Calls to ${servers.join(', ')} failed earlier and work now.`]
   const missed = missedSearches.length === 0 ? [] : [`search_tools found nothing for ${missedSearches.map(q => JSON.stringify(q)).join(', ')}.`]
-  return `## Worth a hint\n\n${[...failed, ...missed].join(' ')} If you know what made it work (the search words, the tool, an argument, a format), propose it with add_hint, one short fact per hint, so the next session gets it right the first time.`
+  const again = probed.length === 0 ? [] : [`An earlier run called ${probed.join(', ')} too, and no hint covers ${probed.length === 1 ? 'its server' : 'their servers'}.`]
+  return `## Worth a hint\n\n${[...failed, ...missed, ...again].join(' ')} If you had to find out how it works (the search words, the tool, an argument, a result format), propose it with add_hint now, one short fact per hint, so the next session gets it right the first time.`
 }
+
+/**
+ * The note after a program that did a task worth keeping: many calls, or
+ * calls to more than one tool, with no saved function.
+ */
+export const functionNudge = (calls: number, tools: readonly string[]): string =>
+  `## Worth a saved function\n\nThis program made ${calls} call${calls === 1 ? '' : 's'} to ${tools.join(', ')}. If the person can ask for this task again, propose the program with save_function now: pass ids, dates and queries as arguments.`

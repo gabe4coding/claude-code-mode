@@ -20,10 +20,14 @@ Thus the model does not write the same loop again in each session, and it does n
 When a program does a task that comes back, the model can propose it with `save_function`. The proposal has no
 effect until you approve it.
 
+The plugin asks the model for a proposal after a program with 10 or more calls that worked. It also asks after 5 or
+more calls to two or more tools. It asks once for each set of tools in a session, and not for a program that uses a
+saved function.
+
 1. The model calls `save_function` with a name, a description, the code and the reason.
 2. The plugin writes the proposal to `~/.claude/code-mode/functions/pending/`.
-3. The band above the prompt shows "1 function proposal for code mode". Select **Review**.
-4. Read the full code of the function.
+3. The band above the prompt shows "1 proposal for code mode: 1 function". Select **Review**.
+4. Read the full code of the function. The card shows it with syntax colors.
 5. Select **Approve** or **Discard**.
 
 If you approve, the plugin writes the function to `~/.claude/code-mode/functions/<name>.md`. A function with the

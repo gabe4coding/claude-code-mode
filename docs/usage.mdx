@@ -134,8 +134,9 @@ The model gets one text with these parts:
 2. The console lines, if there are any, at most 4,000 characters.
 3. One line for each MCP call that the program made, with its size and its shape. See
    [Output projection](#output-projection).
-4. A request to propose a hint, if the run works after earlier tries failed. See
-   [Hints](./hints.mdx#approve-hints-that-the-model-proposes).
+4. A request to propose a hint or a saved function, in the conditions that
+   [Hints](./hints.mdx#approve-hints-that-the-model-proposes) and
+   [Saved functions](./functions.mdx#approve-a-function-that-the-model-proposes) give.
 5. The hints for the servers whose calls failed, if there are any.
 
 If the program throws, the first part is the error and the lines of the program where it occurred.
