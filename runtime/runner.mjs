@@ -9,6 +9,7 @@
 //           {"t":"error","message":"...","logs":[...]}
 // The host answers call or recall <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
+// sleep(ms) never reaches the host: this process answers it with its own timer.
 //
 // The script runs in a vm context with no require, process, fetch or timers.
 // Only strings cross between host and context, so no host object (and no host
@@ -37,7 +38,9 @@ const finish = msg => {
 }
 
 // Host side of the bridge: the context calls post(kind, a, b, c) with strings.
+// `deliver` is the context's answer function, set after the bootstrap runs.
 const waiting = new Set()
+let deliver
 const post = (kind, a, b, c) => {
   try {
     if (kind === 'call') {
@@ -48,6 +51,10 @@ const post = (kind, a, b, c) => {
       const id = Number(a)
       emit({ t: 'recall', id, ref: Number(b) })
       waiting.add(id)
+    } else if (kind === 'sleep') {
+      // No longer than the run can last: the wall-clock timer ends it first.
+      const id = Number(a)
+      setTimeout(() => deliver(id, '{"ok":true,"value":null}'), Math.min(Number(b), timeoutMs))
     } else if (kind === 'done') {
       finish({ t: 'done', value: String(a), logs: JSON.parse(String(b)) })
     } else if (kind === 'error') {
@@ -103,8 +110,16 @@ const BOOTSTRAP = String.raw`
     waiting.set(id, { resolve, reject })
     post('recall', String(id), String(ref))
   })
+  // sleep(ms): waits, for programs that poll; no timers reach the context
+  const sleep = ms => new Promise((resolve, reject) => {
+    if (typeof ms !== 'number' || !(ms >= 0)) throw new TypeError('sleep(ms): ms must be a number of milliseconds, 0 or more')
+    const id = ++nextId
+    waiting.set(id, { resolve, reject })
+    post('sleep', String(id), String(ms))
+  })
   globalThis.call = call
   globalThis.recall = recall
+  globalThis.sleep = sleep
   globalThis.tools = tools
 
   globalThis.__deliver = (id, text) => {
@@ -142,7 +157,7 @@ const runSync = (src, filename) =>
 try {
   runSync(BOOTSTRAP, 'code-mode-bootstrap.js')
   // Keep the bootstrap's helpers away from the script.
-  const deliver = runSync('globalThis.__deliver', 'x.js')
+  deliver = runSync('globalThis.__deliver', 'x.js')
   const start = runSync('globalThis.__start', 'x.js')
   runSync('delete globalThis.__deliver; delete globalThis.__start', 'x.js')
 

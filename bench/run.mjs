@@ -42,6 +42,10 @@ const allowDirect = process.argv.includes('--allow-direct')
 const label = arg('--label', '')
 const out = reportOnly ?? arg('--out', path.join(os.tmpdir(), `code-mode-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
 const METRICS = path.join(os.homedir(), '.claude', 'code-mode', 'metrics')
+const SHAPES = path.join(os.homedir(), '.claude', 'code-mode', 'shapes.json')
+// Each run has its own server name, so no run sees the result shapes that an
+// earlier run saved. The end of the bench removes them from the shapes file.
+const BENCH_SERVER = /^mcp__bench_[0-9a-f]{8}__/
 
 const readLines = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [])
 
@@ -58,7 +62,8 @@ const runOne = async ({ task, arm, rep }) => {
   fs.mkdirSync(cwd, { recursive: true })
   const log = path.join(dir, 'calls.jsonl')
   const mcp = path.join(dir, 'mcp.json')
-  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { bench: { command: 'node', args: [path.join(REPO, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } } } }))
+  const server = `bench_${crypto.randomUUID().slice(0, 8)}`
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { [server]: { command: 'node', args: [path.join(REPO, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } } } }))
   const settings = { pluginConfigs: { 'code-mode': { options: { projection: arm === 'on', metrics: true, blockDirectMcp: !allowDirect } } } }
   const sessionId = crypto.randomUUID()
   const argv = [
@@ -66,7 +71,7 @@ const runOne = async ({ task, arm, rep }) => {
     '--restricted', '--strict-mcp-config', '--mcp-config', mcp,
     '--plugin-dir', pluginDir,
     '--settings', JSON.stringify(settings),
-    '--allowedTools', 'mcp__code-mode__run_code,mcp__code-mode__search_tools,mcp__bench__*',
+    '--allowedTools', `mcp__code-mode__run_code,mcp__code-mode__search_tools,mcp__${server}__*`,
     '--output-format', 'json', '--session-id', sessionId, '--max-budget-usd', '1',
     ...(model ? ['--model', model] : []),
   ]
@@ -103,7 +108,7 @@ const runOne = async ({ task, arm, rep }) => {
     task: task.id, arm, label, rep, sessionId,
     correct: task.check(answer, calls),
     mcpCalls: calls.length,
-    directCalls: uses.filter(n => n.startsWith('mcp__bench__')).length,
+    directCalls: uses.filter(n => n.startsWith(`mcp__${server}__`)).length,
     programs: uses.filter(n => n === 'mcp__code-mode__run_code').length,
     toolSearches: uses.filter(n => n === 'ToolSearch').length,
     duplicates,
@@ -178,5 +183,9 @@ if (reportOnly) {
       console.log(`${String(rows.length).padStart(3)}/${jobs.length} ${row.task}-${label || row.arm}-${row.rep} ${row.correct ? 'ok   ' : 'WRONG'} calls=${row.mcpCalls} direct=${row.directCalls} dup=${row.duplicates} runs=${row.runs} recalls=${row.recalls} $${row.costUsd.toFixed(3)}`)
     }
   }))
+  if (fs.existsSync(SHAPES)) {
+    const shapes = JSON.parse(fs.readFileSync(SHAPES, 'utf8'))
+    fs.writeFileSync(SHAPES, `${JSON.stringify(Object.fromEntries(Object.entries(shapes).filter(([tool]) => !BENCH_SERVER.test(tool))), null, 2)}\n`)
+  }
   report(rows)
 }

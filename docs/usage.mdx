@@ -22,7 +22,7 @@ into the context.
 
 | Tool | What it does |
 | --- | --- |
-| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types. It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
+| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types and the [result shape](#result-shapes). It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
 | `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
 | `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
 | `mcp__code-mode__remove_hint` | Hides a wrong hint in the current session and proposes to remove it from its hint file. See [Remove a hint that is wrong](./hints.mdx#remove-a-hint-that-is-wrong). |
@@ -35,6 +35,7 @@ A program is the body of an async JavaScript function. In the program:
 
 - `await call("mcp__<server>__<tool>", args)` calls an MCP tool and gives its result.
 - `await tools["<server>"]["<tool>"](args)` is the same call in a different form.
+- `await sleep(ms)` waits for the given number of milliseconds. Use it to poll a slow job.
 - `console.log(...)` adds a line to the console output.
 - `return value` sets the result. The model gets the value as JSON.
 
@@ -47,6 +48,23 @@ const [resources, user] = await Promise.all([
 ])
 return { resourceCount: resources.length, hasAccountId: Boolean(user.account_id) }
 ```
+
+A program that polls a job until it is done:
+
+```js
+let job = await call("mcp__ci__start_build", { branch: "main" })
+while (job.status === "running") {
+  await sleep(5000)
+  job = await call("mcp__ci__get_build", { id: job.id })
+}
+return { status: job.status, url: job.url }
+```
+
+The `timeoutSeconds` limit of the run includes the time in `sleep`. See [Configuration](./configuration.mdx).
+
+At most 8 nested calls of one run wait for a reply at the same time. If a program starts more, for example with
+`Promise.all` over 300 ids, the other calls wait in a queue. Thus a program does not send all its calls to a server
+at once.
 
 What a call gives:
 
@@ -62,7 +80,7 @@ is larger, or Claude Code saved only part of the result, the call throws an `Err
 data, for example one page or fewer fields.
 
 A program can call only MCP tools. It cannot call built-in tools such as `Bash` or `Read`, or the code-mode tools.
-It has no `require`, `fetch`, `process`, timers or file system.
+It has no `require`, `fetch`, `process`, `setTimeout` or file system.
 
 ## The result
 
@@ -126,6 +144,33 @@ program. To compare sessions with `projection` on and off, run this command:
 ```bash
 node scripts/projection-report.mjs
 ```
+
+## Result shapes
+
+When a nested call works, the plugin saves the shape of its result for that MCP tool. `search_tools` then shows the
+shape under the argument types, also in later sessions:
+
+```text
+### mcp__slack__search
+Search messages
+args: { query: string; count?: number }
+returns (earlier call): {messages: [{ts, text, user, …+5}], next_cursor}
+```
+
+Thus the first program of a session can use the correct fields. Without a shape, the model must guess the fields,
+and a wrong guess costs one more run.
+
+- The shape has the same rules as the shape in the [output projection](#output-projection) lines. It shows field
+  names, not values. It has no array lengths.
+- A result that is text has the shape `text`.
+- An empty result does not change a known shape.
+- The plugin keeps the newest 500 shapes in `~/.claude/code-mode/shapes.json`. It loads only the shapes that have
+  field names and punctuation. It ignores all other text in the file.
+- A server can change the shape of its results. Then the program fails one time, and the next call saves the new
+  shape.
+
+Result shapes are part of output projection. If the option `projection` is `false`, the plugin does not save or show
+shapes.
 
 ## Make the model use code-mode
 
