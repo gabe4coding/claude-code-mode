@@ -954,4 +954,58 @@ describe('hint nudge', () => {
     expect(after).toContain('search_tools found nothing for "ticket".')
     expect(after).not.toContain('Calls to')
   })
+
+  test('a second run with a tool of a server with no hint asks for a hint, one time', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+    const again = await run($, { tool: 'mcp__fake__echo' })
+    expect(again).toContain('## Worth a hint')
+    expect(again).toContain('An earlier run called echo too, and no hint covers its server.')
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+
+  test('a second run asks for nothing when a hint covers the server', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    const dir = '/home/fake/.claude/code-mode/hints'
+    on('env.get', ($, e, next) => (e.name === 'HOME' ? { value: '/home/fake' } : next(e)))
+    on('fs.exists', ($, e) => ({ value: e.path === dir }))
+    on('fs.list', ($, e) => ({ value: e.path === dir ? [{ name: 'fake.md', kind: 'file', size: 1, mtimeMs: 0, isLink: false }] : [] }))
+    on('fs.read', ($, e, next) => (e.path === `${dir}/fake.md` ? { value: '---\nservers: [fake]\n---\n- Echo returns its arguments.\n' } : next(e)))
+    await run($, { tool: 'mcp__fake__echo' })
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+})
+
+describe('function nudge', () => {
+  let sessions = 0
+  const session = (on: On) => {
+    const id = `function-nudge-${++sessions}`
+    on('session.id', () => ({ value: id }))
+  }
+  const calls = (n: number, tool = 'mcp__fake__echo') => Array.from({ length: n }, (_, i) => ({ tool, args: { n: i } }))
+  const run = async ($: Engine, steps: { tool: string; args?: Record<string, unknown> }[]) =>
+    textOf(await $.tool.call({ tool: RUN, code: scenario(...steps) }))
+
+  test('a program with many calls asks for a saved function, one time per set of tools', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    expect(await run($, calls(9))).not.toContain('Worth a saved function')
+    const many = await run($, calls(10))
+    expect(many).toContain('## Worth a saved function')
+    expect(many).toContain('This program made 10 calls to echo.')
+    expect(await run($, calls(12))).not.toContain('Worth a saved function')
+  })
+
+  test('a join of two tools asks with fewer calls', async ($, on) => {
+    session(on)
+    fakeServer(on)
+    fakeHost(on)
+    on('tool.call', { tool: 'mcp__fake__other' }, () => ({ result: '"other"' }))
+    expect(await run($, [...calls(4), ...calls(1, 'mcp__fake__other')])).toContain('This program made 5 calls to echo, other.')
+  })
 })
