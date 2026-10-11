@@ -25,7 +25,7 @@
   </g>
 
   <!-- terminal transcript -->
-  <g transform="translate(790 64)" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
+  <g transform="translate(790 88)" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14">
     <rect width="426" height="272" rx="14" fill="#141414" stroke="#FFFFFF" stroke-opacity="0.08"/>
     <text x="22" y="40" fill="#FAFAFA"><tspan fill="#4ADE80">›</tspan> run_code</text>
     <g fill="#71717A">
@@ -45,5 +45,43 @@
     <line x1="22" y1="202" x2="404" y2="202" stroke="#FFFFFF" stroke-opacity="0.08"/>
     <text x="22" y="236" fill="#4ADE80" font-weight="700">↵ return <tspan fill="#FAFAFA" font-weight="400">{ risky: 2, owners: […] }</tspan></text>
     <text x="400" y="258" fill="#52525B" text-anchor="end" font-size="12">only this goes into the context</text>
+  </g>
+
+  <!-- the builder from the explainer video, sitting on the panel -->
+  <g transform="translate(1126 75.3)">
+    <polygon fill="#c06a4e" points="-18.7,9.4 -30.9,9.4 -30.9,-3.2 -18.7,-3.2"/>
+    <polygon fill="#e0947b" points="-30.9,-10.2 -18.7,-10.2 -18.7,-3.2 -30.9,-3.2"/>
+    <polygon fill="#c06a4e" points="30.9,9.4 18.7,9.4 18.7,-3.2 30.9,-3.2"/>
+    <polygon fill="#e0947b" points="18.7,-10.2 30.9,-10.2 30.9,-3.2 18.7,-3.2"/>
+    <polygon fill="#c06a4e" points="-18.7,22.8 -30.9,22.8 -30.9,10.2 -18.7,10.2"/>
+    <polygon fill="#e0947b" points="-30.9,3.2 -18.7,3.2 -18.7,10.2 -30.9,10.2"/>
+    <polygon fill="#c06a4e" points="30.9,22.8 18.7,22.8 18.7,10.2 30.9,10.2"/>
+    <polygon fill="#e0947b" points="18.7,3.2 30.9,3.2 30.9,10.2 18.7,10.2"/>
+    <polygon fill="#c06a4e" points="-35.3,-8.1 -46.3,-8.1 -46.3,-18.9 -35.3,-18.9"/>
+    <polygon fill="#e0947b" points="-46.3,-27.8 -35.3,-27.8 -35.3,-18.9 -46.3,-18.9"/>
+    <polygon fill="#c06a4e" points="46.3,-8.1 35.3,-8.1 35.3,-18.9 46.3,-18.9"/>
+    <polygon fill="#e0947b" points="35.3,-27.8 46.3,-27.8 46.3,-18.9 35.3,-18.9"/>
+    <polygon fill="#c06a4e" points="35.3,12.7 -35.3,12.7 -35.3,-26.9 35.3,-26.9"/>
+    <polygon fill="#e0947b" points="-35.3,-52.3 35.3,-52.3 35.3,-26.9 -35.3,-26.9"/>
+    <polygon fill="#eab9a9" points="-15.4,0.7 -27.6,0.7 -27.6,-3.3 -15.4,-3.3"/>
+    <polygon fill="#eab9a9" points="-27.6,-3.9 -15.4,-3.9 -15.4,-3.3 -27.6,-3.3"/>
+    <polygon fill="#eab9a9" points="27.6,0.7 15.4,0.7 15.4,-3.3 27.6,-3.3"/>
+    <polygon fill="#eab9a9" points="15.4,-3.9 27.6,-3.9 27.6,-3.3 15.4,-3.3"/>
+    <polygon fill="#40bc6d" points="33.1,-22.4 -33.1,-22.4 -33.1,-24.9 33.1,-24.9"/>
+    <polygon fill="#7fe6a5" points="-33.1,-54.2 33.1,-54.2 33.1,-24.9 -33.1,-24.9"/>
+    <polygon fill="#40bc6d" points="26.5,-32.6 -26.5,-32.6 -26.5,-41.6 26.5,-41.6"/>
+    <polygon fill="#7fe6a5" points="-26.5,-60.7 26.5,-60.7 26.5,-41.6 -26.5,-41.6"/>
+    <polygon fill="#0A0A0A" points="-14.5,-6.8 -18.5,-6.8 -18.5,-9.9 -14.5,-9.9"/>
+    <polygon fill="#0A0A0A" points="-18.5,-10.9 -14.5,-10.9 -14.5,-9.9 -18.5,-9.9"/>
+    <polygon fill="#0A0A0A" points="-7.9,-6.8 -11.9,-6.8 -11.9,-9.9 -7.9,-9.9"/>
+    <polygon fill="#0A0A0A" points="-11.9,-10.9 -7.9,-10.9 -7.9,-9.9 -11.9,-9.9"/>
+    <polygon fill="#0A0A0A" points="11.9,-6.8 7.9,-6.8 7.9,-9.9 11.9,-9.9"/>
+    <polygon fill="#0A0A0A" points="7.9,-10.9 11.9,-10.9 11.9,-9.9 7.9,-9.9"/>
+    <polygon fill="#0A0A0A" points="18.5,-6.8 14.5,-6.8 14.5,-9.9 18.5,-9.9"/>
+    <polygon fill="#0A0A0A" points="14.5,-10.9 18.5,-10.9 18.5,-9.9 14.5,-9.9"/>
+    <polygon fill="#0A0A0A" points="-11.2,-9.9 -15.2,-9.9 -15.2,-13.0 -11.2,-13.0"/>
+    <polygon fill="#0A0A0A" points="-15.2,-14.0 -11.2,-14.0 -11.2,-13.0 -15.2,-13.0"/>
+    <polygon fill="#0A0A0A" points="15.2,-9.9 11.2,-9.9 11.2,-13.0 15.2,-13.0"/>
+    <polygon fill="#0A0A0A" points="11.2,-14.0 15.2,-14.0 15.2,-13.0 11.2,-13.0"/>
   </g>
 </svg>
