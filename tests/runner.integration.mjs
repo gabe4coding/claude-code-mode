@@ -161,6 +161,27 @@ const cases = {
     assert.deepEqual(value(r), [{ recalled: 4 }, 'no result #5', 'TypeError'])
   },
 
+  'sleep waits, so a program can poll': async () => {
+    const r = await run(`
+      const t = Date.now()
+      let polls = 0
+      while ((await call("mcp__s__t", { n: polls })).args.n < 2) { polls++; await sleep(100) }
+      return [polls, Date.now() - t >= 200]`)
+    assert.deepEqual(value(r), [2, true])
+    assert.equal(r.calls, 3)
+  },
+
+  'sleep refuses a wrong argument': async () => {
+    const r = await run(`
+      const bad = []
+      for (const ms of ["100", -1, NaN, undefined]) bad.push(await Promise.resolve().then(() => sleep(ms)).catch(e => e.name))
+      return bad`)
+    assert.deepEqual(value(r), Array(4).fill('TypeError'))
+  },
+
+  'sleep cannot outlast the wall-clock limit': async () =>
+    assert.match(failure(await run('await sleep(Infinity)', { timeoutMs: 500 })), /timeout/),
+
   'failed call throws': async () =>
     assert.equal(value(await run('try { await call("mcp__s__fail") } catch (e) { return e.message }')), 'boom'),
 
@@ -173,6 +194,7 @@ const cases = {
       'return this.constructor.constructor("return process")().pid',
       'return call.constructor("return 1")()',
       'return recall.constructor("return 1")()',
+      'return sleep.constructor("return 1")()',
       'try { await call("mcp__s__fail") } catch (e) { return e.constructor.constructor("return process")().pid }',
       'return (await call("mcp__s__t")).constructor.constructor("return process")().pid',
     ]) assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)
