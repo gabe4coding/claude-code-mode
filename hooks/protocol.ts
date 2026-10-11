@@ -7,9 +7,19 @@ export type RunnerCall = { t: 'call'; id: number; tool: string; args: Record<str
 export type RunnerRecall = { t: 'recall'; id: number; ref: number }
 export type RunnerSave = { t: 'save'; id: number; name: string; data: unknown }
 export type RunnerRead = { t: 'read'; id: number; path: string }
+export type RunnerResources = { t: 'resources'; id: number; server?: string }
+export type RunnerResource = { t: 'resource'; id: number; server: string; uri: string }
 export type RunnerDone = { t: 'done'; value: string; logs: string[] }
 export type RunnerError = { t: 'error'; message: string; logs: string[] }
-export type RunnerMessage = RunnerCall | RunnerRecall | RunnerSave | RunnerRead | RunnerDone | RunnerError
+export type RunnerMessage =
+  | RunnerCall
+  | RunnerRecall
+  | RunnerSave
+  | RunnerRead
+  | RunnerResources
+  | RunnerResource
+  | RunnerDone
+  | RunnerError
 
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
@@ -793,12 +803,14 @@ The program is the body of an async function. Available:
 - await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies
 - await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return
 - await readFile(path) -> the text of a file in the project, or of a file from saveFile
+- await resources(server?) -> the MCP resources, each with its server and uri; await readResource(server, uri) -> its contents
+- await lib.<name>(args) -> a saved function; search_tools lists them
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
 A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
 
-Find tools, their argument types, result shapes and usage hints with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time.
+Find tools, their argument types, result shapes, usage hints and saved functions with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time. When a working program does a task that comes back (all pages of a search, a join of two tools), propose it with save_function.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })

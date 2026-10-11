@@ -16,6 +16,7 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `hooks/session-start.sh` | The SessionStart hook: the text that tells the model to use `run_code`. |
 | `hooks/protocol.ts` | Pure helpers: the protocol of the sandbox, the result text, the tool search, the tool descriptions. |
 | `hooks/hints.ts` | Pure helpers for hint files: read, match, format and write. |
+| `hooks/functions.ts` | Pure helpers for saved functions: the file format, the checks and the search. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
 | `hints/` | The bundled hints. |
 | `tests/` | The tests of the hooks, the sandbox and the docs. |
@@ -45,8 +46,9 @@ node tests/docs.check.mjs
 
 CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` and each pull request:
 
-- It runs the sandbox test on Linux and on macOS. Only macOS has `sandbox-exec`, so only the macOS job tests the
-  network block.
+- It runs the sandbox test on Linux and on macOS, with the network block: `sandbox-exec` on macOS and
+  `unshare -rn` on Linux. On Linux, it first allows user namespaces, because Ubuntu 24.04 does not allow them by
+  default.
 - It runs `claude plugin test .` with a fixed Claude Code version. To use a newer version, run the tests with it on
   your machine first, then change the version in the workflow.
 - Each Monday, it also runs `claude plugin test .` with the newest Claude Code release. If this job fails, a new

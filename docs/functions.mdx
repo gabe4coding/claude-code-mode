@@ -1,0 +1,97 @@
+---
+title: Saved functions
+description: Keep a program part that works as a function, approve the functions that the model proposes, and know the safety rules.
+---
+
+# Saved functions
+
+A saved function is a part of a program that the model can use again in later sessions. For example, a function
+can read all pages of a Jira search, or join the results of two tools. A program calls it as `lib.<name>(args)`:
+
+```js
+const issues = await lib.searchAllIssues({ cloudId: "example.atlassian.net", jql: "project = OPS" })
+return issues.filter(i => i.fields.priority.name === "Highest").map(i => i.key)
+```
+
+Thus the model does not write the same loop again in each session, and it does not make the same mistakes again.
+
+## Approve a function that the model proposes
+
+When a program does a task that comes back, the model can propose it with `save_function`. The proposal has no
+effect until you approve it.
+
+1. The model calls `save_function` with a name, a description, the code and the reason.
+2. The plugin writes the proposal to `~/.claude/code-mode/functions/pending/`.
+3. The band above the prompt shows "1 function proposal for code mode". Select **Review**.
+4. Read the full code of the function.
+5. Select **Approve** or **Discard**.
+
+If you approve, the plugin writes the function to `~/.claude/code-mode/functions/<name>.md`. A function with the
+same name is replaced.
+
+Approve only code that you have read and understand. A saved function runs in later programs,
+and your approval of `run_code` covers its MCP calls. You see `lib.searchAllIssues(...)` in the program, not the
+code of the function.
+
+## How the model finds a function
+
+`search_tools` shows a section "Saved functions" with the name, the parameters and the description:
+
+```text
+## Saved functions
+
+Call them in run_code as await lib.<name>(args). The person approved each one.
+- lib.searchAllIssues({ cloudId, jql }): Every Jira issue for a JQL query, from all pages.
+```
+
+The section lists a function when its code calls a tool that the search finds. It also lists a function when its
+name or description has a word of the query. An empty query lists all functions.
+
+## Write a function yourself
+
+Make a file in `~/.claude/code-mode/functions/`, for example `searchAllIssues.md`. Start it with the front matter:
+
+```markdown
+---
+name: searchAllIssues
+description: Every Jira issue for a JQL query, from all pages.
+---
+```
+
+Then add the code in one code block that starts with three backticks and `js`:
+
+```js
+async ({ cloudId, jql }) => {
+  const issues = []
+  let startAt = 0
+  while (true) {
+    const page = await call("mcp__claude_ai_Jira__searchJiraIssuesUsingJql", { cloudId, jql, startAt, maxResults: 100 })
+    issues.push(...page.issues)
+    startAt += page.issues.length
+    if (page.issues.length === 0 || startAt >= page.total) return issues
+  }
+}
+```
+
+- `name` is a JavaScript name of at most 40 characters. Programs call the function as `lib.<name>`.
+- `description` is one sentence.
+- The code is one async function expression with one argument. It can use `call`, `sleep`, `saveFile` and the
+  other functions of a program, and other saved functions as `lib.<name>`.
+- The code has at most 8,000 characters.
+
+A file that does not follow these rules does not load. The debug log (`claude --debug`) names it.
+
+To remove a function, delete its file.
+
+## Safety rules
+
+- **A proposal has no effect until you approve it.** Text in a tool result can tell the model to propose
+  anything. Only you can press **Approve**.
+- **The model cannot write function files.** The plugin denies `Write`, `Edit`, `NotebookEdit` and `Bash` calls
+  that name `~/.claude/code-mode/functions/`, as for the [hint folders](./hints.mdx#safety-rules). Edit the files
+  in your own editor.
+- **There are no project functions.** The plugin loads functions only from your own folder. Anyone who can
+  commit to a repository can put code in it.
+- **A function runs in the sandbox.** It has the same limits as the program, and each of its MCP calls gets the
+  normal permission check. See [Permissions](./permissions.mdx).
+- A program gets only the functions that it names, and the functions that those name.

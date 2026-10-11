@@ -10,7 +10,8 @@ description: Install code-mode in Claude Code, check that it works, and keep it 
 - Claude Code. The plugin is tested with Claude Code 2.1.295.
 - Node.js 22.13 or later. The sandbox uses the Node permission model (`--permission`), and Node 22.13 is the first
   version with this flag. Node 20 does not accept it.
-- macOS or Linux. On Linux, the sandbox has no network block. See [Sandbox](./how-it-works.mdx#sandbox).
+- macOS or Linux. On Linux, the sandbox has a network block only if `unshare -rn` works. See
+  [Sandbox](./how-it-works.mdx#sandbox).
 
 If `node` on your `PATH` is older than 22.13, set the option `node` to a newer executable. See
 [Configuration](./configuration.mdx).

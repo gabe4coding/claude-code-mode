@@ -394,6 +394,8 @@ const fakeHost = (on: On) => {
       'recall' in c ? { t: 'recall', id, ref: c.recall }
       : 'save' in c ? { t: 'save', id, name: c.save, data: c.data }
       : 'read' in c ? { t: 'read', id, path: c.read }
+      : 'resources' in c ? { t: 'resources', id, ...(c.resources === '' ? {} : { server: c.resources }) }
+      : 'resource' in c ? { t: 'resource', id, server: c.resource[0], uri: c.resource[1] }
       : { t: 'call', id, tool: c.tool, args: c.args }
     const lines = calls.map((c, i) => `${MARK}${JSON.stringify(message(c, i + 1))}\n`)
     // Split the output mid-line to check the plugin's line buffering.
@@ -409,7 +411,13 @@ const fakeHost = (on: On) => {
   return { removed, spawned, ran, written }
 }
 
-type Step = { tool: string; args: Record<string, unknown> } | { recall: number } | { save: string; data: unknown } | { read: string }
+type Step =
+  | { tool: string; args: Record<string, unknown> }
+  | { recall: number }
+  | { save: string; data: unknown }
+  | { read: string }
+  | { resources: string }
+  | { resource: [string, string] }
 
 const scenario = (...calls: ({ tool: string; args?: Record<string, unknown> } | Exclude<Step, { tool: string }>)[]) =>
   JSON.stringify({ calls: calls.map(c => ('tool' in c ? { args: {}, ...c } : c)) })
@@ -524,6 +532,40 @@ describe('files', () => {
     expect(text).toContain('readFile: no permission to read ~/.ssh/id_rsa')
     expect(text).not.toContain('text of /home/u/.ssh/id_rsa')
     expect(text).toContain('"value": "text of /home/u/.claude/code-mode/files/sess-f/rows.csv"')
+  })
+})
+
+describe('MCP resources', () => {
+  test('resources and readResource go through the resource tools', async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const asked: unknown[] = []
+    on('tool.call', { tool: 'ListMcpResourcesTool' }, ($, e) => {
+      asked.push(e)
+      return { result: JSON.stringify([{ uri: 'file:///a.md', name: 'a', server: 'docs' }]) }
+    })
+    on('tool.call', { tool: 'ReadMcpResourceTool' }, ($, e) => {
+      asked.push(e)
+      const { uri } = e as unknown as { uri: string }
+      return { result: JSON.stringify(uri === 'file:///a.md' ? { contents: [{ uri, mimeType: 'text/markdown', text: '# A' }] } : { contents: [], error: `Resource not found: ${uri}` }) }
+    })
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario(
+      { resources: 'docs' },
+      { resource: ['docs', 'file:///a.md'] },
+      { resource: ['docs', 'file:///gone.md'] },
+    ) }))
+    expect(text).toContain('"server": "docs"')
+    expect(text).toContain('"text": "# A"')
+    expect(text).toContain('Resource not found: file:///gone.md')
+    expect(JSON.stringify(asked)).toContain('"server":"docs"')
+  })
+
+  test('a denied resource call throws in the program', async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    on('tool.call', { tool: 'ListMcpResourcesTool' }, () => ({ deny: 'no rule allows it' }))
+    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ resources: '' }) }))
+    expect(text).toContain('denied: no rule allows it')
   })
 })
 

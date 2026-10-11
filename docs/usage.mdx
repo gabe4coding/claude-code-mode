@@ -26,8 +26,10 @@ into the context.
 | `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
 | `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
 | `mcp__code-mode__remove_hint` | Hides a wrong hint in the current session and proposes to remove it from its hint file. See [Remove a hint that is wrong](./hints.mdx#remove-a-hint-that-is-wrong). |
+| `mcp__code-mode__save_function` | Proposes a part of a program as a saved function. The proposal has no effect until you approve it. See [Saved functions](./functions.mdx). |
 
-`search_tools` and `run_code` load in every session. `add_hint` and `remove_hint` load only when the model needs them.
+`search_tools` and `run_code` load in every session. `add_hint`, `remove_hint` and `save_function` load only when
+the model needs them.
 
 ## Programs
 
@@ -38,6 +40,9 @@ A program is the body of an async JavaScript function. In the program:
 - `await sleep(ms)` waits for the given number of milliseconds. Use it to poll a slow job.
 - `await saveFile(name, data)` writes data to a file and gives its path. See [Files](#files).
 - `await readFile(path)` gives the text of a file. See [Files](#files).
+- `await resources(server)` and `await readResource(server, uri)` read MCP resources. See
+  [MCP resources](#mcp-resources).
+- `await lib.<name>(args)` calls a saved function. See [Saved functions](./functions.mdx).
 - `console.log(...)` adds a line to the console output.
 - `return value` sets the result. The model gets the value as JSON.
 
@@ -209,6 +214,26 @@ and a wrong guess costs one more run.
 
 Result shapes are part of output projection. If the option `projection` is `false`, the plugin does not save or show
 shapes.
+
+## MCP resources
+
+Some servers give data as resources, not as tools. A program reads them with two functions:
+
+```js
+const list = await resources("docs")
+const readme = list.find(r => r.name === "README")
+const [content] = await readResource(readme.server, readme.uri)
+return content.text.split("\n").slice(0, 20)
+```
+
+- `resources(server)` gives the resources of a server. Each resource has its `server`, `uri` and `name`. Without a
+  server, it gives the resources of all servers.
+- `readResource(server, uri)` gives the contents of the resource: a list of items with `uri`, `mimeType` and
+  `text`.
+
+The plugin uses the resource tools of Claude Code, `ListMcpResourcesTool` and `ReadMcpResourceTool`. Each read gets
+the normal permission check of these tools. Your approval of `run_code` does not cover it. See
+[Permissions](./permissions.mdx). If no server in the session has resources, the call throws an error.
 
 ## Argument names
 

@@ -31,16 +31,25 @@ The sandbox has four layers:
 
 | Layer | What it stops |
 | --- | --- |
-| A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. The sandbox process does `sleep` with its own timer. The plugin writes and reads the files of `saveFile` and `readFile`. |
+| A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. The sandbox process does `sleep` with its own timer. The plugin writes and reads the files of `saveFile` and `readFile`, and reads the MCP resources. |
 | The Node permission model (`--permission`) | The process can read only the runner file and its temporary folder. It cannot write files or start processes or workers. |
-| `sandbox-exec`, on macOS only | The process has no network access. |
+| `sandbox-exec` on macOS, `unshare -rn` on Linux | The process has no network access. |
 | `ulimit -t` and a timer | A CPU limit stops busy loops. A wall-clock limit stops programs that wait too long. |
 
 Only strings go between the host and the `vm` context. The global object of the context has no prototype. Thus the
 program cannot get to the `Function` constructor of the host through `constructor.constructor`.
 
-The `vm` module of Node is not a security boundary by itself. The other layers make the risk smaller. On Linux,
-the sandbox has no network block, but the `vm` context still has no `fetch`.
+The `vm` module of Node is not a security boundary by itself. The other layers make the risk smaller.
+
+On Linux, `unshare -rn` puts the process in a new user namespace and a new network namespace with no network. This
+works only if the kernel lets a normal user make a user namespace. Ubuntu 24.04 and later do not, because of an
+AppArmor setting. Then the process starts with no network block, but the `vm` context still has no `fetch`.
+
+To see if the network block works on your machine, run this command. If it prints `ok`, the block works:
+
+```bash
+unshare -rn true && echo ok
+```
 
 The option `timeoutSeconds` sets the CPU limit and the wall-clock limit. The minimum is 5 seconds. See
 [Configuration](./configuration.mdx).
