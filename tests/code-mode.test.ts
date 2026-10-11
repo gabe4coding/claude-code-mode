@@ -24,6 +24,7 @@ import {
   mcpReply,
   mergeShapes,
   parseShapes,
+  projectionFooter,
   rankTools,
   savedResultOf,
   savedReply,
@@ -367,6 +368,8 @@ describe('protocol', () => {
 // sandbox does not run JavaScript: the "code" is a JSON scenario
 // ({ calls: [{ tool, args }] }). The fake runner emits those calls, waits for
 // the reply files the plugin writes, and returns the replies as its value.
+// With `timeout: n`, it waits for the replies of the first n calls, then ends
+// as the runner does at its time limit.
 // tests/runner.integration.mjs covers the real sandbox under Node.
 const XDIR = '/tmp/code-mode-test'
 const fakeHost = (on: On) => {
@@ -388,7 +391,7 @@ const fakeHost = (on: On) => {
   on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
     spawned.push([...e.argv])
     const { code } = JSON.parse(e.input ?? '{}') as { code: string }
-    const { calls, returns } = JSON.parse(code) as { calls: Step[]; returns?: unknown }
+    const { calls, returns, timeout } = JSON.parse(code) as { calls: Step[]; returns?: unknown; timeout?: number }
     const replies = calls.map((_, i) => new Promise<string>(resolve => waiters.set(`${XDIR}/r${i + 1}.json`, resolve)))
     const message = (c: Step, id: number) =>
       'recall' in c ? { t: 'recall', id, ref: c.recall }
@@ -403,6 +406,11 @@ const fakeHost = (on: On) => {
     const cut = Math.floor(out.length / 2)
     yield { stream: 'stdout', text: out.slice(0, cut) }
     yield { stream: 'stdout', text: out.slice(cut) }
+    if (timeout !== undefined) {
+      await Promise.all(replies.slice(0, timeout))
+      yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'timeout after 2000 ms', logs: [] })}\n` }
+      return { value: { code: 0, signal: null } }
+    }
     const got = (await Promise.all(replies)).map(t => JSON.parse(t))
     const value = returns === undefined ? got : returns
     yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
@@ -721,6 +729,47 @@ describe('output projection', () => {
     expect(text).toMatch(/#1 mcp__fake__echo \d+ \{echoed: \{n\}\}/)
     expect(text).toContain('- mcp__fake__fail failed')
     expect(text).toContain('await recall(n) returns result #n again')
+  })
+
+  test('a call that never answers is in the footer when the run times out', ON, async ($, on) => {
+    fakeServer(on)
+    const host = fakeHost(on)
+    on('tool.call', { tool: 'mcp__fake__hang' }, () => new Promise<never>(() => undefined))
+    const code = JSON.stringify({ calls: [{ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__hang', args: {} }], timeout: 1 })
+    const text = textOf(await $.tool.call({ tool: RUN, code }))
+    expect(text).toContain('Error: timeout after 2000 ms')
+    expect(text).toContain('--- 2 MCP calls: ')
+    expect(text).toMatch(/#1 mcp__fake__echo \d+/)
+    expect(text).toContain('- mcp__fake__hang did not finish')
+    expect(host.removed).toEqual([XDIR])
+    expect(host.written[`${XDIR}/r2.json`]).toBe(undefined)
+  })
+
+  test('a call still in the queue when the sandbox ends does not start', ON, async ($, on) => {
+    const server = fakeServer(on)
+    fakeHost(on)
+    on('tool.call', { tool: 'mcp__fake__slow' }, async () => {
+      await new Promise(r => setTimeout(r, 50))
+      return { result: '{"ok":1}' }
+    })
+    const calls = [...Array.from({ length: 8 }, () => ({ tool: 'mcp__fake__slow', args: {} })), { tool: 'mcp__fake__echo', args: {} }]
+    const text = textOf(await $.tool.call({ tool: RUN, code: JSON.stringify({ calls, timeout: 0 }) }))
+    // The test kit's clock does not wait, so the slow calls end after the run: then a free slot would start the queued call.
+    await new Promise(r => setTimeout(r, 100))
+    expect(server.paths).toEqual([])
+    expect(text).toContain('--- 9 MCP calls: ')
+    expect(text).toContain('- mcp__fake__echo ×1, 1 did not finish')
+  })
+
+  test('many calls: the group line counts the calls that did not finish', () => {
+    const calls = [
+      ...Array.from({ length: 8 }, (_, i) => ({ ref: i + 1, tool: 'mcp__x__get', ok: true, chars: 10 })),
+      { tool: 'mcp__x__get', ok: false, chars: 0 },
+      { tool: 'mcp__x__get', ok: false, chars: 0, unfinished: true },
+    ]
+    const text = projectionFooter({ calls, recalls: 0, recalled: [] }, { t: 'error', message: 'timeout after 2000 ms', logs: [] })
+    expect(text).toContain('--- 10 MCP calls: ')
+    expect(text).toContain('#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80')
   })
 
   test('recall(n) in a later run returns the kept result with no new call', ON, async ($, on) => {

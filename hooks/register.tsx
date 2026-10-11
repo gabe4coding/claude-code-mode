@@ -101,6 +101,9 @@ const SEARCH_LIMIT = 15
 // Nested calls of one run that wait for a reply at one time: a program that
 // maps over hundreds of ids must not hit a server's rate limit at once.
 const MAX_PARALLEL_CALLS = 8
+// How long the plugin waits for calls still running when the sandbox ends.
+// An MCP call has no timeout of its own, so a call that hangs must not hold the result.
+const SETTLE_MS = 1000
 // The largest file saveFile writes, in characters.
 const MAX_FILE_CHARS = 16 * 1024 * 1024
 
@@ -1062,6 +1065,12 @@ export const register: Register = (on, options) => {
     const hasSession = (await $.session.id().catch(() => '')) !== ''
     const kept = hasSession ? state.kept : newKept()
     const records = new Map<number, CallRecord>()
+    // Every call the program made, by id: one with no record when the run ends did not finish.
+    const started = new Map<number, string>()
+    // Set when the sandbox ends: a call still in the queue has no reader, so it does not start.
+    let ended = false
+    // Set when the wait for running calls ends: a late reply has no reader and its folder is removed.
+    let closed = false
     const recalled: { ref: number; ageMs: number }[] = []
     let recalls = 0
     let recallMisses = 0
@@ -1070,7 +1079,7 @@ export const register: Register = (on, options) => {
     const limit = limiter(MAX_PARALLEL_CALLS)
 
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
-      calls++
+      if (ended) return
       let reply: Reply
       if (!isCallable(tool, $.plugin.name)) {
         reply = { ok: false, error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"` }
@@ -1097,6 +1106,7 @@ export const register: Register = (on, options) => {
         }
       }
       reply = await loadSaved($, reply).catch((err): Reply => ({ ok: false, error: `could not read the saved result: ${errorText(err)}` }))
+      if (closed) return
       if (isCallable(tool, $.plugin.name)) (reply.ok ? worked : failed).add(tool)
       const text = JSON.stringify(reply)
       await $.fs.write(`${xdir}/r${id}.json`, text)
@@ -1134,6 +1144,7 @@ export const register: Register = (on, options) => {
     // saveFile, readFile and the resources: the sandbox cannot do them, so the plugin does.
     const answerLocal = async (id: number, op: () => Promise<Reply>): Promise<void> => {
       const reply = await op().catch((err): Reply => ({ ok: false, error: errorText(err) }))
+      if (closed) return
       await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
     }
     // MCP resources through Claude Code's own resource tools, with the normal
@@ -1181,8 +1192,11 @@ export const register: Register = (on, options) => {
         const taken = takeMessages(buffer + piece.text)
         buffer = taken.rest
         for (const m of taken.messages) {
-          if (m.t === 'call') answers.push(limit(() => answer(m.id, m.tool, m.args)))
-          else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
+          if (m.t === 'call') {
+            calls++
+            started.set(m.id, m.tool)
+            answers.push(limit(() => answer(m.id, m.tool, m.args)))
+          } else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
           else if (m.t === 'save') answers.push(answerLocal(m.id, () => save(m.name, m.data)))
           else if (m.t === 'read') answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
           else if (m.t === 'resources') answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
@@ -1190,11 +1204,22 @@ export const register: Register = (on, options) => {
           else outcome = m
         }
       }
-      await Promise.allSettled(answers)
+      ended = true
+      const stop = new AbortController()
+      await Promise.race([Promise.allSettled(answers), $.clock.sleep(SETTLE_MS, { signal: stop.signal }).catch(() => undefined)])
+      stop.abort()
     } catch (err) {
       stderr += `\n${errorText(err)}`
     } finally {
+      ended = true
+      closed = true
       await $.process.run(['rm', '-rf', xdir]).catch(() => undefined)
+    }
+
+    for (const [id, tool] of started) {
+      if (records.has(id)) continue
+      records.set(id, { tool, ok: false, chars: 0, unfinished: true })
+      if (isCallable(tool, $.plugin.name)) failed.add(tool)
     }
 
     await saveShapes($, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`))
