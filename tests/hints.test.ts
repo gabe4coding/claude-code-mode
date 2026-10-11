@@ -633,12 +633,15 @@ describe('the hint-file guard', () => {
     ['Edit', { file_path: '.claude/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
     ['Edit', { file_path: '/repo/src/../.claude/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
     ['Bash', { command: 'echo "- x" >> ~/.claude/code-mode/hints/gmail.md' }],
+    ['Write', { file_path: '~/.claude/code-mode/functions/searchAll.md', content: 'x' }],
+    ['Write', { file_path: `${HOME}/.claude/code-mode/functions/pending/x--a.md`, content: 'x' }],
+    ['Bash', { command: 'cp /tmp/f.md ~/.claude/code-mode/functions/' }],
   ] as const
   for (const [tool, input] of denied) {
     test(`denies ${tool} ${JSON.stringify(input).slice(0, 60)}`, async ($, on) => {
       session(on)
       const r = await $.tool.call({ tool, ...input } as never)
-      expect(textOf(r)).toContain('hint files steer the model')
+      expect(textOf(r)).toContain('hint files and saved functions steer the model')
     })
   }
 

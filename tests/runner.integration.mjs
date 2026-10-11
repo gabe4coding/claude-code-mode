@@ -23,25 +23,30 @@ const LAUNCH = [
   'if [ -x /usr/bin/sandbox-exec ]; then',
   '  exec /usr/bin/sandbox-exec -p "$2" "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
   'fi',
+  'if unshare -rn true 2>/dev/null; then',
+  '  exec unshare -rn "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  'fi',
   'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
 ].join('\n')
 const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
 
 const echo = m =>
-  m.t === 'save' ? { ok: true, value: { saved: m.name, data: m.data } }
+  m.t === 'resources' ? { ok: true, value: [{ uri: 'file:///a.md', server: m.server ?? 'any' }] }
+  : m.t === 'resource' ? { ok: true, value: [{ uri: m.uri, text: `text of ${m.server} ${m.uri}` }] }
+  : m.t === 'save' ? { ok: true, value: { saved: m.name, data: m.data } }
   : m.t === 'read' ? { ok: true, value: `text of ${m.path}` }
   : m.t === 'recall' ? (m.ref === 4 ? { ok: true, value: { recalled: m.ref } } : { ok: false, error: `no result #${m.ref}` })
   : m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
-const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env } = {}) => {
+const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env, lib } = {}) => {
   // The plugin's own command, so CI runs it on Linux and on macOS.
   const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
   return new Promise(resolve => {
     const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir], { env })
     child.stdin.on('error', () => {}) // a probe exits without reading stdin
-    child.stdin.end(JSON.stringify({ code, timeoutMs }))
+    child.stdin.end(JSON.stringify({ code, timeoutMs, lib }))
     let buffer = ''
     let calls = 0
     let outcome
@@ -105,8 +110,19 @@ const probe = async () => {
   }
 }
 
-// The network block exists only where sandbox-exec does (macOS).
+// The network block exists where sandbox-exec does (macOS), and on Linux
+// where unshare can make a user and network namespace. CI sets
+// EXPECT_NETWORK_BLOCK, so a runner with neither fails instead of skipping.
 const HAS_SANDBOX_EXEC = fs.existsSync('/usr/bin/sandbox-exec')
+const HAS_UNSHARE = (() => {
+  try {
+    execFileSync('unshare', ['-rn', 'true'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
+const HAS_NETWORK_BLOCK = HAS_SANDBOX_EXEC || HAS_UNSHARE
 
 const value = r => (r.outcome?.t === 'done' ? JSON.parse(r.outcome.value) : undefined)
 const failure = r => (r.outcome?.t === 'error' ? r.outcome.message : undefined)
@@ -194,6 +210,37 @@ const cases = {
     assert.deepEqual(value(r), [{ saved: 'rows.csv', data: [{ a: 1 }] }, 'text of ids.txt', ['TypeError', 'TypeError', 'TypeError']])
   },
 
+  'resources and readResource go through the host': async () => {
+    const r = await run(`
+      const [list, all, contents] = await Promise.all([resources("docs"), resources(), readResource("docs", "file:///a.md")])
+      const bad = []
+      for (const f of [() => resources(1), () => readResource("docs")]) bad.push(await Promise.resolve().then(f).catch(e => e.name))
+      return [list[0].server, all[0].server, contents[0].text, bad]`)
+    assert.deepEqual(value(r), ['docs', 'any', 'text of docs file:///a.md', ['TypeError', 'TypeError']])
+  },
+
+  'lib runs the saved functions it gets, and nothing else': async () => {
+    const lib = {
+      twice: 'async ({ n }) => { const r = await call("mcp__s__t", { n }); return r.args.n * 2 }',
+      viaOther: 'async ({ n }) => (await lib.twice({ n })) + 1',
+      broken: 'async () => {',
+      'bad name': 'async () => 1',
+    }
+    const r = await run(`
+      const missing = await Promise.resolve().then(() => lib.nope()).catch(e => e.message)
+      const broken = await lib.broken().catch(e => e.name + ": " + e.message)
+      try { lib.twice = 1 } catch {}
+      const written = typeof lib.twice === "function" ? "refused" : "written"
+      const escape = await Promise.resolve().then(() => lib.twice.constructor("return process")()).catch(e => e.name)
+      return [await lib.twice({ n: 2 }), await lib.viaOther({ n: 3 }), missing, broken.startsWith("SyntaxError: lib.broken does not compile"), written, escape, typeof globalThis.__lib, Object.keys(lib)]`, { lib })
+    assert.deepEqual(value(r), [4, 7, 'lib.nope is not a saved function: search_tools lists them', true, 'refused', 'EvalError', 'undefined', ['twice', 'viaOther', 'broken']])
+  },
+
+  'an error in a saved function shows its frame': async () => {
+    const r = await run('return await lib.boom()', { lib: { boom: 'async () => {\n  null.x\n}' } })
+    assert.match(failure(r), /TypeError[\s\S]*lib\/boom\.js:2/)
+  },
+
   'failed call throws': async () =>
     assert.equal(value(await run('try { await call("mcp__s__fail") } catch (e) { return e.message }')), 'boom'),
 
@@ -209,6 +256,7 @@ const cases = {
       'return sleep.constructor("return 1")()',
       'return saveFile.constructor("return 1")()',
       'return readFile.constructor("return 1")()',
+      'return resources.constructor("return 1")()',
       'try { await call("mcp__s__fail") } catch (e) { return e.constructor.constructor("return process")().pid }',
       'return (await call("mcp__s__t")).constructor.constructor("return process")().pid',
     ]) assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)
@@ -235,9 +283,30 @@ const cases = {
   ...(HAS_SANDBOX_EXEC
     ? { 'the process has no network (sandbox-exec)': async () => assert.equal((await probe()).connect, 'EPERM') }
     : {}),
+
+  // Where unshare cannot make the namespaces (Ubuntu 24.04 by default), the
+  // launch goes on without the network block.
+  'a failing unshare does not stop the program': async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-path-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'unshare'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+      const r = await run('return 1 + 1', { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } })
+      assert.equal(value(r), 2)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  },
+
+  ...(!HAS_SANDBOX_EXEC && HAS_UNSHARE
+    ? { 'the process has no network (unshare)': async () => assert.equal((await probe()).connect, 'ENETUNREACH') }
+    : {}),
+
+  ...(process.env.EXPECT_NETWORK_BLOCK && !HAS_NETWORK_BLOCK
+    ? { 'this machine has a network block': () => assert.fail('EXPECT_NETWORK_BLOCK is set, but neither sandbox-exec nor unshare -rn works here') }
+    : {}),
 }
 
-if (!HAS_SANDBOX_EXEC) console.log('skip  the process has no network: no sandbox-exec here')
+if (!HAS_NETWORK_BLOCK) console.log('skip  the process has no network: no sandbox-exec or unshare -rn here')
 
 let failed = 0
 for (const [name, fn] of Object.entries(cases)) {

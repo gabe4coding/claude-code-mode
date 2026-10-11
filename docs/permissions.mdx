@@ -16,6 +16,10 @@ Your permission rules apply to each MCP call in a program, as they apply to a di
 - **Deny rules** always apply. A denied nested call throws an error in the program.
 - **Files:** `readFile` reads only the files that Claude Code reads with no prompt, and the files from `saveFile`.
   See [Files](./usage.mdx#files).
+- **MCP resources:** `resources` and `readResource` get the normal check of `ListMcpResourcesTool` and
+  `ReadMcpResourceTool`, also with `approval: program`. In auto mode, add allow rules for these two tools.
+- **Saved functions:** their MCP calls are nested calls, with the same checks. See
+  [Saved functions](./functions.mdx).
 
 ## The check of a nested call
 
