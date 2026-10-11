@@ -26,6 +26,8 @@
 
 ---
 
+https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
+
 Without code-mode, the model calls MCP tools one by one, and each full result goes into the context. With
 code-mode, the model writes one program. The program calls the tools, then filters and joins the results in a
 sandbox. Only the answer goes into the context.
