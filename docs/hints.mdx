@@ -72,10 +72,15 @@ The plugin asks the model for a proposal when a run works after earlier tries fa
 try is a failed call to the same server, a failed program or a `search_tools` query that found no tool. The hint
 then helps the next session do the task correctly at the first try.
 
-While proposals wait, a band above the prompt shows "● N hint proposals for code mode" and a **Review** button.
+The plugin also asks when a run calls a tool that an earlier run called too, and no hint covers its server. The
+earlier run was often a probe of the arguments or the result format. The plugin asks once for each server in a
+session.
 
-1. Click **Review**. The band shows one card for each proposal, with the server, the tools, the text and a review.
-2. Read the text and the review. Approve only a hint that you can write yourself.
+While proposals wait, a band above the prompt shows "● 2 proposals for code mode: 1 hint, 1 function" and a
+**Review** button.
+
+1. Click **Review**. The band shows one proposal at a time. Click **Previous** and **Next** to see the others.
+2. Read the hint and the review. Approve only a hint that you can write yourself.
 3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal.
 
 The band shows the proposals of all sessions, closed and headless (`claude -p`) sessions too. Where Claude Code
@@ -87,21 +92,23 @@ To approve a proposal by hand, move its bullets into the hint file of the server
 
 ### The review on each card
 
-Each line of the review names its source, so you know whom to trust:
+Each field of the card has a label above its value. The table gives the source of each field, so you know whom
+to trust:
 
-| Line | Source | What it tells you |
+| Field | Source | What it tells you |
 | --- | --- | --- |
-| Why | The model | What failed before and what worked. Compare it with what you saw in the session. |
-| Seen by code-mode | The plugin | The number of runs with a failed try on this server, in the session that made the proposal. |
-| Kind | A classifier | `argument`, `result format`, `limit`, `error fix` or `other instruction`. The classifier can be wrong. |
-| ⚠ | The plugin | A warning about the proposal. See the list below. |
-| Last line | The plugin | The hint file that gets or loses the hint, the number of hints in it, and where the hint applies. |
+| Hint | The model | The text that the model sees in later sessions. |
+| Only for tools | The model | The tools that the hint applies to. The card shows no such field for a hint that applies to all tools of the server. |
+| Claude's reason | The model | What failed before, or what the model had to find out. Compare it with what you saw in the session. |
+| Checks | The plugin | The warnings (⚠), and the number of runs with a failed call to the server in the session that made the proposal. |
+| File | The plugin | The hint file that gets or loses the hint, the number of hints in it, and where the hint applies. |
+
+The card shows tool names and file names as code. It shows the hint and the reason as Markdown.
 
 The plugin shows a warning in these conditions:
 
 - The server is not connected in the session.
-- No try on the server failed in the session.
-- The classifier reads the hint as an instruction, not as a fact about a call.
+- A classifier reads the hint as an instruction, not as a fact about a call. The classifier can be wrong.
 - The text contains a link, an email address, or a long id or key.
 - The text talks about approval, credentials, or what to tell the person.
 - The text names a tool of another server.
@@ -111,11 +118,11 @@ but it does not prove that the hint is bad. No warning does not prove that the h
 why and the hint, and text in a tool result can control both.
 
 The classifier is one request to the small fast model of Claude Code for each proposal. If the request fails, the
-card shows no kind.
+card cannot show its warning.
 
 When you approve a proposal, the plugin removes the review. The hint file gets only the hint.
 
-A removal proposal has no kind. Its only possible warning is the one about failed tries.
+A removal proposal shows no warning. Its Checks field shows only the failed calls.
 
 ### Scope
 
@@ -130,7 +137,7 @@ the hint with `remove_hint`. The model gives the path of the hint file and the t
 When the model calls `remove_hint`, this occurs:
 
 1. The model does not see the hint again in the current session.
-2. A removal proposal goes to `pending/`. Its card in the band starts with "Remove".
+2. A removal proposal goes to `pending/`. Its card in the band has the title "Removal of a usage hint".
 3. If you click **Approve**, the plugin removes the hint from its hint file. If the file has no hint left, the
    plugin deletes the file.
 4. If you click **Discard**, the hint file does not change. The model sees the hint again in the session.

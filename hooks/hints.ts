@@ -158,24 +158,38 @@ export const textFlags = (text: string, serverKey: string, otherTools: readonly 
   return flags
 }
 
-/** The review lines of a card: who says what, the warnings, and where the hint goes. */
-export const reviewLines = (
+/** A name as inline code in Markdown. */
+export const asCode = (name: string): string => `\`${name.replace(/`/g, "'")}\``
+
+/** Text for a Markdown card field, with each of `names` as inline code where it is not in backticks yet. */
+export const codeNames = (text: string, names: readonly string[]): string => {
+  const known = [...new Set(names.filter(n => n.length >= 3 && !n.includes('*')))].sort((a, b) => b.length - a.length)
+  if (known.length === 0) return text
+  const pattern = new RegExp(`(\`[^\`]*\`)|(^|[^\\w\`])(${known.map(escapeRegex).join('|')})(?![\\w\`])`, 'g')
+  return text.replace(pattern, (all, quoted, before, name) => (quoted !== undefined ? all : `${before}${asCode(name)}`))
+}
+
+/** The review fields of a card: the model's reason, the warnings, what code-mode saw, and where the hint goes (Markdown). */
+export type ReviewFields = { reason?: string; warnings: string[]; seen?: string; file: string }
+
+export const reviewFields = (
   hint: Pick<Hint, 'review' | 'scope'>,
-  dest: { file: string; hints?: number; isRemoval?: boolean },
-): { text: string; isWarning?: boolean; isDim?: boolean }[] => {
+  dest: { file: string; hints?: number; isRemoval?: boolean; isBundled?: boolean },
+): ReviewFields => {
   const r = hint.review
   const count = (n: number) => `${n} hint${n === 1 ? '' : 's'}`
+  const file = `${dest.isBundled ? 'the bundled ' : ''}${asCode(dest.file)}`
   const where = dest.isRemoval
-    ? `Removes this hint from ${dest.file}${dest.hints === undefined ? '' : `, which has ${count(dest.hints)}`}`
-    : dest.hints === undefined ? `Makes the new hint file ${dest.file}` : `Adds to ${dest.file}, which has ${count(dest.hints)}`
+    ? `Removes this hint from ${file}${dest.hints === undefined ? '' : `, which has ${count(dest.hints)}`}`
+    : dest.hints === undefined ? `Makes the new hint file ${file}` : `Adds to ${file}, which has ${count(dest.hints)}`
   const reach = hint.scope === 'project' ? 'in this project only' : 'in all projects'
-  return [
-    ...(r?.why ? [{ text: `Why, in the model's words: ${r.why}` }] : []),
-    ...(r?.seen ? [{ text: `Seen by code-mode: ${r.seen}`, isDim: true }] : []),
-    ...(r?.kind ? [{ text: `Kind, as a classifier guesses: ${r.kind}`, isDim: true }] : []),
-    ...(r?.flags ?? []).map(f => ({ text: `⚠ ${f}`, isWarning: true })),
-    { text: `${where}. It applies ${reach}.`, isDim: true },
-  ]
+  // The kind shows only as a flag: an "other instruction" is the one to warn about.
+  return {
+    ...(r?.why ? { reason: r.why } : {}),
+    warnings: r?.flags ?? [],
+    ...(r?.seen ? { seen: `code-mode saw ${r.seen.replace(/^\w/, c => c.toLowerCase())}` } : {}),
+    file: `${where}. It applies ${reach}.`,
+  }
 }
 
 const globToRegex = (glob: string): RegExp =>
@@ -265,9 +279,9 @@ export const formatHints = (hints: readonly Hint[], maxChars = 4000): string => 
 /** File name for a new hint: the server, plus the tools when the hint is for some tools only. */
 export const hintFileName = (server: string, tools: readonly string[]): string => {
   const base = normalize(server.replace(/^claude\.ai\s+/i, '')) || 'server'
-  const toolPart = normalize(tools.join('-')).slice(0, 40)
-  const suffix = tools.length > 0 && toolPart !== base ? `.${toolPart}` : ''
-  return `${base}${suffix}.md`
+  // A server named by one of its tools does not repeat that tool.
+  const toolPart = normalize(tools.filter(t => normalize(t) !== base).join('-')).slice(0, 40).replace(/_+$/, '')
+  return `${base}${toolPart === '' ? '' : `.${toolPart}`}.md`
 }
 
 /**
@@ -302,25 +316,16 @@ export const isUnder = (path: string, dir: string): boolean => path === dir || p
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
 
 /**
- * A readable name for a hint's server: its /mcp name without "claude.ai ",
- * or, for a server named by UUID (the desktop app's connectors), the tool
- * that identifies it.
+ * A readable name for a hint's server, in Markdown: its /mcp name without
+ * "claude.ai ", or, for a server named by UUID (the desktop app's
+ * connectors), the tool that identifies it.
  */
 export const serverLabel = (hint: Pick<Hint, 'servers' | 'identify'>): string => {
   const named = hint.servers.find(s => !UUID_LIKE.test(s))
   if (named) return named.replace(/^claude\.ai\s+/i, '')
-  if (hint.identify[0]) return `server with ${hint.identify[0]}`
+  if (hint.identify[0]) return `server with ${asCode(hint.identify[0])}`
   return hint.servers[0] ?? 'unknown server'
 }
-
-/** A hint body as display lines: bullets as "• ", blank lines dropped. */
-export const hintLines = (body: string, maxChars = 400): string[] =>
-  body
-    .slice(0, maxChars)
-    .split('\n')
-    .map(l => l.trim())
-    .filter(l => l !== '')
-    .map(l => l.replace(/^[-*]\s+/, '• '))
 
 /** The new text of a hint file after adding one bullet; creates the frontmatter when the file is new. */
 export const appendHint = (

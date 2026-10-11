@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { activePathOf, appendHint, findItem, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removeFromFile, resolvePath, reviewLines, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { activePathOf, appendHint, findItem, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -137,18 +137,26 @@ describe('hint files', () => {
     expect(textFlags('get_thing takes mcp__things__get_thing ids.', 'things', others)).toEqual([])
   })
 
-  test('reviewLines says who says what, warns, and names the file', () => {
-    const lines = reviewLines({ scope: 'user', review: { why: 'W.', kind: 'limit', seen: 'S.', flags: ['F.'] } }, { file: 'things.md', hints: 1 })
-    expect(lines).toEqual([
-      { text: "Why, in the model's words: W." },
-      { text: 'Seen by code-mode: S.', isDim: true },
-      { text: 'Kind, as a classifier guesses: limit', isDim: true },
-      { text: '⚠ F.', isWarning: true },
-      { text: 'Adds to things.md, which has 1 hint. It applies in all projects.', isDim: true },
-    ])
-    expect(reviewLines({ scope: 'project' }, { file: 'x.md' })).toEqual([
-      { text: 'Makes the new hint file x.md. It applies in this project only.', isDim: true },
-    ])
+  test('reviewFields gives the reason, the checks and the file, without the kind', () => {
+    const fields = reviewFields({ scope: 'user', review: { why: 'W.', kind: 'limit', seen: 'No failed call.', flags: ['F.'] } }, { file: 'things.md', hints: 1 })
+    expect(fields).toEqual({
+      reason: 'W.',
+      warnings: ['F.'],
+      seen: 'code-mode saw no failed call.',
+      file: 'Adds to `things.md`, which has 1 hint. It applies in all projects.',
+    })
+    expect(reviewFields({ scope: 'project' }, { file: 'x.md' })).toEqual({
+      warnings: [],
+      file: 'Makes the new hint file `x.md`. It applies in this project only.',
+    })
+  })
+
+  test('codeNames shows known names as inline code, once', () => {
+    const names = ['search_tools', 'slack_search_public', 'slack_search_public_and_private']
+    expect(codeNames('search_tools showed no types for slack_search_public_and_private.', names))
+      .toBe('`search_tools` showed no types for `slack_search_public_and_private`.')
+    expect(codeNames('`search_tools` and my_search_tools stay.', names)).toBe('`search_tools` and my_search_tools stay.')
+    expect(codeNames('No names here.', [])).toBe('No names here.')
   })
 
   test('appendHint creates frontmatter once, then adds bullets', () => {
@@ -158,6 +166,8 @@ describe('hint files', () => {
     expect(hintFileName('claude.ai Gmail', [])).toBe('gmail.md')
     expect(hintFileName('Datadog', ['analyze_*'])).toBe('datadog.analyze.md')
     expect(hintFileName('analyze_datadog_logs', ['analyze_datadog_logs'])).toBe('analyze_datadog_logs.md')
+    expect(hintFileName('search_public', ['search_public', 'search_public_and_private'])).toBe('search_public.search_public_and_private.md')
+    expect(hintFileName('x', ['slack_search_public', 'slack_search_public_and_private'])).toBe('x.slack_search_public_slack_search_public.md')
   })
 })
 
@@ -250,7 +260,7 @@ describe('hints after a failed run_code call', () => {
     await $.tool.call({ tool: 'mcp__code-mode__add_hint', server: 'cccc-3333', text: 'broken needs a page.', why: 'It failed without one.' })
     const pending = Object.entries(written).find(([p]) => p.includes('/pending/'))
     const review = parseHint(pending![1], pending![0], 'user').review
-    expect(review?.seen).toBe('1 run with a failed try on this server in this session.')
+    expect(review?.seen).toBe('1 run with a failed call to this server in this session.')
     expect(review?.flags).toEqual([])
   })
 })
@@ -268,7 +278,7 @@ describe('add_hint and its approval row', () => {
   })
 
   const WHY = 'Numbers failed with error 400, strings worked.'
-  const REVIEWED = `---\nservers: ["claude.ai Things"]\nidentify: ["get_thing"]\nwhy: "${WHY}"\nkind: "argument"\nflags: ["No try on this server failed in this session."]\n---\n- Pass ids as strings.\n`
+  const REVIEWED = `---\nservers: ["claude.ai Things"]\nidentify: ["get_thing"]\nwhy: "${WHY}"\nkind: "argument"\nseen: "No failed call to this server in this session."\n---\n- Pass ids as strings.\n`
   const classifyAs = (on: On, kind: string) => on('model.classify', () => ({ value: kind }))
 
   test('add_hint writes one proposal file under pending/, by the /mcp server name, with its review', async ($, on) => {
@@ -315,7 +325,6 @@ describe('add_hint and its approval row', () => {
     expect(review?.kind).toBe('other instruction')
     expect(review?.flags).toEqual([
       'Its server is not connected in this session.',
-      'No try on this server failed in this session.',
       'A classifier reads it as an instruction, not as a fact about a call.',
       'It contains a link.',
       'It talks about approval, credentials, or what to tell the person.',
@@ -343,10 +352,10 @@ describe('add_hint and its approval row', () => {
       fakeHome(on, { [PENDING]: REVIEWED, [`${USER_DIR}/things.md`]: '---\nservers: [Things]\n---\n- Older hint.\n' })
       const ui = await $.ui.mount(row(surface))
       const drawn = JSON.stringify(await ui.drawn())
-      expect(drawn).toContain(`Why, in the model's words: ${WHY}`)
-      expect(drawn).toContain('Kind, as a classifier guesses: argument')
-      expect(drawn).toContain('⚠ No try on this server failed in this session.')
-      expect(drawn).toContain('Adds to things.md, which has 1 hint. It applies in all projects.')
+      expect(drawn).toContain(`"CLAUDE'S REASON"]},{"type":"Markdown","props":{"text":"${WHY}"`)
+      expect(drawn).not.toContain('argument')
+      expect(drawn).toContain('code-mode saw no failed call to this server in this session.')
+      expect(drawn).toContain('Adds to `things.md`, which has 1 hint. It applies in all projects.')
     })
   }
 
@@ -361,7 +370,7 @@ describe('add_hint and its approval row', () => {
     expect(output).toContain(`pending: ${repo}/.claude/code-mode/hints/pending/`)
     const ui = await $.ui.mount({ ...row('terminal'), props: { ...row('terminal').props, output } })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('"Proposed usage hint"," (","project"')
+    expect(drawn).toContain('**Usage hint** · Things · this project')
     expect(drawn).toContain('It applies in this project only.')
   })
 
@@ -439,14 +448,21 @@ describe('the band above the prompt', () => {
       mock.store(on)
       fakeHome(on, { [PENDING_A]: A, [PENDING_B]: B })
       const ui = await $.ui.mount(band(surface))
-      expect(JSON.stringify(await ui.drawn())).toContain('2 hint proposals for code mode')
+      expect(JSON.stringify(await ui.drawn())).toContain('2 proposals for code mode: 2 hints')
       await ui.press({ key: 'review' })
-      const drawn = JSON.stringify(await ui.drawn())
-      expect(drawn).toContain('Things')
-      expect(drawn).toContain('server with analyze_datadog_logs')
-      expect(drawn).not.toContain('12631ce4')
-      expect(drawn).toContain('• Pass ids as strings.')
+      const first = JSON.stringify(await ui.drawn())
+      expect(first).toContain('Code mode proposal ","1"," of ","2"')
+      expect(first).toContain('**Usage hint** · Things · all projects')
+      expect(first).toContain('- Pass ids as strings.')
+      // Previous, Next, Close, Approve, Discard: one card at a time
       expect(await ui.findAll({ type: 'Button' })).toHaveLength(5)
+      await ui.press({ key: 'next' })
+      const second = JSON.stringify(await ui.drawn())
+      expect(second).toContain('server with `analyze_datadog_logs`')
+      expect(second).not.toContain('12631ce4')
+      expect(second).not.toContain('Pass ids as strings.')
+      await ui.press({ key: 'next' })
+      expect(JSON.stringify(await ui.drawn())).toContain('Pass ids as strings.')
     })
 
     test(`Approve in the band activates that proposal only (${surface})`, async ($, on) => {
@@ -458,7 +474,9 @@ describe('the band above the prompt', () => {
       await ui.press({ key: 'approve-0' })
       expect(fs.written[`${USER_DIR}/things.md`]).toBe(A)
       expect(fs.removed).toEqual([PENDING_A])
-      expect(JSON.stringify(await ui.drawn())).toContain('1 hint proposal for code mode')
+      const left = JSON.stringify(await ui.drawn())
+      expect(left).toContain('Code mode proposal ","1"," of ","1"')
+      expect(left).toContain('analyze_datadog_logs')
     })
   }
 })
@@ -499,9 +517,8 @@ describe('remove_hint', () => {
     expect(proposal.remove).toBe('bundled:mail.md')
     expect(proposal.servers).toEqual(['Mail'])
     expect(proposal.body).toBe('- Mail returns JSON.')
-    expect(reviewLines(proposal, { file: 'mail.md', hints: 2, isRemoval: true }).at(-1)).toEqual({
-      text: 'Removes this hint from mail.md, which has 2 hints. It applies in all projects.', isDim: true,
-    })
+    expect(reviewFields(proposal, { file: 'mail.md', hints: 2, isRemoval: true }).file)
+      .toBe('Removes this hint from `mail.md`, which has 2 hints. It applies in all projects.')
   })
 
   test('hides the hint in this session at once and proposes the removal', async ($, on) => {
@@ -545,8 +562,8 @@ describe('remove_hint', () => {
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).toContain('"Remove · ","Mail"')
-    expect(drawn).toContain('Removes this hint from mail-approve.md, which has 2 hints.')
+    expect(drawn).toContain('**Removal of a usage hint** · Mail · all projects')
+    expect(drawn).toContain('Removes this hint from `mail-approve.md`, which has 2 hints.')
     await ui.press({ key: 'approve-0' })
     expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
 
@@ -564,7 +581,7 @@ describe('remove_hint', () => {
     await remove($, path, 'Pass ids as strings.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
-    expect(JSON.stringify(await ui.drawn())).toContain('Removes this hint from the bundled mail-bundled.md')
+    expect(JSON.stringify(await ui.drawn())).toContain('Removes this hint from the bundled `mail-bundled.md`')
     await ui.press({ key: 'approve-0' })
     expect(JSON.parse(fs.written[`${USER_DIR}/removed.json`]!)).toEqual([{ file: 'mail-bundled.md', hint: 'Pass ids as strings.' }])
     expect(fs.written[path]).toBe(undefined)
@@ -588,7 +605,7 @@ describe('remove_hint', () => {
       plugin: 'code-mode', surface: 'terminal', component: 'ToolResult', requestId: ID,
       props: { tool_use_id: ID, tool: 'mcp__code-mode__remove_hint', output, isErrored: false },
     })
-    expect(JSON.stringify(await ui.drawn())).toContain('"Proposed removal of a usage hint"," (","user"')
+    expect(JSON.stringify(await ui.drawn())).toContain('**Removal of a usage hint** · Mail · all projects')
     await ui.press({ key: 'approve' })
     expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
     expect(JSON.stringify(await ui.drawn())).toContain('✓ Hint removed')

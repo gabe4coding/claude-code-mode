@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
   ADD_HINT_DESCRIPTION,
   HINT_KINDS,
@@ -7,10 +7,11 @@ import {
   REMOVE_HINT_DESCRIPTION,
   activePathOf,
   appendHint,
+  asCode,
+  codeNames,
   displayName,
   findItem,
   formatHints,
-  hintLines,
   hintFileName,
   hintItems,
   hintKey,
@@ -27,7 +28,7 @@ import {
   removalProposal,
   removeFromFile,
   resolvePath,
-  reviewLines,
+  reviewFields,
   serverKeyOf,
   serverLabel,
   targetsOf,
@@ -39,6 +40,7 @@ import {
   type Hint,
   type HintScope,
   type Review,
+  type ReviewFields,
 } from './hints'
 import {
   RUN_DESCRIPTION,
@@ -52,6 +54,7 @@ import {
   fileNameError,
   fileText,
   formatOutcome,
+  functionNudge,
   hintNudge,
   isCallable,
   isSessionResult,
@@ -132,10 +135,17 @@ type Options = {
 const ADD_HINT = 'mcp__code-mode__add_hint'
 const REMOVE_HINT = 'mcp__code-mode__remove_hint'
 const SAVE_FUNCTION = 'mcp__code-mode__save_function'
-const BAND_LIMIT = 5
+// The names a card shows as inline code when the model's reason names them.
+const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'save_function']
+// A program that did this many calls that worked, or this many to more than
+// one tool, is worth a saved function.
+const FUNCTION_CALLS = 10
+const FUNCTION_JOIN_CALLS = 5
 
-// Whether the band above the prompt lists the proposals (else one line).
+// Whether the band above the prompt shows the proposals (else one line), and
+// which one it shows.
 const reviewOpen = atom({ plugin: 'code-mode', key: 'isReviewOpen' } as const, false)
+const reviewIndex = atom({ plugin: 'code-mode', key: 'reviewIndex' } as const, 0)
 
 // Hint folders. Bundled and user hints always load; project hints come from
 // the repository, so anyone who can commit there could steer the model: they
@@ -195,12 +205,15 @@ function debugLog($: EngineInterface, text: string): void {
 // calls failed and have not worked since, and search_tools queries that found
 // nothing; a run that works after them is the moment to propose a hint
 // (hintNudge). `failedTries` counts the runs with a failed try per server,
-// for the card of a proposal. session.end drops the entry.
+// for the card of a proposal. `usedTools`: tools that worked in a run that
+// finished; a later run with one of them may follow a probe. `nudged`: the
+// servers and tool sets a nudge named already, once each per session.
+// session.end drops the entry.
 // `kept`: the results of nested calls as JSON text, by number, with the time
 // of the call, for recall(n) (output projection). `seen`: the first number of
 // each call key, to find a call that repeats an earlier one. `metrics`: one
 // JSON line per run, when on.
-type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number> }
+type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number>; usedTools: Set<string>; nudged: Set<string> }
 type Kept = { next: number; results: Map<number, { json: string; at: number }>; chars: number; seen: Map<string, number> }
 type SessionState = { hidden: Set<string>; tries: Tries; kept: Kept; metrics: string[] }
 const bySession = new Map<string, SessionState>()
@@ -211,7 +224,7 @@ async function sessionOf($: EngineInterface): Promise<SessionState> {
   if (!state) {
     state = {
       hidden: new Set(),
-      tries: { failedServers: new Set(), missedSearches: [], failedTries: new Map() },
+      tries: { failedServers: new Set(), missedSearches: [], failedTries: new Map(), usedTools: new Set(), nudged: new Set() },
       kept: newKept(),
       metrics: [],
     }
@@ -455,22 +468,91 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
   return candidates.some(c => typeof c === 'string' && dirs.some(d => isUnder(c, d)))
 }
 
-// The review lines of a proposal's card, with the active file it goes to
+// What code-mode saw in the session that made a proposal: the runs with a
+// failed try on its server.
+const seenText = (failures: number): string =>
+  failures === 0 ? 'No failed call to this server in this session.' : `${failures} run${failures === 1 ? '' : 's'} with a failed call to this server in this session.`
+
+// The review fields of a proposal's card, with the active file it goes to
 // (or, for a removal, comes out of) and how many hints that file has now.
-async function cardLines($: EngineInterface, hint: Hint): Promise<ReturnType<typeof reviewLines>> {
+async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields> {
   if (hint.remove !== undefined) {
     const bundled = hint.remove.startsWith('bundled:')
     const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
     const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
     const text = await $.fs.read(path).catch(() => undefined)
     const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
-    return reviewLines(hint, { file: bundled ? `the bundled ${name}` : name, hints, isRemoval: true })
+    return reviewFields(hint, { file: name, hints, isRemoval: true, isBundled: bundled })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
   const current = (await $.fs.exists(dest).catch(() => false)) ? String(await $.fs.read(dest).catch(() => '')) : undefined
   const hints = current === undefined ? undefined : parseHint(current, dest, hint.scope).body.split('\n').filter(l => /^\s*[-*]\s/.test(l)).length
-  return reviewLines(hint, { file, hints })
+  return reviewFields(hint, { file, hints })
+}
+
+type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markdown'>
+type Decide = (action: 'approved' | 'discarded') => unknown
+
+// One field of a card: a gray uppercase label over its value.
+function cardField(ui: Ui, label: string, value: RenderChildren) {
+  const { Box, Text } = ui
+  return (
+    <Box flexDirection="column">
+      <Text dimColor>{label.toUpperCase()}</Text>
+      {value}
+    </Box>
+  )
+}
+
+function cardButtons(ui: Ui, keys: { approve: string; discard: string }, decide: Decide) {
+  const { Box, Button } = ui
+  return (
+    <Box gap={1}>
+      <Button key={keys.approve} label="Approve" variant="primary" onPress={() => decide('approved')} />
+      <Button key={keys.discard} label="Discard" onPress={() => decide('discarded')} />
+    </Box>
+  )
+}
+
+// A hint proposal's card, the same in the chat row and in the band. Names
+// show as inline code; the hint and the reason are Markdown.
+function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, keys: { approve: string; discard: string }, decide: Decide, note?: string) {
+  const { Box, Markdown, Text } = ui
+  const reach = hint.scope === 'project' ? 'this project' : 'all projects'
+  const names = [...hint.tools, ...hint.identify, ...OWN_TOOLS]
+  return (
+    <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
+      <Markdown text={`**${hint.remove === undefined ? 'Usage hint' : 'Removal of a usage hint'}** · ${serverLabel(hint)} · ${reach}`} />
+      {cardField(ui, hint.remove === undefined ? 'Hint' : 'Hint to remove', <Markdown text={hint.body} />)}
+      {hint.tools.length > 0 ? cardField(ui, 'Only for tools', <Markdown text={hint.tools.map(asCode).join(', ')} />) : null}
+      {fields.reason === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(fields.reason, names)} />)}
+      {fields.warnings.length + (fields.seen === undefined ? 0 : 1) === 0 ? null : cardField(ui, 'Checks', (
+        <Box flexDirection="column">
+          {fields.warnings.map(w => <Text color="yellow">⚠ {w}</Text>)}
+          {fields.seen === undefined ? null : <Text>{fields.seen}</Text>}
+        </Box>
+      ))}
+      {cardField(ui, 'File', <Markdown text={fields.file} />)}
+      {note === undefined ? null : <Text dimColor>{note}</Text>}
+      {cardButtons(ui, keys, decide)}
+    </Box>
+  )
+}
+
+// A function proposal's card: the code to read, highlighted.
+function functionCard(ui: Ui, f: SavedFunction, keys: { approve: string; discard: string }, decide: Decide) {
+  const { Box, Code, Markdown, Text } = ui
+  return (
+    <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
+      <Markdown text={`**Saved function** · ${asCode(`lib.${f.name}${signatureOf(f.code)}`)}`} />
+      {cardField(ui, 'What it returns', <Text>{f.description}</Text>)}
+      {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, OWN_TOOLS)} />)}
+      {cardField(ui, 'Code', <Code source={f.code} language="javascript" />)}
+      <Text dimColor>Programs can run this code in later sessions. Your approval of run_code covers its MCP calls. Approve only code you have read.</Text>
+      {cardButtons(ui, keys, decide)}
+    </Box>
+  )
 }
 
 const HINT_GUARD_DENY =
@@ -562,19 +644,48 @@ async function recordMissedSearch($: EngineInterface, query: string): Promise<vo
 
 // After earlier tries, the first run with a call that works asks for a hint:
 // for each server whose calls failed (earlier or in this run) and now work,
-// and for the searches that found nothing. Each is named once.
-async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<string>): Promise<string> {
+// and for the searches that found nothing. Each is named once. A finished
+// run also asks for a hint when it calls again a tool of an earlier run and
+// no hint covers that tool's server: the earlier run was often a probe.
+async function nudgeAfter($: EngineInterface, failed: Set<string>, worked: Set<string>, projectHints: boolean): Promise<string> {
   const { tries } = await sessionOf($)
-  const serverOf = (tools: Set<string>) => new Set([...tools].flatMap(t => splitToolName(t)?.server ?? []))
+  const serverOf = (tools: Iterable<string>) => new Set([...tools].flatMap(t => splitToolName(t)?.server ?? []))
   const failedNow = serverOf(failed)
   const learned = [...serverOf(worked)].filter(s => tries.failedServers.has(s) || failedNow.has(s))
   for (const s of failedNow) tries.failedTries.set(s, (tries.failedTries.get(s) ?? 0) + 1)
   for (const s of failedNow) if (!learned.includes(s)) tries.failedServers.add(s)
   for (const s of learned) tries.failedServers.delete(s)
+  for (const s of learned) tries.nudged.add(s)
   if (worked.size === 0) return ''
-  const nudge = hintNudge(learned, tries.missedSearches)
+  const probed = await probedTools($, tries, worked, projectHints).catch(err => (debugLog($, `cannot check for a probe: ${errorText(err)}`), []))
+  const nudge = hintNudge(learned, tries.missedSearches, probed)
   tries.missedSearches = []
   return nudge
+}
+
+// The tools of this run that an earlier run called too, on servers with no
+// hint and no nudge yet. Each server is checked once per session.
+async function probedTools($: EngineInterface, tries: Tries, worked: Set<string>, projectHints: boolean): Promise<string[]> {
+  const again = [...worked].filter(t => tries.usedTools.has(t) && !tries.nudged.has(splitToolName(t)?.server ?? ''))
+  for (const t of worked) tries.usedTools.add(t)
+  if (again.length === 0) return []
+  for (const t of again) tries.nudged.add(splitToolName(t)?.server ?? '')
+  const [hints, names, list] = await Promise.all([loadHints($, projectHints), serverNames($), $.tool.list().catch(() => [])])
+  const offered = toolsByServer(list.filter(t => t.mcp).map(t => t.name))
+  return again.filter(t => hintsFor(hints, targetsOf([t], names, offered)).length === 0).map(t => splitToolName(t)?.name ?? t)
+}
+
+// A finished program with many calls that worked, or a join of tools, and no
+// saved function asks for one; each set of tools once per session.
+async function functionNudgeAfter($: EngineInterface, records: readonly CallRecord[], usesLib: boolean): Promise<string> {
+  const ok = records.filter(r => r.ok)
+  const tools = [...new Set(ok.map(r => r.tool))].sort()
+  if (usesLib || !(ok.length >= FUNCTION_CALLS || (tools.length > 1 && ok.length >= FUNCTION_JOIN_CALLS))) return ''
+  const { tries } = await sessionOf($)
+  const key = `functions:${tools.join(',')}`
+  if (tries.nudged.has(key)) return ''
+  tries.nudged.add(key)
+  return functionNudge(ok.length, tools.map(t => splitToolName(t)?.name ?? t).slice(0, 3))
 }
 
 // The engine's types of the connected MCP tools, read again only when the
@@ -708,26 +819,14 @@ export const register: Register = (on, options) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Text } = ui
     const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string } | undefined
     if (decision?.action === 'approved') return <Text color="green">✓ Function saved: {decision.dest}</Text>
     if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
     const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
-    return (
-      <Box flexDirection="column" borderStyle="round" paddingX={1}>
-        <Text bold>Proposed function lib.{proposal.name}{signatureOf(proposal.code)}</Text>
-        <Text>{proposal.description}</Text>
-        {proposal.why === undefined ? null : <Text dimColor>Why: {proposal.why}</Text>}
-        {proposal.code.split('\n').map(line => <Text dimColor>{line}</Text>)}
-        <Text dimColor>Programs run this code in later sessions, and your approval of run_code covers its MCP calls. Approve only code you have read.</Text>
-        <Box>
-          <Button key="approve" label="Approve" variant="primary" onPress={() => decideFunction($, path, 'approved')} />
-          <Text> </Text>
-          <Button key="discard" label="Discard" onPress={() => decideFunction($, path, 'discarded')} />
-        </Box>
-      </Box>
-    )
+    return functionCard(ui, proposal, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action))
   })
 
   // add_hint never activates a hint: it writes a proposal under pending/,
@@ -777,10 +876,9 @@ export const register: Register = (on, options) => {
     const review: Review = {
       why,
       kind,
-      seen: failures > 0 ? `${failures} run${failures === 1 ? '' : 's'} with a failed try on this server in this session.` : undefined,
+      seen: seenText(failures),
       flags: [
         ...(offered.length === 0 ? ['Its server is not connected in this session.'] : []),
-        ...(failures === 0 ? ['No try on this server failed in this session.'] : []),
         ...(kind === OTHER_INSTRUCTION ? ['A classifier reads it as an instruction, not as a fact about a call.'] : []),
         ...textFlags(text, key, mcpTools.filter(t => splitToolName(t)?.server !== key)),
       ],
@@ -820,8 +918,8 @@ export const register: Register = (on, options) => {
     const failures = [...servers].reduce((n, s) => n + (tries.failedTries.get(s) ?? 0), 0)
     const review: Review = {
       why,
-      seen: failures > 0 ? `${failures} run${failures === 1 ? '' : 's'} with a failed try on this server in this session.` : undefined,
-      flags: failures === 0 ? ['No try on this server failed in this session.'] : [],
+      seen: seenText(failures),
+      flags: [],
     }
     const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
     const pending = `${target.dir}/pending/${pendingFileName(`${name}.remove.md`, input.tool_use_id)}`
@@ -842,7 +940,8 @@ export const register: Register = (on, options) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Text } = ui
     const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string; isRemoval?: boolean } | undefined
 
     if (decision?.action === 'approved') {
@@ -851,93 +950,57 @@ export const register: Register = (on, options) => {
     if (decision?.action === 'discarded') return <Text dimColor>{decision.isRemoval ? 'Removal discarded. The hint stays.' : 'Hint discarded.'}</Text>
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
-    const scope = await scopeOf($, path)
-    const hint = parseHint(String(await $.fs.read(path)), path, scope)
-    const decide = (action: 'approved' | 'discarded') => decidePending($, path, action, projectHints)
-    const lines = await cardLines($, hint)
-
-    return (
-      <Box flexDirection="column" borderStyle="round" paddingX={1}>
-        <Text bold>{hint.remove === undefined ? 'Proposed usage hint' : 'Proposed removal of a usage hint'} ({scope})</Text>
-        <Text dimColor>
-          server: {hint.servers.join(', ')}
-          {hint.identify.length > 0 ? ` · identify: ${hint.identify.join(', ')}` : ''}
-          {hint.tools.length > 0 ? ` · tools: ${hint.tools.join(', ')}` : ''}
-        </Text>
-        <Text>{hint.body}</Text>
-        {lines.map(l => <Text color={l.isWarning ? 'yellow' : undefined} dimColor={l.isDim}>{l.text}</Text>)}
-        <Text dimColor>The model sees approved hints in later sessions. Approve only what you would write yourself.</Text>
-        <Box>
-          <Button key="approve" label="Approve" variant="primary" onPress={() => decide('approved')} />
-          <Text> </Text>
-          <Button key="discard" label="Discard" onPress={() => decide('discarded')} />
-        </Box>
-      </Box>
-    )
+    const hint = parseHint(String(await $.fs.read(path)), path, await scopeOf($, path))
+    const note = 'Claude sees approved hints in later sessions. Approve only what you would write yourself.'
+    return hintCard(ui, hint, await cardFields($, hint), { approve: 'approve', discard: 'discard' }, action => decidePending($, path, action, projectHints), note)
   })
 
   // The band above the prompt: while proposals wait in pending/ (from any
-  // session, a headless one included), one line with Review; opened, each
-  // proposal with its own Approve and Discard. Nothing shows otherwise.
+  // session, a headless one included), one line with Review; opened, one
+  // proposal at a time with its own Approve and Discard, and Previous and
+  // Next when there are more. Nothing shows otherwise.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const [pending, functions] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($)])
-    if (pending.length + functions.length === 0) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const counted = (n: number, what: string) => (n === 0 ? [] : [`${n} ${what} proposal${n === 1 ? '' : 's'}`])
-    const count = `${[...counted(pending.length, 'hint'), ...counted(functions.length, 'function')].join(' and ')} for code mode`
+    const total = pending.length + functions.length
+    if (total === 0) return next(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Button, Text } = ui
+    const kinds = [
+      ...(pending.length === 0 ? [] : [`${pending.length} hint${pending.length === 1 ? '' : 's'}`]),
+      ...(functions.length === 0 ? [] : [`${functions.length} function${functions.length === 1 ? '' : 's'}`]),
+    ]
 
     if (!(await read($, reviewOpen))) {
       return (
         <Box gap={1} alignItems="center">
           <Text color="yellow">●</Text>
-          <Text>{count}</Text>
+          <Text>{`${total} proposal${total === 1 ? '' : 's'} for code mode: ${kinds.join(', ')}`}</Text>
           <Button key="review" label="Review" onPress={() => update($, reviewOpen, () => true)} />
         </Box>
       )
     }
 
-    const shown = pending.slice(0, BAND_LIMIT)
-    const shownFunctions = functions.slice(0, Math.max(0, BAND_LIMIT - shown.length))
-    const lines = await Promise.all(shown.map(p => cardLines($, p)))
+    // A decision shortens the list: the same index then shows the next one.
+    const index = Math.min(await read($, reviewIndex), total - 1)
+    const go = (step: number) => update($, reviewIndex, () => (index + step + total) % total)
+    const card = index < pending.length
+      ? hintCard(ui, pending[index]!, await cardFields($, pending[index]!), { approve: `approve-${index}`, discard: `discard-${index}` }, action => decidePending($, pending[index]!.path, action, projectHints))
+      : functionCard(ui, functions[index - pending.length]!, { approve: `approve-f-${index - pending.length}`, discard: `discard-f-${index - pending.length}` }, action => decideFunction($, functions[index - pending.length]!.path, action))
     return (
       <Box flexDirection="column" gap={1}>
-        <Box justifyContent="space-between">
-          <Text bold>{count}</Text>
-          <Button key="close" label="Close" role="dismiss" onPress={() => update($, reviewOpen, () => false)} />
+        <Box flexDirection="column">
+          <Box justifyContent="space-between">
+            <Text bold>Code mode proposal {index + 1} of {total}</Text>
+            <Box gap={1}>
+              {total > 1 ? <Button key="previous" label="Previous" onPress={() => go(-1)} /> : null}
+              {total > 1 ? <Button key="next" label="Next" onPress={() => go(1)} /> : null}
+              <Button key="close" label="Close" role="dismiss" onPress={() => update($, reviewOpen, () => false)} />
+            </Box>
+          </Box>
+          <Text dimColor>Approve only what you would write yourself. Approved hints guide Claude in later sessions. Approved functions run in its programs.</Text>
         </Box>
-        {shown.map((p, i) => (
-          <Box key={`proposal-${i}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-            <Text dimColor>
-              {p.remove !== undefined ? 'Remove · ' : ''}
-              {serverLabel(p)}
-              {p.tools.length > 0 ? ` · ${p.tools.join(', ')}` : ''}
-              {` · ${p.scope}`}
-            </Text>
-            {hintLines(p.body).map(line => <Text>{line}</Text>)}
-            {lines[i]!.map(l => <Text color={l.isWarning ? 'yellow' : undefined} dimColor={l.isDim}>{l.text}</Text>)}
-            <Box gap={1} marginTop={1}>
-              <Button key={`approve-${i}`} label="Approve" variant="primary" onPress={() => decidePending($, p.path, 'approved', projectHints)} />
-              <Button key={`discard-${i}`} label="Discard" onPress={() => decidePending($, p.path, 'discarded', projectHints)} />
-            </Box>
-          </Box>
-        ))}
-        {shownFunctions.map((f, i) => (
-          <Box key={`function-${i}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-            <Text dimColor>Function · lib.{f.name}{signatureOf(f.code)}</Text>
-            <Text>{f.description}</Text>
-            {f.why === undefined ? null : <Text dimColor>Why: {f.why}</Text>}
-            {f.code.split('\n').map(line => <Text dimColor>{line}</Text>)}
-            <Box gap={1} marginTop={1}>
-              <Button key={`approve-f-${i}`} label="Approve" variant="primary" onPress={() => decideFunction($, f.path, 'approved')} />
-              <Button key={`discard-f-${i}`} label="Discard" onPress={() => decideFunction($, f.path, 'discarded')} />
-            </Box>
-          </Box>
-        ))}
-        {pending.length + functions.length > shown.length + shownFunctions.length
-          ? <Text dimColor>{pending.length + functions.length - shown.length - shownFunctions.length} more after these.</Text>
-          : null}
-        <Text dimColor>Approved hints guide the model in later sessions, and approved functions run in its programs. Approve only what you would write yourself.</Text>
+        {card}
       </Box>
     )
   })
@@ -1152,9 +1215,10 @@ export const register: Register = (on, options) => {
     }
     // A program that failed (a wrong result shape, a throw) is a failed try for every server it called.
     const isDone = outcome?.t === 'done'
-    const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set()).catch(() => '')
-    const tail = [nudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
+    const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set(), projectHints).catch(() => '')
     const callRecords = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
+    const keepNudge = isDone ? await functionNudgeAfter($, callRecords, Object.keys(lib).length > 0).catch(() => '') : ''
+    const tail = [nudge, keepNudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     // A result too large to show is kept whole, so the next program can page it.
     const returned = outcome?.t === 'done' ? outcome.value : undefined
     const outChars = returned?.length ?? 0
