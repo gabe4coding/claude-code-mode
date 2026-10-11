@@ -50,8 +50,12 @@ import {
   hintNudge,
   isCallable,
   isSessionResult,
+  learnedShape,
+  limiter,
   mcpReply,
+  mergeShapes,
   missedData,
+  parseShapes,
   rankTools,
   savedResultOf,
   savedReply,
@@ -64,11 +68,15 @@ import {
   type Reply,
   type RunnerDone,
   type RunnerError,
+  type Shapes,
 } from './protocol'
 
 const MAX_RESULT_CHARS = 20_000
 const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
 const SEARCH_LIMIT = 15
+// Nested calls of one run that wait for a reply at one time: a program that
+// maps over hundreds of ids must not hit a server's rate limit at once.
+const MAX_PARALLEL_CALLS = 8
 
 // macOS only: the sandbox process gets no network. Elsewhere it relies on the
 // vm context (no fetch, no require) and Node's --permission.
@@ -219,6 +227,26 @@ async function writeMetrics($: EngineInterface, state: SessionState, line: Recor
 }
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
+
+// The result shape of each MCP tool from its last call that worked, in any
+// session: search_tools shows it, so a first program need not guess it.
+async function shapesPath($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  return home ? `${home}/.claude/code-mode/shapes.json` : undefined
+}
+
+async function readShapes($: EngineInterface): Promise<Shapes> {
+  const path = await shapesPath($)
+  return path === undefined ? {} : parseShapes(String(await $.fs.read(path).catch(() => '')))
+}
+
+// Writes only when a shape changed, so most runs write nothing.
+async function saveShapes($: EngineInterface, learned: ReadonlyMap<string, string>): Promise<void> {
+  const path = await shapesPath($)
+  if (path === undefined || learned.size === 0) return
+  const next = mergeShapes(await readShapes($), learned)
+  if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
+}
 
 // The hints the model sees: without the ones hidden in this session and the
 // bundled ones the person removed.
@@ -710,12 +738,13 @@ export const register: Register = (on, options) => {
       return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
     }
 
-    const dts = await mcpTypes($)
+    const [dts, shapes] = await Promise.all([mcpTypes($), projection ? readShapes($) : ({} as Shapes)])
     const blocks = found.map(t => {
       const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
       const args = declaration ?? `(argument types unknown here: ToolSearch "select:${t.name}" shows the schema)`
       const summary = t.description.split('\n')[0]!.slice(0, 300)
-      return `### ${t.name}\n${summary}\nargs: ${args}`
+      const shape = shapes[t.name] === undefined ? '' : `\nreturns (earlier call): ${shapes[t.name]}`
+      return `### ${t.name}\n${summary}\nargs: ${args}${shape}`
     })
     const [hints, names] = await Promise.all([loadHints($, projectHints), serverNames($)])
     const offered = toolsByServer(all.map(t => t.name))
@@ -751,6 +780,8 @@ export const register: Register = (on, options) => {
     const recalled: { ref: number; ageMs: number }[] = []
     let recalls = 0
     let recallMisses = 0
+    const shapes = new Map<string, string>()
+    const limit = limiter(MAX_PARALLEL_CALLS)
 
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
       calls++
@@ -791,6 +822,8 @@ export const register: Register = (on, options) => {
       const json = reply.ok ? (JSON.stringify(reply.value) ?? 'null') : ''
       const chars = json.length
       const ref = reply.ok && projection ? keep(kept, json) : undefined
+      const learned = reply.ok && projection ? learnedShape(reply.value) : undefined
+      if (learned !== undefined) shapes.set(tool, learned)
       if (reply.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
       records.set(id, { ref, tool, ok: reply.ok, chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
     }
@@ -825,7 +858,7 @@ export const register: Register = (on, options) => {
         const taken = takeMessages(buffer + piece.text)
         buffer = taken.rest
         for (const m of taken.messages) {
-          if (m.t === 'call') answers.push(answer(m.id, m.tool, m.args))
+          if (m.t === 'call') answers.push(limit(() => answer(m.id, m.tool, m.args)))
           else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
           else outcome = m
         }
@@ -836,6 +869,8 @@ export const register: Register = (on, options) => {
     } finally {
       await $.process.run(['rm', '-rf', xdir]).catch(() => undefined)
     }
+
+    await saveShapes($, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`))
 
     // Hints for the servers whose calls failed: the likely fix is often there.
     // A hint that cannot be read never costs the run its result.

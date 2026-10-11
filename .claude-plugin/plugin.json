@@ -1,6 +1,6 @@
 {
   "name": "code-mode",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Code mode for MCP: the model writes one JavaScript program that calls MCP tools in a sandbox, instead of one tool call per step.",
   "types": "./types/index.d.ts",
   "author": {
@@ -46,7 +46,7 @@
     "projection": {
       "type": "boolean",
       "title": "Output projection",
-      "description": "After each run, show the size and shape of each MCP result and keep the results in memory, so a later program can read one again with recall(n) and make no new call.",
+      "description": "After each run, show the size and shape of each MCP result and keep the results in memory, so a later program can read one again with recall(n) and make no new call. search_tools shows the result shape of each tool from an earlier call (saved in ~/.claude/code-mode/shapes.json).",
       "default": true,
       "required": false
     },

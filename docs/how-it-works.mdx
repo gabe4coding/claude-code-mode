@@ -28,7 +28,7 @@ The sandbox has four layers:
 
 | Layer | What it stops |
 | --- | --- |
-| A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. |
+| A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. The sandbox process does `sleep` with its own timer. |
 | The Node permission model (`--permission`) | The process can read only the runner file and its temporary folder. It cannot write files or start processes or workers. |
 | `sandbox-exec`, on macOS only | The process has no network access. |
 | `ulimit -t` and a timer | A CPU limit stops busy loops. A wall-clock limit stops programs that wait too long. |

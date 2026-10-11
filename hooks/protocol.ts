@@ -265,6 +265,80 @@ export const shapeOf = (v: unknown): string => {
   return shape.length <= MAX_SHAPE_CHARS ? shape : `${shape.slice(0, MAX_SHAPE_CHARS)}…`
 }
 
+/**
+ * The shape of a tool's result to show before its next call: shapeOf with no
+ * counts, which change from call to call. Undefined for an empty result, which
+ * shows no fields.
+ */
+export const learnedShape = (v: unknown): string | undefined => {
+  if (typeof v === 'string') return 'text'
+  const shape = shapeOf(v).replace(/\[\d+ × /g, '[').replace(/\[\d+\]/g, '[…]').replace(/\{\d+ keys?\}/g, '{…}')
+  return /^(\[\]|\{\}|null)$/.test(shape) ? undefined : shape
+}
+
+/** The learned shapes by tool name, newest change last. */
+export type Shapes = Record<string, string>
+
+const MAX_SHAPES = 500
+// What learnedShape makes: field names, brackets and punctuation. The file is
+// in ~/.claude, where the model can write too, so other text is dropped.
+const SHAPE = /^[\w$ {}[\]:,.…+]{1,240}$/
+
+/** The shapes file as Shapes, without the entries learnedShape cannot have made. */
+export const parseShapes = (text: string): Shapes => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return {}
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  return Object.fromEntries(
+    Object.entries(parsed).filter(([tool, shape]) => splitToolName(tool) !== undefined && tool.length <= 200 && typeof shape === 'string' && SHAPE.test(shape)),
+  )
+}
+
+/**
+ * The shapes with the ones a run learned, or undefined when nothing changed.
+ * A shape with an empty array does not replace a known one: it hides the
+ * fields of the array's items. The oldest change goes first past the limit.
+ */
+export const mergeShapes = (current: Shapes, learned: ReadonlyMap<string, string>): Shapes | undefined => {
+  const next = { ...current }
+  let changed = false
+  for (const [tool, shape] of learned) {
+    if (next[tool] === shape || (next[tool] !== undefined && shape.includes('[]'))) continue
+    delete next[tool]
+    next[tool] = shape
+    changed = true
+  }
+  if (!changed) return undefined
+  const tools = Object.keys(next)
+  for (const tool of tools.slice(0, Math.max(0, tools.length - MAX_SHAPES))) delete next[tool]
+  return next
+}
+
+/** Runs at most `n` tasks at a time; the others wait in the order they came. */
+export const limiter = (n: number) => {
+  let active = 0
+  const queue: (() => void)[] = []
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const start = () => {
+        active++
+        Promise.resolve()
+          .then(task)
+          .then(resolve, reject)
+          .finally(() => {
+            active--
+            queue.shift()?.()
+          })
+      }
+      if (active < n) start()
+      else queue.push(start)
+    })
+}
+
 /** A character count, short: 812, 18k, 1.2M. */
 export const charCount = (n: number): string =>
   n < 1000 ? String(n) : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`
@@ -398,19 +472,20 @@ export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, a
 
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
+- await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
-A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel. There is no require, fetch, process, filesystem or timers: only MCP tools.
+A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process, filesystem or setTimeout: only MCP tools.
 
-Find tools, their argument types and usage hints with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time.
+Find tools, their argument types, result shapes and usage hints with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time.
 
 Example:
 const issues = await call("mcp__linear__list_issues", { assignee: "me" })
 const open = issues.filter(i => i.state !== "Done")
 return open.map(i => ({ id: i.id, title: i.title }))`
 
-export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types. Use an empty query to list all MCP tools.`
+export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types and result shapes. Use an empty query to list all MCP tools.`
 
 /**
  * The note after a run that worked where earlier tries did not: the servers
