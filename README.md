@@ -19,6 +19,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/usage.mdx">Usage</a> ·
   <a href="docs/hints.mdx">Hints</a> ·
+  <a href="docs/functions.mdx">Functions</a> ·
   <a href="docs/permissions.mdx">Permissions</a> ·
   <a href="docs/configuration.mdx">Config</a>
 </p>
@@ -30,10 +31,12 @@ code-mode, the model writes one program. The program calls the tools, then filte
 sandbox. Only the answer goes into the context.
 
 - **Fewer tokens**: the intermediate data stays out of the context. The model uses the context for the task.
-- **Sandbox**: the program runs in its own Node process, with no file system and a CPU limit. On macOS, it also
-  has no network.
+- **Sandbox**: the program runs in its own Node process, with no file system and a CPU limit. On macOS, and on
+  Linux where `unshare -rn` works, it also has no network.
 - **Hints**: short notes for each MCP server tell the model about result formats, required arguments and limits.
   The model can propose a new hint or the removal of a wrong hint, and you approve it.
+- **Saved functions**: the model can propose a program part that works as a function for later sessions. You read
+  the code and approve it.
 - **Your permission rules apply**: each MCP call in the program gets the normal permission check.
 
 ## Quick start
@@ -76,6 +79,7 @@ The model gets only the short list, not each full issue.
 | [Installation](docs/installation.mdx) | Requirements, install, local folder, update |
 | [Usage](docs/usage.mdx) | The three tools, how to write a program, the result |
 | [Hints](docs/hints.mdx) | Write hints, approve proposals, the safety rules |
+| [Saved functions](docs/functions.mdx) | Approve or write functions that programs use again |
 | [Permissions](docs/permissions.mdx) | Manual and auto mode, allow rules |
 | [Configuration](docs/configuration.mdx) | Every option and its default |
 | [How it works](docs/how-it-works.mdx) | One run from start to end, the four sandbox layers |

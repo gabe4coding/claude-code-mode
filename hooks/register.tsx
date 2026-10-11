@@ -80,6 +80,17 @@ import {
   type RunnerError,
   type Shapes,
 } from './protocol'
+import {
+  SAVE_FUNCTION_DESCRIPTION,
+  formatFunction,
+  formatFunctions,
+  functionError,
+  functionsFor,
+  parseFunction,
+  signatureOf,
+  usedFunctions,
+  type SavedFunction,
+} from './functions'
 
 const MAX_RESULT_CHARS = 20_000
 const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
@@ -90,13 +101,17 @@ const MAX_PARALLEL_CALLS = 8
 // The largest file saveFile writes, in characters.
 const MAX_FILE_CHARS = 16 * 1024 * 1024
 
-// macOS only: the sandbox process gets no network. Elsewhere it relies on the
-// vm context (no fetch, no require) and Node's --permission.
+// No network for the sandbox process: sandbox-exec on macOS, a new network
+// namespace (unshare -rn) on Linux where the kernel lets a user make one.
+// Elsewhere it relies on the vm context (no fetch, no require) and --permission.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
   'if [ -x /usr/bin/sandbox-exec ]; then',
   '  exec /usr/bin/sandbox-exec -p "$2" "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  'fi',
+  'if unshare -rn true 2>/dev/null; then',
+  '  exec unshare -rn "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
   'fi',
   'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
 ].join('\n')
@@ -116,6 +131,7 @@ type Options = {
 
 const ADD_HINT = 'mcp__code-mode__add_hint'
 const REMOVE_HINT = 'mcp__code-mode__remove_hint'
+const SAVE_FUNCTION = 'mcp__code-mode__save_function'
 const BAND_LIMIT = 5
 
 // Whether the band above the prompt lists the proposals (else one line).
@@ -413,11 +429,13 @@ async function decidePending($: EngineInterface, path: string, action: 'approved
 
 // The folders whose files steer the model: the person's and the project's
 // hints (the project's even while projectHints is off, so none can be
-// planted to load later), each as written and as its real path.
+// planted to load later) and the person's saved functions, each as written
+// and as its real path.
 async function guardedHintDirs($: EngineInterface): Promise<string[]> {
   const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
   const root = await $.session.root()
-  const dirs = [`${home}/.claude/code-mode/hints`, `${root}/.claude/code-mode/hints`].filter(d => !d.startsWith('/.claude'))
+  const dirs = [`${home}/.claude/code-mode/hints`, `${root}/.claude/code-mode/hints`, `${home}/.claude/code-mode/functions`]
+    .filter(d => !d.startsWith('/.claude'))
   const real = await Promise.all(dirs.map(d => $.fs.stat(d, { resolve: true }).then(s => s.realPath, () => undefined)))
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
@@ -456,12 +474,56 @@ async function cardLines($: EngineInterface, hint: Hint): Promise<ReturnType<typ
 }
 
 const HINT_GUARD_DENY =
-  'code-mode: hint files steer the model, so they cannot be written with file tools. Propose the hint with add_hint instead.'
+  'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint or a function with save_function instead.'
 
 // What a hint-file guard that failed answers: it denies, and logs why.
 function guardFailed($: EngineInterface, tool: string, error: { kind: string; message?: string }): { deny: string } {
   debugLog($, `the hint-file guard on ${tool} failed (${error.kind}): ${error.message ?? 'no message'}`)
   return { deny: 'code-mode: the hint-file guard failed; try again.' }
+}
+
+// Saved functions: the person's only, never the project's, because a
+// function's code runs in programs. pending/ holds the proposals.
+async function functionsDir($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  return home ? `${home}/.claude/code-mode/functions` : undefined
+}
+
+async function readFunctionFiles($: EngineInterface, dir: string): Promise<SavedFunction[]> {
+  if (!(await $.fs.exists(dir).catch(() => false))) return []
+  const entries = await $.fs.list(dir).catch(err => (debugLog($, `cannot list ${dir}: ${errorText(err)}`), []))
+  const files = entries.filter(f => f.kind !== 'dir' && f.name.endsWith('.md'))
+  const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f.name}`).catch(() => '')))
+  return files.flatMap((f, i) => {
+    const parsed = parseFunction(String(texts[i]), `${dir}/${f.name}`)
+    if (parsed === undefined) debugLog($, `${dir}/${f.name} is not a function file, so it does not load`)
+    return parsed === undefined ? [] : [parsed]
+  })
+}
+
+async function loadFunctions($: EngineInterface): Promise<SavedFunction[]> {
+  const dir = await functionsDir($)
+  return dir === undefined ? [] : readFunctionFiles($, dir)
+}
+
+async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[]> {
+  const dir = await functionsDir($)
+  return dir === undefined ? [] : readFunctionFiles($, `${dir}/pending`)
+}
+
+// Approve: the proposal becomes functions/<name>.md, without its reason, and
+// replaces a function with that name. Discard: the proposal goes.
+async function decideFunction($: EngineInterface, path: string, action: 'approved' | 'discarded'): Promise<void> {
+  const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
+  const dir = await functionsDir($)
+  let dest: string | undefined
+  if (action === 'approved' && proposal !== undefined && dir !== undefined && path.startsWith(`${dir}/pending/`)) {
+    dest = `${dir}/${proposal.name}.md`
+    await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
+  }
+  await $.process.run(['rm', '-f', path])
+  await $.store.set(`decision:${path}`, { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
+  $.ui.invalidate('ui.render')
 }
 
 // Proposals waiting in the user's (and, when on, the project's) pending/.
@@ -602,7 +664,70 @@ export const register: Register = (on, options) => {
         required: ['path', 'text', 'why'],
       },
     })
+    await $.tool.register({
+      name: 'save_function',
+      description: SAVE_FUNCTION_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'A JavaScript name: programs call it as lib.<name>(args).' },
+          description: { type: 'string', description: 'What it returns, in one sentence.' },
+          code: { type: 'string', description: 'An async function expression with one argument, such as async ({ cloudId, jql }) => { ... }. It can use call, sleep and the other run_code functions.' },
+          why: { type: 'string', description: 'Which task it did and why the task comes back, in one sentence.' },
+        },
+        required: ['name', 'description', 'code', 'why'],
+      },
+    })
     return next(e)
+  })
+
+  // save_function never activates a function: it writes a proposal under
+  // functions/pending/, which loads only after the person reads the code
+  // and presses Approve. The model cannot press a button.
+  on('tool.call', { tool: SAVE_FUNCTION }, async ($, e) => {
+    const input = e as unknown as { name?: unknown; description?: unknown; code?: unknown; why?: unknown; tool_use_id: string }
+    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
+    const oneLine = (v: unknown) => text(v).replace(/\s*\n\s*/g, ' ')
+    const [name, description, code, why] = [text(input.name), oneLine(input.description), text(input.code), oneLine(input.why)]
+    if (why === '' || why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
+    const problem = functionError(name, description, code)
+    if (problem !== undefined) return { result: `Error: ${problem}.` }
+    const dir = await functionsDir($)
+    if (dir === undefined) return { result: 'Error: the function folder is not known (HOME is not set).' }
+    const path = `${dir}/pending/${pendingFileName(`${name}.md`, input.tool_use_id)}`
+    await $.fs.write(path, formatFunction({ name, description, code, why }))
+    $.ui.invalidate('ui.render')
+    const replaces = (await loadFunctions($)).some(f => f.name === name) ? ` It replaces the saved function ${name}.` : ''
+    return {
+      result: `Proposed the function lib.${name}.${replaces} It has no effect until the person reads it and approves it in the band above the prompt. Tell the person.\npending: ${path}`,
+    }
+  }).catch(($, e, next) => (debugLog($, `save_function failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: save_function failed; see the debug log.' }))
+
+  // The save_function row: the code to read, with Approve and Discard.
+  on('ui.render', { component: 'ToolResult', props: { tool: SAVE_FUNCTION } }, async ($, e, next) => {
+    if (e.props.isErrored) return next(e)
+    const path = pendingPathOf(String(e.props.output ?? ''))
+    if (path === undefined) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string } | undefined
+    if (decision?.action === 'approved') return <Text color="green">✓ Function saved: {decision.dest}</Text>
+    if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
+    const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
+    if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
+    return (
+      <Box flexDirection="column" borderStyle="round" paddingX={1}>
+        <Text bold>Proposed function lib.{proposal.name}{signatureOf(proposal.code)}</Text>
+        <Text>{proposal.description}</Text>
+        {proposal.why === undefined ? null : <Text dimColor>Why: {proposal.why}</Text>}
+        {proposal.code.split('\n').map(line => <Text dimColor>{line}</Text>)}
+        <Text dimColor>Programs run this code in later sessions, and your approval of run_code covers its MCP calls. Approve only code you have read.</Text>
+        <Box>
+          <Button key="approve" label="Approve" variant="primary" onPress={() => decideFunction($, path, 'approved')} />
+          <Text> </Text>
+          <Button key="discard" label="Discard" onPress={() => decideFunction($, path, 'discarded')} />
+        </Box>
+      </Box>
+    )
   })
 
   // add_hint never activates a hint: it writes a proposal under pending/,
@@ -756,10 +881,11 @@ export const register: Register = (on, options) => {
   // proposal with its own Approve and Discard. Nothing shows otherwise.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const pending = await loadPending($, projectHints)
-    if (pending.length === 0) return next(e)
+    const [pending, functions] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($)])
+    if (pending.length + functions.length === 0) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const count = `${pending.length} hint proposal${pending.length === 1 ? '' : 's'} for code mode`
+    const counted = (n: number, what: string) => (n === 0 ? [] : [`${n} ${what} proposal${n === 1 ? '' : 's'}`])
+    const count = `${[...counted(pending.length, 'hint'), ...counted(functions.length, 'function')].join(' and ')} for code mode`
 
     if (!(await read($, reviewOpen))) {
       return (
@@ -772,6 +898,7 @@ export const register: Register = (on, options) => {
     }
 
     const shown = pending.slice(0, BAND_LIMIT)
+    const shownFunctions = functions.slice(0, Math.max(0, BAND_LIMIT - shown.length))
     const lines = await Promise.all(shown.map(p => cardLines($, p)))
     return (
       <Box flexDirection="column" gap={1}>
@@ -795,8 +922,22 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
         ))}
-        {pending.length > shown.length ? <Text dimColor>{pending.length - shown.length} more after these.</Text> : null}
-        <Text dimColor>Approved hints guide the model in later sessions. Approve only what you would write yourself.</Text>
+        {shownFunctions.map((f, i) => (
+          <Box key={`function-${i}`} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            <Text dimColor>Function · lib.{f.name}{signatureOf(f.code)}</Text>
+            <Text>{f.description}</Text>
+            {f.why === undefined ? null : <Text dimColor>Why: {f.why}</Text>}
+            {f.code.split('\n').map(line => <Text dimColor>{line}</Text>)}
+            <Box gap={1} marginTop={1}>
+              <Button key={`approve-f-${i}`} label="Approve" variant="primary" onPress={() => decideFunction($, f.path, 'approved')} />
+              <Button key={`discard-f-${i}`} label="Discard" onPress={() => decideFunction($, f.path, 'discarded')} />
+            </Box>
+          </Box>
+        ))}
+        {pending.length + functions.length > shown.length + shownFunctions.length
+          ? <Text dimColor>{pending.length + functions.length - shown.length - shownFunctions.length} more after these.</Text>
+          : null}
+        <Text dimColor>Approved hints guide the model in later sessions, and approved functions run in its programs. Approve only what you would write yourself.</Text>
       </Box>
     )
   })
@@ -824,7 +965,8 @@ export const register: Register = (on, options) => {
     const [hints, names] = await Promise.all([loadHints($, projectHints), serverNames($)])
     const offered = toolsByServer(all.map(t => t.name))
     const hintText = formatHints(hintsFor(hints, targetsOf(found.map(t => t.name), names, offered)))
-    const tail = hintText === '' ? '' : `\n\n${hintText}`
+    const functionText = formatFunctions(functionsFor(await loadFunctions($), found.map(t => t.name), query))
+    const tail = [functionText, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     return { result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}` }
   }).catch(($, e, next) => (debugLog($, `search_tools failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: search_tools failed; see the debug log.' }))
 
@@ -838,6 +980,9 @@ export const register: Register = (on, options) => {
     // through a link (a linked ~/.claude or plugin folder) before it starts.
     const bundled = `${$.plugin.root}/runtime/runner.mjs`
     const runner = await $.fs.stat(bundled, { resolve: true }).then(s => s.realPath ?? bundled, () => bundled)
+    // The saved functions the program names, and the ones those name.
+    const saved = new Map((await loadFunctions($).catch(() => [])).map(f => [f.name, f]))
+    const lib = Object.fromEntries(usedFunctions(code, saved).map(name => [name, saved.get(name)!.code]))
     const made = await $.process.run(MKTEMP)
     const xdir = made.stdout.trim()
     if (made.exitCode !== 0 || xdir === '') return { result: `Error: could not make a temp dir: ${made.stderr}` }
@@ -923,10 +1068,30 @@ export const register: Register = (on, options) => {
       await $.fs.write(`${xdir}/r${id}.json`, text)
     }
 
-    // saveFile and readFile: the sandbox has no file system, so the plugin does both.
-    const answerFile = async (id: number, op: () => Promise<Reply>): Promise<void> => {
+    // saveFile, readFile and the resources: the sandbox cannot do them, so the plugin does.
+    const answerLocal = async (id: number, op: () => Promise<Reply>): Promise<void> => {
       const reply = await op().catch((err): Reply => ({ ok: false, error: errorText(err) }))
       await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
+    }
+    // MCP resources through Claude Code's own resource tools, with the normal
+    // permission check: there is no $.mcp call for resources.
+    const resourceTool = async (input: Record<string, string>): Promise<Reply> => {
+      try {
+        const r = await $.tool.call(input as unknown as Parameters<typeof $.tool.call>[0])
+        if (r.deny !== undefined) return { ok: false, error: `denied: ${r.deny}` }
+        if (r.isError === true) return { ok: false, error: r.text ?? String(r.result) }
+        return await loadSaved($, { ok: true, value: toValue(r.result, r.text) })
+      } catch (err) {
+        const text = errorText(err)
+        return { ok: false, error: /no tool named/.test(text) ? 'no MCP server in this session offers resources' : text }
+      }
+    }
+    const readResource = async (server: string, uri: string): Promise<Reply> => {
+      const reply = await resourceTool({ tool: 'ReadMcpResourceTool', server, uri })
+      if (!reply.ok || reply.value === null || typeof reply.value !== 'object') return reply
+      const { contents, error } = reply.value as { contents?: unknown; error?: unknown }
+      if (typeof error === 'string') return { ok: false, error }
+      return { ok: true, value: contents ?? reply.value }
     }
     const save = async (name: string, data: unknown): Promise<Reply> => {
       const problem = fileNameError(name)
@@ -942,7 +1107,7 @@ export const register: Register = (on, options) => {
     try {
       const stream = $.process.spawn({
         argv: ['/bin/sh', '-c', LAUNCH, 'code-mode', String(timeoutSeconds), NO_NETWORK, node, runner, xdir],
-        input: JSON.stringify({ code, timeoutMs: timeoutSeconds * 1000 }),
+        input: JSON.stringify({ code, timeoutMs: timeoutSeconds * 1000, lib }),
       })
       let buffer = ''
       for await (const piece of stream) {
@@ -955,8 +1120,10 @@ export const register: Register = (on, options) => {
         for (const m of taken.messages) {
           if (m.t === 'call') answers.push(limit(() => answer(m.id, m.tool, m.args)))
           else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
-          else if (m.t === 'save') answers.push(answerFile(m.id, () => save(m.name, m.data)))
-          else if (m.t === 'read') answers.push(answerFile(m.id, () => readForProgram($, m.path)))
+          else if (m.t === 'save') answers.push(answerLocal(m.id, () => save(m.name, m.data)))
+          else if (m.t === 'read') answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
+          else if (m.t === 'resources') answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
+          else if (m.t === 'resource') answers.push(answerLocal(m.id, () => readResource(m.server, m.uri)))
           else outcome = m
         }
       }
@@ -1013,8 +1180,8 @@ export const register: Register = (on, options) => {
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS, report)}${tail}` }
   }).catch(($, e, next) => (debugLog($, `run_code failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: run_code failed; see the debug log.' }))
 
-  // Guard: an active hint is just a file, so the model must not write one
-  // with its own tools, or add_hint's approval step means nothing. File tools
+  // Guard: an active hint or a saved function is just a file, so the model
+  // must not write one with its own tools, or the approval step means nothing. File tools
   // are checked by path; Bash by whether the command names a hint folder,
   // which is best effort (a shell can spell a path many ways). The person's
   // own editor is not a Claude tool and is not affected.
@@ -1030,7 +1197,7 @@ export const register: Register = (on, options) => {
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'NotebookEdit', next.error)))
   on('tool.call', { tool: 'Bash' }, ($, e, next) =>
-    /code-mode\/+hints/i.test(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
+    /code-mode\/+(hints|functions)/i.test(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Bash', next.error)))
 
   // Optional: push the model to run_code by refusing its direct MCP calls.

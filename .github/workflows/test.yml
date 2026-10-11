@@ -17,8 +17,8 @@ permissions:
 
 jobs:
   test:
-    # 22.13 is the first Node with a stable --permission flag. macOS is the
-    # only runner with sandbox-exec, so only it tests the network block.
+    # 22.13 is the first Node with a stable --permission flag. The network
+    # block is sandbox-exec on macOS and unshare -rn on Linux.
     strategy:
       fail-fast: false
       matrix:
@@ -35,7 +35,13 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+      # Ubuntu 24.04 lets no user make a user namespace (AppArmor), so the
+      # Linux network block would not run. Allow it, to test that layer.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: node tests/runner.integration.mjs
+        env:
+          EXPECT_NETWORK_BLOCK: "1"
       - run: node tests/docs.check.mjs
 
   hooks:

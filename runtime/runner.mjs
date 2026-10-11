@@ -1,15 +1,17 @@
 // Sandbox runner for code-mode. Runs one script the model wrote.
 //
 // argv:   runner.mjs <exchange dir>
-// stdin:  {"code": "...", "timeoutMs": 60000}
+// stdin:  {"code": "...", "timeoutMs": 60000, "lib": {"<name>": "<async function expression>"}}
 // stdout: one line per message, each "\u0001cm " + JSON:
 //           {"t":"call","id":1,"tool":"mcp__x__y","args":{...}}
 //           {"t":"recall","id":2,"ref":4}
 //           {"t":"save","id":3,"name":"issues.csv","data":<json>}
 //           {"t":"read","id":4,"path":"ids.txt"}
+//           {"t":"resources","id":5,"server":"docs"}
+//           {"t":"resource","id":6,"server":"docs","uri":"file:///a.md"}
 //           {"t":"done","value":"<json>","logs":[...]}
 //           {"t":"error","message":"...","logs":[...]}
-// The host answers call, recall, save or read <id> by writing <exchange dir>/r<id>.json:
+// The host answers each message with an <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
 // sleep(ms) never reaches the host: this process answers it with its own timer.
 //
@@ -60,6 +62,14 @@ const post = (kind, a, b, c) => {
     } else if (kind === 'read') {
       const id = Number(a)
       emit({ t: 'read', id, path: String(b) })
+      waiting.add(id)
+    } else if (kind === 'resources') {
+      const id = Number(a)
+      emit({ t: 'resources', id, ...(b === '' ? {} : { server: String(b) }) })
+      waiting.add(id)
+    } else if (kind === 'resource') {
+      const id = Number(a)
+      emit({ t: 'resource', id, server: String(b), uri: String(c) })
       waiting.add(id)
     } else if (kind === 'sleep') {
       // No longer than the run can last: the wall-clock timer ends it first.
@@ -144,11 +154,36 @@ const BOOTSTRAP = String.raw`
     if (typeof path !== 'string') throw new TypeError('readFile(path): path must be a string')
     return ask('read', path)
   }
+  // resources(server?) and readResource(server, uri): the MCP resources
+  const resources = server => {
+    if (server !== undefined && typeof server !== 'string') throw new TypeError('resources(server): server must be a string')
+    return ask('resources', server ?? '')
+  }
+  const readResource = (server, uri) => {
+    if (typeof server !== 'string' || typeof uri !== 'string') throw new TypeError('readResource(server, uri): server and uri must be strings')
+    return ask('resource', server, uri)
+  }
+  // lib.<name>(args): the saved functions the host loads below. A name that
+  // is not there throws at once, with the place to look.
+  const saved = Object.create(null)
+  const lib = new Proxy(saved, {
+    get: (target, name) => {
+      if (typeof name !== 'string' || name === 'then' || name === 'toJSON' || name in target) return target[name]
+      throw new TypeError('lib.' + name + ' is not a saved function: search_tools lists them')
+    },
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  })
+  globalThis.__lib = saved
   globalThis.call = call
   globalThis.recall = recall
   globalThis.sleep = sleep
   globalThis.saveFile = saveFile
   globalThis.readFile = readFile
+  globalThis.resources = resources
+  globalThis.readResource = readResource
+  globalThis.lib = lib
   globalThis.tools = tools
 
   globalThis.__deliver = (id, text) => {
@@ -163,7 +198,7 @@ const BOOTSTRAP = String.raw`
   // The error and the script's own frames, not the bridge's.
   const describe = e => {
     if (!(e instanceof Error)) return String(e)
-    const frames = String(e.stack || '').split('\n').filter(l => l.includes('code.js'))
+    const frames = String(e.stack || '').split('\n').filter(l => l.includes('code.js') || l.includes('lib/'))
     return [e.name + ': ' + e.message, ...frames].join('\n')
   }
 
@@ -189,6 +224,20 @@ try {
   deliver = runSync('globalThis.__deliver', 'x.js')
   const start = runSync('globalThis.__start', 'x.js')
   runSync('delete globalThis.__deliver; delete globalThis.__start', 'x.js')
+
+  // The saved functions, each compiled in the context as its own file. One
+  // that does not compile throws its error when the program calls it.
+  for (const [name, src] of Object.entries(input.lib ?? {})) {
+    if (!/^[A-Za-z_$][\w$]{0,39}$/.test(name)) continue
+    const key = JSON.stringify(name)
+    try {
+      runSync(`globalThis.__lib[${key}] = (${src}\n)`, `lib/${name}.js`)
+    } catch (err) {
+      const message = JSON.stringify(`lib.${name} does not compile: ${err?.message ?? err}`)
+      runSync(`globalThis.__lib[${key}] = async () => { throw new SyntaxError(${message}) }`, 'x.js')
+    }
+  }
+  runSync('delete globalThis.__lib', 'x.js')
 
   const main = runSync(`(async () => {\n${input.code}\n})`, 'code.js')
   start(main)

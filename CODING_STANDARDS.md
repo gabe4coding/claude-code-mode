@@ -4,8 +4,8 @@ Rules for changing code, tests, model-facing text and docs in this repo. `[test:
 enforces; the others rely on discipline.
 
 ## Code
-- `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`
-  and `hooks/hints.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
+- `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`,
+  `hooks/hints.ts` and `hooks/functions.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
 - Context for the model at session start goes in `hooks/session-start.sh`, a command hook in `hooks/hooks.json`.
@@ -18,7 +18,8 @@ enforces; the others rely on discipline.
 - `LAUNCH`, `NO_NETWORK` and `MKTEMP` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
   exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
   `[test: runner.integration.mjs fails when a copy differs]`
-- Never weaken a sandbox layer, the hint-file guard or the approval of proposals to make a test pass. Each one is a
+- Never weaken a sandbox layer, the guard of hint and function files or the approval of proposals to make a test
+  pass. Each one is a
   safety rule (see `docs/hints.mdx` and `docs/how-it-works.mdx`).
 - Make changes to the approval logic (`approval`, `$.mcp.call` path) in manual mode: the auto mode classifier can
   refuse them, because they change what auto mode approves.
@@ -28,8 +29,8 @@ enforces; the others rely on discipline.
   - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
-- CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS. Only macOS has `sandbox-exec`,
-  so only the macOS job tests the network block. CI pins the Claude Code version for `claude plugin test .`, and
+- CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block
+  (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works. CI pins the Claude Code version for `claude plugin test .`, and
   a weekly job runs the tests with the newest release.
 - The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
   Run it after a change to types or to the engine API that the hooks use.
@@ -45,7 +46,7 @@ enforces; the others rely on discipline.
 ## Model-facing text
 The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
 `RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION` and the hint
-preamble in `hooks/hints.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
+preamble in `hooks/hints.ts`, `SAVE_FUNCTION_DESCRIPTION` and the functions section in `hooks/functions.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
 the bundled hints in `hints/`.
 - Every sentence must change what the model does. Remove facts the model cannot act on (how approval works for the
   person, UI layout, history). The person reads those in `docs/`.
@@ -55,6 +56,7 @@ the bundled hints in `hints/`.
 - `run_code` and `search_tools` load in every session (`isDeferred: false`), so each word costs tokens in every
   session. `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
   `remove_hint` is deferred too: the hint preamble names it, so the model learns of it when it sees a hint.
+  `save_function` is deferred: the `run_code` description names it.
 - One way to do a thing. The runner also accepts `tools.<server>.<tool>()`, but descriptions show only `call()`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 

@@ -59,13 +59,26 @@ MCP call.
 
 Cause: the program called a built-in tool, such as `Bash`, or a code-mode tool. A program can call only MCP tools.
 
-### "hint files steer the model, so they cannot be written with file tools"
+### "hint files and saved functions steer the model, so they cannot be written with file tools"
 
-Cause: the model tried to write a hint file, or ran a Bash command that names a hint folder. The
-[guard](./hints.mdx#safety-rules) denies this.
+Cause: the model tried to write a hint file or a function file, or ran a Bash command that names their folders.
+The [guard](./hints.mdx#safety-rules) denies this.
 
-Fix: let the model propose the hint with `add_hint`, then approve it in the band. Or edit the hint file in your own
-editor.
+Fix: let the model propose the hint with `add_hint` or the function with `save_function`, then approve it in the
+band. Or edit the file in your own editor.
+
+### "lib.… is not a saved function"
+
+Cause: the program called a saved function that does not exist, or that did not load.
+
+Fix: let the model run `search_tools` to see the saved functions. If you wrote the file yourself, start Claude Code
+with `claude --debug`. The debug log names each function file that does not load.
+
+### "no MCP server in this session offers resources"
+
+Cause: the program called `resources` or `readResource`, but no connected server has resources.
+
+Fix: connect a server that has resources, or use its tools.
 
 ### "… failed; see the debug log"
 
@@ -85,10 +98,11 @@ Fix: let the model propose a `user` hint, or turn on `projectHints` for a projec
 
 - `search_tools` reads argument types from a types file that Claude Code writes. Claude Code writes it in an
   interactive session with hot reload or with `--plugin-dir`. It does not write it for headless `claude -p` runs.
-  It is not known yet if it writes it for a plugin from a marketplace.
+  It does not write it for a plugin from a marketplace.
 - Without the types file, `search_tools` shows the [argument names](./usage.mdx#argument-names) of earlier calls,
   and tells the model to use ToolSearch for the schema. ToolSearch puts the full tool definition into the context,
   so the program saves fewer tokens. Claude Code gives a plugin no other way to read the schema of an MCP tool.
 - A nested call cannot pass an argument with the name `tool`. The plugin API uses this name for the tool name.
-- On Linux, the sandbox has no network block. See [Sandbox](./how-it-works.mdx#sandbox).
+- On Linux, the sandbox has a network block only where `unshare -rn` works. Ubuntu 24.04 and later do not allow
+  it by default. See [Sandbox](./how-it-works.mdx#sandbox).
 - The `add_hint` row with buttons is not tested in the terminal yet.
