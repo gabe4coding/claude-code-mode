@@ -29,7 +29,9 @@ const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
 
 const echo = m =>
-  m.t === 'recall' ? (m.ref === 4 ? { ok: true, value: { recalled: m.ref } } : { ok: false, error: `no result #${m.ref}` })
+  m.t === 'save' ? { ok: true, value: { saved: m.name, data: m.data } }
+  : m.t === 'read' ? { ok: true, value: `text of ${m.path}` }
+  : m.t === 'recall' ? (m.ref === 4 ? { ok: true, value: { recalled: m.ref } } : { ok: false, error: `no result #${m.ref}` })
   : m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
@@ -51,7 +53,7 @@ const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = 
         buffer = buffer.slice(i + 1)
         if (!line.startsWith(MARK)) continue
         const m = JSON.parse(line.slice(MARK.length))
-        if (m.t !== 'call' && m.t !== 'recall') outcome = m
+        if (m.t === 'done' || m.t === 'error') outcome = m
         else {
           calls++
           setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(answer(m))), 10)
@@ -182,6 +184,16 @@ const cases = {
   'sleep cannot outlast the wall-clock limit': async () =>
     assert.match(failure(await run('await sleep(Infinity)', { timeoutMs: 500 })), /timeout/),
 
+  'saveFile and readFile go through the host': async () => {
+    const r = await run(`
+      const saved = await saveFile("rows.csv", [{ a: 1 }])
+      const text = await readFile("ids.txt")
+      const bad = []
+      for (const f of [() => saveFile(1, "x"), () => saveFile("a.json", undefined), () => readFile({})]) bad.push(await Promise.resolve().then(f).catch(e => e.name))
+      return [saved, text, bad]`)
+    assert.deepEqual(value(r), [{ saved: 'rows.csv', data: [{ a: 1 }] }, 'text of ids.txt', ['TypeError', 'TypeError', 'TypeError']])
+  },
+
   'failed call throws': async () =>
     assert.equal(value(await run('try { await call("mcp__s__fail") } catch (e) { return e.message }')), 'boom'),
 
@@ -195,6 +207,8 @@ const cases = {
       'return call.constructor("return 1")()',
       'return recall.constructor("return 1")()',
       'return sleep.constructor("return 1")()',
+      'return saveFile.constructor("return 1")()',
+      'return readFile.constructor("return 1")()',
       'try { await call("mcp__s__fail") } catch (e) { return e.constructor.constructor("return process")().pid }',
       'return (await call("mcp__s__t")).constructor.constructor("return process")().pid',
     ]) assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)

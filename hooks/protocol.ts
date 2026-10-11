@@ -5,9 +5,11 @@ export const MARK = '\u0001cm '
 
 export type RunnerCall = { t: 'call'; id: number; tool: string; args: Record<string, unknown> }
 export type RunnerRecall = { t: 'recall'; id: number; ref: number }
+export type RunnerSave = { t: 'save'; id: number; name: string; data: unknown }
+export type RunnerRead = { t: 'read'; id: number; path: string }
 export type RunnerDone = { t: 'done'; value: string; logs: string[] }
 export type RunnerError = { t: 'error'; message: string; logs: string[] }
-export type RunnerMessage = RunnerCall | RunnerRecall | RunnerDone | RunnerError
+export type RunnerMessage = RunnerCall | RunnerRecall | RunnerSave | RunnerRead | RunnerDone | RunnerError
 
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
@@ -318,6 +320,321 @@ export const mergeShapes = (current: Shapes, learned: ReadonlyMap<string, string
   return next
 }
 
+/** Why saveFile cannot use a name, or undefined: a file name only, no folder. */
+export const fileNameError = (name: string): string | undefined =>
+  /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(name) && !name.includes('..')
+    ? undefined
+    : `saveFile: "${name.slice(0, 60)}" is not a file name; use a name with no folder, such as "issues.csv"`
+
+const csvCell = (v: unknown): string => {
+  const text = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+// Rows of objects get a header with every key; rows of arrays are the cells.
+const toCsv = (rows: readonly unknown[]): string => {
+  const isRecord = (r: unknown): r is Record<string, unknown> => r !== null && typeof r === 'object' && !Array.isArray(r)
+  if (rows.every(Array.isArray)) return rows.map(r => (r as unknown[]).map(csvCell).join(',')).join('\n')
+  if (!rows.every(isRecord)) return rows.map(csvCell).join('\n')
+  const keys = [...new Set(rows.flatMap(r => Object.keys(r)))]
+  return [keys.map(csvCell).join(','), ...rows.map(r => keys.map(k => csvCell(r[k])).join(','))].join('\n')
+}
+
+/** What saveFile writes: text as it is, CSV or JSON lines for an array by the name's extension, else JSON. */
+export const fileText = (name: string, value: unknown): string => {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value) && /\.csv$/i.test(name)) return `${toCsv(value)}\n`
+  if (Array.isArray(value) && /\.jsonl$/i.test(name)) return `${value.map(v => JSON.stringify(v) ?? 'null').join('\n')}\n`
+  return `${JSON.stringify(value, null, 2)}\n`
+}
+
+/** The argument names of each tool from its calls that worked, newest change last. */
+export type ArgNames = Record<string, string[]>
+
+const MAX_ARG_TOOLS = 500
+const MAX_ARG_NAMES = 40
+const ARG_NAME = /^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/
+
+/** The names of a call's arguments that can be argument names: never values. */
+export const argNamesOf = (args: Record<string, unknown>): string[] => Object.keys(args).filter(k => ARG_NAME.test(k))
+
+/** The argument names file as ArgNames, without the entries a call cannot have made. */
+export const parseArgNames = (text: string): ArgNames => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return {}
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const entries = Object.entries(parsed).flatMap(([tool, names]): [string, string[]][] => {
+    if (splitToolName(tool) === undefined || tool.length > 200 || !Array.isArray(names)) return []
+    const valid = names.filter((n): n is string => typeof n === 'string' && ARG_NAME.test(n)).slice(0, MAX_ARG_NAMES)
+    return valid.length === 0 ? [] : [[tool, valid]]
+  })
+  return Object.fromEntries(entries)
+}
+
+/** The names with the ones a run used, or undefined when nothing is new. The oldest change goes first past the limit. */
+export const mergeArgNames = (current: ArgNames, learned: ReadonlyMap<string, readonly string[]>): ArgNames | undefined => {
+  const next = { ...current }
+  let changed = false
+  for (const [tool, names] of learned) {
+    const known = next[tool] ?? []
+    const added = names.filter(n => !known.includes(n))
+    if (added.length === 0) continue
+    delete next[tool]
+    next[tool] = [...known, ...added].slice(0, MAX_ARG_NAMES)
+    changed = true
+  }
+  if (!changed) return undefined
+  const tools = Object.keys(next)
+  for (const tool of tools.slice(0, Math.max(0, tools.length - MAX_ARG_TOOLS))) delete next[tool]
+  return next
+}
+
+// A regular expression literal starts where a value can start.
+const REGEX_BEFORE = new Set(['', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';'])
+
+/**
+ * The code with the text of comments, strings, template literals and regular
+ * expressions as spaces: the same length and lines, so the brackets and
+ * commas left are the code's own. Quote characters stay.
+ */
+export const maskCode = (code: string): string => {
+  const out = code.split('')
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '
+  }
+  let last = ''
+  let i = 0
+  while (i < code.length) {
+    const c = code[i]!
+    const next = code[i + 1]
+    if (c === '/' && next === '/') {
+      const end = code.indexOf('\n', i)
+      const stop = end < 0 ? code.length : end
+      blank(i, stop)
+      i = stop
+    } else if (c === '/' && next === '*') {
+      const end = code.indexOf('*/', i + 2)
+      const stop = end < 0 ? code.length : end + 2
+      blank(i, stop)
+      i = stop
+    } else if (c === '"' || c === "'" || c === '`') {
+      let k = i + 1
+      while (k < code.length && code[k] !== c && !(c !== '`' && code[k] === '\n')) k += code[k] === '\\' ? 2 : 1
+      blank(i + 1, Math.min(k, code.length))
+      last = c
+      i = k + 1
+    } else if (c === '/' && REGEX_BEFORE.has(last)) {
+      let k = i + 1
+      let inClass = false
+      while (k < code.length && code[k] !== '\n' && (inClass || code[k] !== '/')) {
+        if (code[k] === '[') inClass = true
+        else if (code[k] === ']') inClass = false
+        k += code[k] === '\\' ? 2 : 1
+      }
+      blank(i + 1, Math.min(k, code.length))
+      last = '/'
+      i = k + 1
+    } else {
+      if (!/\s/.test(c)) last = /[\w$]/.test(c) ? 'a' : c
+      i++
+    }
+  }
+  return out.join('')
+}
+
+// The ranges of the parts between top-level separators of the bracket that
+// opens at `open`, and the index of its closing bracket.
+const partsOf = (masked: string, open: number, separators: RegExp): { parts: [number, number][]; close: number } => {
+  const parts: [number, number][] = []
+  let depth = 0
+  let start = open + 1
+  for (let i = open; i < masked.length; i++) {
+    const c = masked[i]!
+    if ('([{'.includes(c)) depth++
+    else if (')]}'.includes(c)) {
+      depth--
+      if (depth === 0) {
+        parts.push([start, i])
+        return { parts, close: i }
+      }
+    } else if (depth === 1 && separators.test(c)) {
+      parts.push([start, i])
+      start = i + 1
+    }
+  }
+  return { parts, close: -1 }
+}
+
+// Where the part starts after spaces and comments (spaces in `masked`).
+const startOf = (masked: string, [from, to]: [number, number]): number => {
+  let i = from
+  while (i < to && /\s/.test(masked[i]!)) i++
+  return i
+}
+
+const unquote = (q: string, text: string): string => {
+  if (q !== '"') return text
+  try {
+    return JSON.parse(`"${text}"`) as string
+  } catch {
+    return text
+  }
+}
+
+/** One call("<tool>", ...) in a program: its line and its argument names, or undefined when they are not an object literal of plain keys. */
+export type LiteralCall = { tool: string; line: number; keys: string[] | undefined }
+
+/** The calls of a program whose tool name is a string literal. */
+export const literalCalls = (code: string): LiteralCall[] => {
+  const masked = maskCode(code)
+  const found: LiteralCall[] = []
+  const at = /(^|[^\w$.])call\s*\(\s*(["'])/g
+  for (let m = at.exec(masked); m !== null; m = at.exec(masked)) {
+    const quote = m.index + m[0].length - 1
+    const end = masked.indexOf(m[2]!, quote + 1)
+    if (end < 0) continue
+    const tool = code.slice(quote + 1, end)
+    const line = code.slice(0, quote).split('\n').length
+    const rest = /^\s*(\)|,\s*(\{)?)/.exec(masked.slice(end + 1))
+    if (rest === null) continue
+    if (rest[1] === ')') {
+      found.push({ tool, line, keys: [] })
+      continue
+    }
+    if (rest[2] === undefined) {
+      found.push({ tool, line, keys: undefined })
+      continue
+    }
+    const open = end + 1 + rest[0].length - 1
+    const { parts, close } = partsOf(masked, open, /,/)
+    if (close < 0) continue
+    found.push({ tool, line, keys: objectKeys(code, masked, parts) })
+  }
+  return found
+}
+
+// The keys of an object literal, or undefined for a spread, a computed key or a method.
+const objectKeys = (code: string, masked: string, parts: [number, number][]): string[] | undefined => {
+  const keys: string[] = []
+  for (const part of parts) {
+    const from = startOf(masked, part)
+    const text = code.slice(from, part[1])
+    if (masked.slice(from, part[1]).trim() === '') continue
+    const plain = /^([A-Za-z_$][\w$]*|\d+)\s*(:|$)/.exec(masked.slice(from, part[1]).trimEnd())
+    const quoted = /^(["'])(.*?)\1\s*:/.exec(text)
+    if (plain !== null && !(plain[2] === '' && /^\d/.test(plain[1]!))) keys.push(plain[1]!)
+    else if (quoted !== null) keys.push(unquote(quoted[1]!, quoted[2]!))
+    else return undefined
+  }
+  return keys
+}
+
+/** What a declaration says of a tool's arguments: every name, the required ones, and whether other names are allowed. */
+export type ArgSpec = { names: string[]; required: string[]; isOpen: boolean }
+
+/** The top-level properties of an input declaration such as `{ to: string; cc?: string[] }`. */
+export const declarationKeys = (declaration: string): ArgSpec | undefined => {
+  const masked = maskCode(declaration)
+  const open = masked.indexOf('{')
+  if (open < 0) return undefined
+  const { parts, close } = partsOf(masked, open, /[;,\n]/)
+  if (close < 0) return undefined
+  const spec: ArgSpec = { names: [], required: [], isOpen: false }
+  for (const part of parts) {
+    const from = startOf(masked, part)
+    const text = declaration.slice(from, part[1]).replace(/^readonly\s+/, '')
+    if (text.startsWith('[')) spec.isOpen = true
+    const member = /^(?:([A-Za-z_$][\w$]*)|(["'])(.*?)\2)(\?)?\s*:/.exec(text)
+    if (member === null) continue
+    const name = member[1] ?? unquote(member[2]!, member[3]!)
+    spec.names.push(name)
+    if (member[4] !== '?') spec.required.push(name)
+  }
+  // No properties at all: the generated type says nothing useful, so allow any.
+  if (spec.names.length === 0) spec.isOpen = true
+  return spec
+}
+
+/** The number of single-letter edits between two names. */
+export const editDistance = (a: string, b: string): number => {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i]
+    for (let j = 1; j <= b.length; j++) next.push(Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)))
+    row = next
+  }
+  return row[b.length]!
+}
+
+const nearest = (name: string, names: readonly string[], most: number): string | undefined => {
+  let best: { name: string; d: number } | undefined
+  for (const n of names) {
+    const d = n.toLowerCase() === name.toLowerCase() ? 0.5 : editDistance(n, name)
+    if (d <= most && (best === undefined || d < best.d)) best = { name: n, d }
+  }
+  return best?.name
+}
+
+// A name that earlier calls did not use, close to one they did: a typo.
+// Short names differ by one letter at most, so `id` and `ids` both pass.
+const typoOf = (key: string, names: readonly string[]): string | undefined =>
+  key.length < 4 ? undefined : nearest(key, names, key.length <= 6 ? 1 : 2)
+
+/** A wrong name in a program, found before it runs. `isGuess`: from learned names, not a declaration. */
+export type CallProblem = { line: number; text: string; isGuess: boolean }
+
+/**
+ * The wrong names in the literal calls of a program: a tool that is not
+ * connected, and with a declaration, an unknown or a missing argument. With
+ * only the names of earlier calls, a name close to one of them.
+ */
+export const checkCalls = (
+  calls: readonly LiteralCall[],
+  tools: ReadonlySet<string>,
+  specOf: (tool: string) => ArgSpec | undefined,
+  learned: ArgNames,
+): CallProblem[] => {
+  const problems: CallProblem[] = []
+  for (const c of calls) {
+    if (tools.size > 0 && !tools.has(c.tool) && splitToolName(c.tool) !== undefined) {
+      const near = nearest(c.tool, [...tools], 3)
+      problems.push({ line: c.line, text: `no MCP tool "${c.tool}" is connected${near === undefined ? '' : ` (did you mean "${near}"?)`}`, isGuess: false })
+      continue
+    }
+    if (c.keys === undefined) continue
+    const spec = specOf(c.tool)
+    if (spec !== undefined) {
+      for (const key of spec.isOpen ? [] : c.keys.filter(k => !spec.names.includes(k))) {
+        const near = nearest(key, spec.names, 3)
+        problems.push({ line: c.line, text: `${c.tool}: unknown argument "${key}"${near === undefined ? '' : ` (did you mean "${near}"?)`}`, isGuess: false })
+      }
+      for (const name of spec.required.filter(n => !c.keys!.includes(n))) {
+        problems.push({ line: c.line, text: `${c.tool}: missing required argument "${name}"`, isGuess: false })
+      }
+      continue
+    }
+    const names = learned[c.tool] ?? []
+    for (const key of c.keys.filter(k => !names.includes(k))) {
+      const near = typoOf(key, names)
+      if (near !== undefined) problems.push({ line: c.line, text: `${c.tool}: argument "${key}" is not a name that earlier calls used (did you mean "${near}"?)`, isGuess: true })
+    }
+  }
+  return problems
+}
+
+/** The result of a program that did not run because of wrong names. */
+export const problemReport = (problems: readonly CallProblem[]): string => {
+  const lines = problems.map(p => `- line ${p.line}: ${p.text}`)
+  const escape = problems.some(p => p.isGuess)
+    ? ['If a name is right, pass the arguments as a variable: the check reads only object literals.']
+    : []
+  return ['Error: the program did not run, because some calls have wrong names. No call was made.', ...lines, ...escape].join('\n')
+}
+
 /** Runs at most `n` tasks at a time; the others wait in the order they came. */
 export const limiter = (n: number) => {
   let active = 0
@@ -445,7 +762,8 @@ export const extractDeclaration = (dts: string, name: string): string | undefine
   }
   if (at < 0) return undefined
   const open = dts.indexOf('{', at)
-  if (open < 0) return undefined
+  // A type that is not an object literal (a named type, Record<…>) gives nothing.
+  if (open < 0 || dts.slice(dts.indexOf(':', at) + 1, open).trim() !== '') return undefined
   let depth = 0
   for (let i = open; i < dts.length; i++) {
     const c = dts[i]
@@ -473,10 +791,12 @@ export const RUN_DESCRIPTION = `Run a JavaScript program that calls MCP tools, a
 The program is the body of an async function. Available:
 - await call("mcp__<server>__<tool>", args) -> the tool result (parsed JSON when the tool returns JSON, else text)
 - await sleep(ms) -> waits, to poll a slow job; the time limit of the run still applies
+- await saveFile(name, data) -> writes data to a file and returns its path: text as it is, CSV or JSON lines for an array with a .csv or .jsonl name, else JSON; use it for data too large to return
+- await readFile(path) -> the text of a file in the project, or of a file from saveFile
 - console.log(...) -> shown after the result
 - return <value> -> the result, as JSON
 
-A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process, filesystem or setTimeout: only MCP tools.
+A failed call throws an Error (catch it to continue). Promise.all runs calls in parallel, 8 at a time. There is no require, fetch, process or setTimeout: only these functions.
 
 Find tools, their argument types, result shapes and usage hints with search_tools first. When a task took more than one try (a search, a tool, an argument, a result format), propose what worked with add_hint, so the next session gets it right the first time.
 

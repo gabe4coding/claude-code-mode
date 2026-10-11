@@ -42,9 +42,9 @@ const allowDirect = process.argv.includes('--allow-direct')
 const label = arg('--label', '')
 const out = reportOnly ?? arg('--out', path.join(os.tmpdir(), `code-mode-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
 const METRICS = path.join(os.homedir(), '.claude', 'code-mode', 'metrics')
-const SHAPES = path.join(os.homedir(), '.claude', 'code-mode', 'shapes.json')
-// Each run has its own server name, so no run sees the result shapes that an
-// earlier run saved. The end of the bench removes them from the shapes file.
+const LEARNED = ['shapes.json', 'args.json'].map(f => path.join(os.homedir(), '.claude', 'code-mode', f))
+// Each run has its own server name, so no run sees the result shapes and the
+// argument names that an earlier run saved. The end of the bench removes them.
 const BENCH_SERVER = /^mcp__bench_[0-9a-f]{8}__/
 
 const readLines = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [])
@@ -183,9 +183,9 @@ if (reportOnly) {
       console.log(`${String(rows.length).padStart(3)}/${jobs.length} ${row.task}-${label || row.arm}-${row.rep} ${row.correct ? 'ok   ' : 'WRONG'} calls=${row.mcpCalls} direct=${row.directCalls} dup=${row.duplicates} runs=${row.runs} recalls=${row.recalls} $${row.costUsd.toFixed(3)}`)
     }
   }))
-  if (fs.existsSync(SHAPES)) {
-    const shapes = JSON.parse(fs.readFileSync(SHAPES, 'utf8'))
-    fs.writeFileSync(SHAPES, `${JSON.stringify(Object.fromEntries(Object.entries(shapes).filter(([tool]) => !BENCH_SERVER.test(tool))), null, 2)}\n`)
+  for (const file of LEARNED.filter(f => fs.existsSync(f))) {
+    const learned = JSON.parse(fs.readFileSync(file, 'utf8'))
+    fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([tool]) => !BENCH_SERVER.test(tool))), null, 2)}\n`)
   }
   report(rows)
 }

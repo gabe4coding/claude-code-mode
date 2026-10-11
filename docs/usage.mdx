@@ -22,7 +22,7 @@ into the context.
 
 | Tool | What it does |
 | --- | --- |
-| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types and the [result shape](#result-shapes). It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
+| `mcp__code-mode__search_tools` | Finds MCP tools by keywords. For each tool, it gives the name, one line of description and, when known, the argument types, the [argument names](#argument-names) and the [result shape](#result-shapes). It also gives the [hints](./hints.mdx) for the servers that it finds. An empty query lists all MCP tools. |
 | `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
 | `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
 | `mcp__code-mode__remove_hint` | Hides a wrong hint in the current session and proposes to remove it from its hint file. See [Remove a hint that is wrong](./hints.mdx#remove-a-hint-that-is-wrong). |
@@ -36,6 +36,8 @@ A program is the body of an async JavaScript function. In the program:
 - `await call("mcp__<server>__<tool>", args)` calls an MCP tool and gives its result.
 - `await tools["<server>"]["<tool>"](args)` is the same call in a different form.
 - `await sleep(ms)` waits for the given number of milliseconds. Use it to poll a slow job.
+- `await saveFile(name, data)` writes data to a file and gives its path. See [Files](#files).
+- `await readFile(path)` gives the text of a file. See [Files](#files).
 - `console.log(...)` adds a line to the console output.
 - `return value` sets the result. The model gets the value as JSON.
 
@@ -80,7 +82,43 @@ is larger, or Claude Code saved only part of the result, the call throws an `Err
 data, for example one page or fewer fields.
 
 A program can call only MCP tools. It cannot call built-in tools such as `Bash` or `Read`, or the code-mode tools.
-It has no `require`, `fetch`, `process`, `setTimeout` or file system.
+It has no `require`, `fetch`, `process` or `setTimeout`. It reads and writes files only with `readFile` and
+`saveFile`.
+
+## Files
+
+Use `saveFile` when the data is too large to return, for example an export of 2,000 issues. The data then goes to
+a file, not into the context. Only the path goes into the context:
+
+```js
+const { issues } = await call("mcp__claude_ai_Jira__searchJiraIssuesUsingJql", { cloudId: "example.atlassian.net", jql: "project = OPS" })
+const path = await saveFile("ops-issues.csv", issues.map(i => ({ key: i.key, status: i.fields.status.name })))
+return { path, count: issues.length }
+```
+
+`saveFile(name, data)` writes the file in `~/.claude/code-mode/files/<session id>/`:
+
+| Data | File |
+| --- | --- |
+| Text | The text, as it is. |
+| An array, and the name ends in `.csv` | CSV. Objects get a header line with all their keys. |
+| An array, and the name ends in `.jsonl` | One JSON value on each line. |
+| Other data | Formatted JSON. |
+
+- The name must be a file name with no folder, for example `issues.csv`. A file with the same name is replaced.
+- The plugin does not write in the project. To move a file into the project, the model uses `Bash`, with its
+  normal permission check.
+- A file can have at most 16 million characters.
+
+`readFile(path)` gives the text of a file, for example a list of ids to look up. A relative path starts at the
+working folder of the session. The plugin reads the file only in these cases:
+
+- The file is from `saveFile` in this session.
+- Your permission rules let Claude Code read the file with no prompt. Files in the project are in this group by
+  default. A `Read` allow rule adds other files.
+
+Else `readFile` throws an error, and you get no prompt. A program can send what it reads to an MCP tool. Thus
+the plugin reads no file that needs your approval. A file can have at most 4 MiB.
 
 ## The result
 
@@ -171,6 +209,43 @@ and a wrong guess costs one more run.
 
 Result shapes are part of output projection. If the option `projection` is `false`, the plugin does not save or show
 shapes.
+
+## Argument names
+
+`search_tools` shows argument types only if Claude Code wrote a types file. Claude Code does not write it for a
+plugin from a marketplace. Thus the plugin also learns argument names. When a nested call works, the plugin saves
+the names of its arguments, not their values. `search_tools` then shows them for the tools that have no types:
+
+```text
+### mcp__claude_ai_Jira__searchJiraIssuesUsingJql
+Search Jira issues using JQL
+args: (argument types unknown here: names from earlier calls: {cloudId, jql, maxResults}; ToolSearch "select:mcp__claude_ai_Jira__searchJiraIssuesUsingJql" shows the schema)
+```
+
+- The list has only the names that earlier calls used. It does not show the types, or which arguments are
+  required.
+- Some servers ignore an argument with a wrong name, and the call still works. Then the wrong name goes into the
+  list too.
+- The plugin keeps the names of the newest 500 tools in `~/.claude/code-mode/args.json`. It loads only entries
+  that look like argument names.
+
+## The check before a run
+
+Before the sandbox starts, the plugin checks each `call("<tool>", { ... })` in the program. If a name is wrong, the
+program does not run, and no call occurs. Thus a write call at the start of a program does not run if a later
+call has a wrong name.
+
+| The plugin knows | The program does not run when |
+| --- | --- |
+| The list of MCP tools | A tool name is not a connected MCP tool. |
+| The types of the tool | An argument has a name that the types do not have, or a required argument is missing. |
+| Only the [argument names](#argument-names) of earlier calls | An argument name is 1 or 2 letters different from a known name, for example `maxResult` and `maxResults`. |
+
+The result names each wrong name, its line and, when it can, the correct name.
+
+The check reads only a literal tool name and an object literal. It does not check `call(name, args)` with
+variables, or an object with `...spread`. If a name is correct but the check refuses it, the model passes the
+arguments as a variable.
 
 ## Make the model use code-mode
 
