@@ -27,6 +27,20 @@ Cause: Node did not start or stopped before the program returned. The `stderr` p
 
 See [Configuration](./configuration.mdx).
 
+### "the program did not run, because some calls have wrong names"
+
+Cause: the [check before a run](./usage.mdx#the-check-before-a-run) found a tool name or an argument name that is
+wrong. No call occurred.
+
+Fix: the model corrects the names that the result gives. If a name is correct, the model passes the arguments as
+a variable. Then the check does not read them.
+
+### "readFile: no permission to read …"
+
+Cause: Claude Code needs your approval to read the file. `readFile` reads no file that needs a prompt.
+
+Fix: put the file in the project, or add a `Read` allow rule for it. See [Files](./usage.mdx#files).
+
 ### "timeout after … ms"
 
 Cause: the program ran longer than `timeoutSeconds`.
@@ -72,8 +86,9 @@ Fix: let the model propose a `user` hint, or turn on `projectHints` for a projec
 - `search_tools` reads argument types from a types file that Claude Code writes. Claude Code writes it in an
   interactive session with hot reload or with `--plugin-dir`. It does not write it for headless `claude -p` runs.
   It is not known yet if it writes it for a plugin from a marketplace.
-- Without the types file, `search_tools` tells the model to use ToolSearch for the schema. ToolSearch puts the full
-  tool definition into the context, so the program saves fewer tokens.
+- Without the types file, `search_tools` shows the [argument names](./usage.mdx#argument-names) of earlier calls,
+  and tells the model to use ToolSearch for the schema. ToolSearch puts the full tool definition into the context,
+  so the program saves fewer tokens. Claude Code gives a plugin no other way to read the schema of an MCP tool.
 - A nested call cannot pass an argument with the name `tool`. The plugin API uses this name for the tool name.
 - On Linux, the sandbox has no network block. See [Sandbox](./how-it-works.mdx#sandbox).
 - The `add_hint` row with buttons is not tested in the terminal yet.
