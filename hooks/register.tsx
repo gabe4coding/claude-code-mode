@@ -43,19 +43,28 @@ import {
 import {
   RUN_DESCRIPTION,
   SEARCH_DESCRIPTION,
+  argNamesOf,
   callKey,
+  checkCalls,
+  declarationKeys,
   extractDeclaration,
   errorText,
+  fileNameError,
+  fileText,
   formatOutcome,
   hintNudge,
   isCallable,
   isSessionResult,
   learnedShape,
   limiter,
+  literalCalls,
   mcpReply,
+  mergeArgNames,
   mergeShapes,
   missedData,
+  parseArgNames,
   parseShapes,
+  problemReport,
   rankTools,
   savedResultOf,
   savedReply,
@@ -63,6 +72,7 @@ import {
   splitToolName,
   takeMessages,
   toValue,
+  type ArgNames,
   type CallRecord,
   type Projection,
   type Reply,
@@ -77,6 +87,8 @@ const SEARCH_LIMIT = 15
 // Nested calls of one run that wait for a reply at one time: a program that
 // maps over hundreds of ids must not hit a server's rate limit at once.
 const MAX_PARALLEL_CALLS = 8
+// The largest file saveFile writes, in characters.
+const MAX_FILE_CHARS = 16 * 1024 * 1024
 
 // macOS only: the sandbox process gets no network. Elsewhere it relies on the
 // vm context (no fetch, no require) and Node's --permission.
@@ -246,6 +258,68 @@ async function saveShapes($: EngineInterface, learned: ReadonlyMap<string, strin
   if (path === undefined || learned.size === 0) return
   const next = mergeShapes(await readShapes($), learned)
   if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
+}
+
+// The argument names of each MCP tool from its calls that worked, in any
+// session: search_tools shows them when no types file declares the tool, and
+// the check before a run finds a name close to one of them.
+async function argNamesPath($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  return home ? `${home}/.claude/code-mode/args.json` : undefined
+}
+
+async function readArgNames($: EngineInterface): Promise<ArgNames> {
+  const path = await argNamesPath($)
+  return path === undefined ? {} : parseArgNames(String(await $.fs.read(path).catch(() => '')))
+}
+
+async function saveArgNames($: EngineInterface, learned: ReadonlyMap<string, readonly string[]>): Promise<void> {
+  const path = await argNamesPath($)
+  if (path === undefined || learned.size === 0) return
+  const next = mergeArgNames(await readArgNames($), learned)
+  if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
+}
+
+// The folder of saveFile: outside the project, so the plugin never writes
+// where the person's Write rules apply. A move into the project goes through
+// Bash and its permission check.
+async function filesDir($: EngineInterface): Promise<string | undefined> {
+  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
+  return home ? `${home}/.claude/code-mode/files/${id || 'no-session'}` : undefined
+}
+
+// The text of a file for readFile: a file from saveFile, or a file that the
+// person's Read rules let Claude Code read with no prompt. A program can send
+// what it reads to an MCP tool, so a path that needs a prompt is refused.
+async function readForProgram($: EngineInterface, path: string): Promise<Reply> {
+  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+  const full = resolvePath(path, home, await $.session.cwd())
+  const stat = await $.fs.stat(full, { resolve: true }).catch(() => undefined)
+  if (stat?.kind !== 'file') return { ok: false, error: `readFile: no file at ${path}` }
+  const real = stat.realPath ?? full
+  const dir = await filesDir($)
+  const dirReal = dir === undefined ? undefined : await $.fs.stat(dir, { resolve: true }).then(s => s.realPath, () => undefined)
+  const isSaved = [dir, dirReal].some(d => typeof d === 'string' && isUnder(real, d))
+  if (!isSaved && (await $.tool.check({ tool: 'Read', input: { file_path: real } })).decision !== 'allow') {
+    return { ok: false, error: `readFile: no permission to read ${path}; only files in the project, files a Read allow rule names, and files from saveFile` }
+  }
+  if (stat.size > MAX_SAVED_BYTES) return { ok: false, error: `readFile: ${path} is ${stat.size} bytes, more than readFile loads` }
+  return { ok: true, value: String(await $.fs.read(real)) }
+}
+
+// The wrong names in a program's literal calls, before it runs: a write call
+// early in a program must not run when a later call cannot.
+async function checkProgram($: EngineInterface, code: string): Promise<string> {
+  const calls = literalCalls(code).filter(c => isCallable(c.tool, $.plugin.name))
+  if (calls.length === 0) return ''
+  const [list, dts, learned] = await Promise.all([$.tool.list(), mcpTypes($), readArgNames($)])
+  const tools = new Set(list.filter(t => t.mcp && isCallable(t.name, $.plugin.name)).map(t => t.name))
+  const specOf = (tool: string) => {
+    const declaration = dts === '' ? undefined : extractDeclaration(dts, tool)
+    return declaration === undefined ? undefined : declarationKeys(declaration)
+  }
+  const problems = checkCalls(calls, tools, specOf, learned)
+  return problems.length === 0 ? '' : problemReport(problems)
 }
 
 // The hints the model sees: without the ones hidden in this session and the
@@ -738,10 +812,11 @@ export const register: Register = (on, options) => {
       return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
     }
 
-    const [dts, shapes] = await Promise.all([mcpTypes($), projection ? readShapes($) : ({} as Shapes)])
+    const [dts, shapes, argNames] = await Promise.all([mcpTypes($), projection ? readShapes($) : ({} as Shapes), readArgNames($)])
     const blocks = found.map(t => {
       const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
-      const args = declaration ?? `(argument types unknown here: ToolSearch "select:${t.name}" shows the schema)`
+      const names = argNames[t.name] === undefined ? '' : `names from earlier calls: {${argNames[t.name]!.join(', ')}}; `
+      const args = declaration ?? `(argument types unknown here: ${names}ToolSearch "select:${t.name}" shows the schema)`
       const summary = t.description.split('\n')[0]!.slice(0, 300)
       const shape = shapes[t.name] === undefined ? '' : `\nreturns (earlier call): ${shapes[t.name]}`
       return `### ${t.name}\n${summary}\nargs: ${args}${shape}`
@@ -756,6 +831,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__code-mode__run_code' }, async ($, e) => {
     const code = String((e as unknown as { code?: unknown }).code ?? '')
     if (code.trim() === '') return { result: 'Error: code is empty.' }
+    const problems = await checkProgram($, code).catch(err => (debugLog($, `cannot check the program: ${errorText(err)}`), ''))
+    if (problems !== '') return { result: problems }
 
     // The real path: Node's --permission stops a main script whose path goes
     // through a link (a linked ~/.claude or plugin folder) before it starts.
@@ -781,6 +858,7 @@ export const register: Register = (on, options) => {
     let recalls = 0
     let recallMisses = 0
     const shapes = new Map<string, string>()
+    const argNames = new Map<string, string[]>()
     const limit = limiter(MAX_PARALLEL_CALLS)
 
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
@@ -824,6 +902,7 @@ export const register: Register = (on, options) => {
       const ref = reply.ok && projection ? keep(kept, json) : undefined
       const learned = reply.ok && projection ? learnedShape(reply.value) : undefined
       if (learned !== undefined) shapes.set(tool, learned)
+      if (reply.ok) argNames.set(tool, [...new Set([...(argNames.get(tool) ?? []), ...argNamesOf(args)])])
       if (reply.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
       records.set(id, { ref, tool, ok: reply.ok, chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
     }
@@ -844,6 +923,22 @@ export const register: Register = (on, options) => {
       await $.fs.write(`${xdir}/r${id}.json`, text)
     }
 
+    // saveFile and readFile: the sandbox has no file system, so the plugin does both.
+    const answerFile = async (id: number, op: () => Promise<Reply>): Promise<void> => {
+      const reply = await op().catch((err): Reply => ({ ok: false, error: errorText(err) }))
+      await $.fs.write(`${xdir}/r${id}.json`, JSON.stringify(reply))
+    }
+    const save = async (name: string, data: unknown): Promise<Reply> => {
+      const problem = fileNameError(name)
+      if (problem !== undefined) return { ok: false, error: problem }
+      const text = fileText(name, data)
+      if (text.length > MAX_FILE_CHARS) return { ok: false, error: `saveFile: ${text.length} characters is more than ${MAX_FILE_CHARS}; save less data` }
+      const dir = await filesDir($)
+      if (dir === undefined) return { ok: false, error: 'saveFile: there is no HOME folder' }
+      await $.fs.write(`${dir}/${name}`, text)
+      return { ok: true, value: `${dir}/${name}` }
+    }
+
     try {
       const stream = $.process.spawn({
         argv: ['/bin/sh', '-c', LAUNCH, 'code-mode', String(timeoutSeconds), NO_NETWORK, node, runner, xdir],
@@ -860,6 +955,8 @@ export const register: Register = (on, options) => {
         for (const m of taken.messages) {
           if (m.t === 'call') answers.push(limit(() => answer(m.id, m.tool, m.args)))
           else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
+          else if (m.t === 'save') answers.push(answerFile(m.id, () => save(m.name, m.data)))
+          else if (m.t === 'read') answers.push(answerFile(m.id, () => readForProgram($, m.path)))
           else outcome = m
         }
       }
@@ -871,6 +968,7 @@ export const register: Register = (on, options) => {
     }
 
     await saveShapes($, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`))
+    await saveArgNames($, argNames).catch(err => debugLog($, `cannot write the argument names: ${errorText(err)}`))
 
     // Hints for the servers whose calls failed: the likely fix is often there.
     // A hint that cannot be read never costs the run its result.

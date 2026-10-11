@@ -5,9 +5,11 @@
 // stdout: one line per message, each "\u0001cm " + JSON:
 //           {"t":"call","id":1,"tool":"mcp__x__y","args":{...}}
 //           {"t":"recall","id":2,"ref":4}
+//           {"t":"save","id":3,"name":"issues.csv","data":<json>}
+//           {"t":"read","id":4,"path":"ids.txt"}
 //           {"t":"done","value":"<json>","logs":[...]}
 //           {"t":"error","message":"...","logs":[...]}
-// The host answers call or recall <id> by writing <exchange dir>/r<id>.json:
+// The host answers call, recall, save or read <id> by writing <exchange dir>/r<id>.json:
 //           {"ok":true,"value":...} or {"ok":false,"error":"..."}
 // sleep(ms) never reaches the host: this process answers it with its own timer.
 //
@@ -50,6 +52,14 @@ const post = (kind, a, b, c) => {
     } else if (kind === 'recall') {
       const id = Number(a)
       emit({ t: 'recall', id, ref: Number(b) })
+      waiting.add(id)
+    } else if (kind === 'save') {
+      const id = Number(a)
+      emit({ t: 'save', id, name: String(b), data: JSON.parse(String(c)) })
+      waiting.add(id)
+    } else if (kind === 'read') {
+      const id = Number(a)
+      emit({ t: 'read', id, path: String(b) })
       waiting.add(id)
     } else if (kind === 'sleep') {
       // No longer than the run can last: the wall-clock timer ends it first.
@@ -117,9 +127,28 @@ const BOOTSTRAP = String.raw`
     waiting.set(id, { resolve, reject })
     post('sleep', String(id), String(ms))
   })
+  // saveFile(name, data) and readFile(path): the host writes and reads the
+  // files; this process has no file system access of its own
+  const ask = (kind, a, b) => new Promise((resolve, reject) => {
+    const id = ++nextId
+    waiting.set(id, { resolve, reject })
+    post(kind, String(id), a, b)
+  })
+  const saveFile = (name, data) => {
+    if (typeof name !== 'string') throw new TypeError('saveFile(name, data): name must be a string')
+    const json = JSON.stringify(data)
+    if (json === undefined) throw new TypeError('saveFile(name, data): data must be text or JSON')
+    return ask('save', name, json)
+  }
+  const readFile = path => {
+    if (typeof path !== 'string') throw new TypeError('readFile(path): path must be a string')
+    return ask('read', path)
+  }
   globalThis.call = call
   globalThis.recall = recall
   globalThis.sleep = sleep
+  globalThis.saveFile = saveFile
+  globalThis.readFile = readFile
   globalThis.tools = tools
 
   globalThis.__deliver = (id, text) => {

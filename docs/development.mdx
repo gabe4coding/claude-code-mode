@@ -84,8 +84,9 @@ Each run costs API usage, about $0.11 with Opus. Use `--reps`, `--tasks`, `--mod
 size. A run loads only this plugin and the fake server, with direct MCP calls blocked. The runner prints a table and
 writes one row per run to `results.jsonl`.
 
-Each run gives the fake server its own name, so a run does not see the [result shapes](./usage.mdx#result-shapes)
-of an earlier run. At the end, the runner removes these shapes from `~/.claude/code-mode/shapes.json`.
+Each run gives the fake server its own name. Thus a run does not see the [result shapes](./usage.mdx#result-shapes)
+or the [argument names](./usage.mdx#argument-names) of an earlier run. At the end, the runner removes them from
+`~/.claude/code-mode/shapes.json` and `~/.claude/code-mode/args.json`.
 
 To count the MCP calls that the model makes directly, add `--allow-direct`. Then the bench does not block direct
 calls. To compare two copies of the plugin, run the bench two times into one `--out` folder. Give each run its own
