@@ -207,24 +207,29 @@ export type ReviewFields = { reason?: string; warnings: string[]; seen?: string;
 
 export const reviewFields = (
   hint: Pick<Hint, 'review' | 'scope'>,
-  dest: { file: string; hints?: number; kind?: ProposalKind; isBundled?: boolean },
+  dest: { file: string; hints?: number; kind?: ProposalKind; isBundled?: boolean; ownFile?: string },
 ): ReviewFields => {
   const r = hint.review
   const count = (n: number) => `${n} hint${n === 1 ? '' : 's'}`
   const file = `${dest.isBundled ? 'the bundled ' : ''}${asCode(dest.file)}`
   const has = dest.hints === undefined ? '' : `, which has ${count(dest.hints)}`
+  const reach = hint.scope === 'project' ? 'in this project only' : 'in all projects'
   const where = {
     add: dest.hints === undefined ? `Makes the new hint file ${file}` : `Adds to ${file}${has}`,
     removal: `Removes this hint from ${file}${has}`,
-    change: dest.isBundled ? `Hides this hint of ${file} and adds the new hint to your own ${asCode(dest.file)}` : `Changes this hint in ${file}${has}`,
+    change: !dest.isBundled
+      ? `Changes this hint in ${file}${has}`
+      : dest.ownFile === undefined
+        ? undefined
+        : `Hides this hint of ${file} and adds the new hint to your own ${asCode(dest.ownFile)}`,
   }[dest.kind ?? 'add']
-  const reach = hint.scope === 'project' ? 'in this project only' : 'in all projects'
   // The kind shows only as a flag: an "other instruction" is the one to warn about.
   return {
     ...(r?.why ? { reason: r.why } : {}),
     warnings: r?.flags ?? [],
     ...(r?.seen ? { seen: `code-mode saw ${r.seen.replace(/^\w/, c => c.toLowerCase())}` } : {}),
-    file: `${where}. It applies ${reach}.`,
+    // A bundled change with no user file to write: Approve fails, so no reach.
+    file: where === undefined ? `Approve fails: code mode cannot read your own hint folder to change the bundled ${asCode(dest.file)}.` : `${where}. It applies ${reach}.`,
   }
 }
 

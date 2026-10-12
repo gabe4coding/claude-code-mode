@@ -189,7 +189,7 @@ describe('save_function', () => {
     const ui = await $.ui.mount(band)
     expect(JSON.stringify(await ui.drawn())).toContain('1 proposal for code mode: 1 function')
     await ui.press({ key: 'review' })
-    await ui.press({ key: 'discard-f-0' })
+    await ui.press({ key: 'discard-0' })
     expect(fs.removed).toEqual([PENDING])
     expect(fs.written[`${DIR}/searchAll.md`]).toBe(undefined)
   })

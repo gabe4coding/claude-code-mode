@@ -523,6 +523,9 @@ describe('the band above the prompt', () => {
       expect(first).toContain('- Pass ids as strings.')
       // Previous, Next, Close, Approve, Discard: one card at a time
       expect(await ui.findAll({ type: 'Button' })).toHaveLength(5)
+      // Approve is above the card, so a card taller than the band cannot hide it
+      expect(first.indexOf('"Approve"')).toBeGreaterThan(-1)
+      expect(first.indexOf('"Approve"')).toBeLessThan(first.indexOf('**Usage hint**'))
       await ui.press({ key: 'next' })
       const second = JSON.stringify(await ui.drawn())
       expect(second).toContain('server with `analyze_datadog_logs`')
@@ -551,6 +554,8 @@ describe('the band above the prompt', () => {
 // The fixtures of remove_hint and edit_hint.
 const MAIL = 'mcp__aaaa-1111__send_message'
 const FILE = '---\nservers: [Mail]\n---\n- Mail returns JSON.\n- Pass ids as strings.\n'
+// A user hint file for one tool of Mail: a bundled Mail hint does not fit in it.
+const NARROW = '---\nservers: ["Mail"]\ntools: ["send_message"]\n---\n- Own hint.\n'
 const search = async ($: Engine) => textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' }))
 const band = {
   plugin: 'code-mode', surface: 'terminal' as const, component: 'AbovePrompt' as const,
@@ -750,8 +755,11 @@ describe('edit_hint', () => {
     expect(proposalKind(proposal)).toBe('change')
     expect(reviewFields(proposal, { file: 'mail.md', hints: 2, kind: 'change' }).file)
       .toBe('Changes this hint in `mail.md`, which has 2 hints. It applies in all projects.')
-    expect(reviewFields(proposal, { file: 'mail.md', kind: 'change', isBundled: true }).file)
+    expect(reviewFields(proposal, { file: 'mail.md', kind: 'change', isBundled: true, ownFile: 'mail.md' }).file)
       .toBe('Hides this hint of the bundled `mail.md` and adds the new hint to your own `mail.md`. It applies in all projects.')
+    // The user hint folder cannot be read: Approve fails, and the card says so.
+    expect(reviewFields(proposal, { file: 'mail.md', kind: 'change', isBundled: true }).file)
+      .toBe('Approve fails: code mode cannot read your own hint folder to change the bundled `mail.md`.')
   })
 
   test('hides the old hint at once, and Approve puts the new one in its place', async ($, on) => {
@@ -824,16 +832,34 @@ describe('edit_hint', () => {
 
   test('a bundled change goes to <name>-changed.md when the user file of that name is for other tools', async ($, on) => {
     mock.store(on)
-    const files: Record<string, string> = { [`${USER_DIR}/mail-narrow.md`]: '---\nservers: ["Mail"]\ntools: ["send_message"]\n---\n- Own hint.\n' }
+    const files: Record<string, string> = { [`${USER_DIR}/mail-narrow.md`]: NARROW }
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-narrow.md`
     files[path] = FILE
     await edit($, path, 'Pass ids as strings.', 'Pass ids as numbers.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
+    // the card names the file that Approve writes
+    expect(JSON.stringify(await ui.drawn())).toContain('adds the new hint to your own `mail-narrow-changed.md`')
     await ui.press({ key: 'approve-0' })
     expect(fs.written[`${USER_DIR}/mail-narrow.md`]).toBe(undefined)
     expect(fs.written[`${USER_DIR}/mail-narrow-changed.md`]).toBe('---\nservers: ["Mail"]\n---\n- Pass ids as numbers.\n')
+  })
+
+  test('a bundled change goes to <name>-changed-2.md when <name>-changed.md is for other tools too', async ($, on) => {
+    mock.store(on)
+    const files: Record<string, string> = { [`${USER_DIR}/mail-both.md`]: NARROW, [`${USER_DIR}/mail-both-changed.md`]: NARROW }
+    const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
+    const path = `${await bundledDir($, fs.checked)}/mail-both.md`
+    files[path] = FILE
+    await edit($, path, 'Pass ids as strings.', 'Pass ids as numbers.')
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    expect(JSON.stringify(await ui.drawn())).toContain('adds the new hint to your own `mail-both-changed-2.md`')
+    await ui.press({ key: 'approve-0' })
+    expect(fs.written[`${USER_DIR}/mail-both.md`]).toBe(undefined)
+    expect(fs.written[`${USER_DIR}/mail-both-changed.md`]).toBe(undefined)
+    expect(fs.written[`${USER_DIR}/mail-both-changed-2.md`]).toBe('---\nservers: ["Mail"]\n---\n- Pass ids as numbers.\n')
   })
 
   test('the edit_hint row says the hint changed; Discard shows the old hint again', async ($, on) => {
