@@ -1,10 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
-  ADD_HINT_DESCRIPTION,
-  EDIT_HINT_DESCRIPTION,
   HINT_KINDS,
-  REMOVE_HINT_DESCRIPTION,
   PROPOSAL_TEXT,
   TRANSFER_TEXT,
   activePathOf,
@@ -57,8 +54,6 @@ import {
   type ReviewFields,
 } from './hints'
 import {
-  RUN_DESCRIPTION,
-  SEARCH_DESCRIPTION,
   argNamesOf,
   callKey,
   checkCalls,
@@ -98,7 +93,6 @@ import {
   type Shapes,
 } from './protocol'
 import {
-  SAVE_FUNCTION_DESCRIPTION,
   codeDiff,
   failedFunctions,
   formatFunction,
@@ -113,10 +107,10 @@ import {
   type SavedFunction,
 } from './functions'
 import { codeModePath, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
+import { SEARCH_LIMIT, TOOL, TOOL_NAMES, parseInput, registration } from './tools'
 
 const MAX_RESULT_CHARS = 20_000
 const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
-const SEARCH_LIMIT = 15
 // Nested calls of one run that wait for a reply at one time: a program that
 // maps over hundreds of ids must not hit a server's rate limit at once.
 const MAX_PARALLEL_CALLS = 8
@@ -154,12 +148,6 @@ type Options = {
   metrics?: boolean
 }
 
-const ADD_HINT = 'mcp__code-mode__add_hint'
-const REMOVE_HINT = 'mcp__code-mode__remove_hint'
-const EDIT_HINT = 'mcp__code-mode__edit_hint'
-const SAVE_FUNCTION = 'mcp__code-mode__save_function'
-// The names a card shows as inline code when the model's reason names them.
-const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'edit_hint', 'save_function']
 // A program that did this many calls that worked, or this many to more than
 // one tool, is worth a saved function.
 const FUNCTION_CALLS = 10
@@ -647,7 +635,7 @@ function cardButtons(ui: Ui, keys: { approve: string; discard: string }, decide:
 function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, buttons: RenderChildren, note?: string) {
   const { Box, Markdown, Text } = ui
   const reach = hint.scope === 'project' ? 'this project' : 'all projects'
-  const names = [...hint.tools, ...hint.identify, ...OWN_TOOLS]
+  const names = [...hint.tools, ...hint.identify, ...TOOL_NAMES]
   const words = PROPOSAL_TEXT[proposalKind(hint)]
   return (
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
@@ -679,7 +667,7 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
       <Markdown text={`**${current === undefined ? 'Saved function' : 'Change of a saved function'}** · ${asCode(`lib.${f.name}${signatureOf(f.code)}`)}`} />
       {cardField(ui, 'What it returns', <Box flexDirection="column"><Text>{f.description}</Text>{before}</Box>)}
-      {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, OWN_TOOLS)} />)}
+      {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, TOOL_NAMES)} />)}
       {current === undefined
         ? cardField(ui, 'Code', <Code source={f.code} language="javascript" />)
         : cardField(ui, 'Code changes', <Code source={codeDiff(current.code, f.code)} language="javascript" format="diff" />)}
@@ -851,13 +839,14 @@ async function mcpTypes($: EngineInterface): Promise<string> {
 
 // remove_hint and edit_hint: hide the hint in this session and write the
 // proposal (see where they register).
-async function proposeRemoval($: EngineInterface, e: unknown, isEdit: boolean, projectHints: boolean): Promise<{ result: string }> {
-  const input = e as { path?: unknown; text?: unknown; new_text?: unknown; why?: unknown; tool_use_id: string }
-  const path = typeof input.path === 'string' ? input.path.trim() : ''
-  const text = typeof input.text === 'string' ? input.text.trim() : ''
+async function proposeRemoval($: EngineInterface, e: { tool_use_id: string }, isEdit: boolean, projectHints: boolean): Promise<{ result: string }> {
+  // remove_hint takes the input of edit_hint without new_text.
+  const input = parseInput('edit_hint', e)
+  const path = input.path.trim()
+  const text = input.text.trim()
   // The new text of a change; undefined for a removal.
-  const replacement = isEdit ? (typeof input.new_text === 'string' ? input.new_text.trim() : '') : undefined
-  const why = typeof input.why === 'string' ? oneLine(input.why) : ''
+  const replacement = isEdit ? input.new_text.trim() : undefined
+  const why = oneLine(input.why)
   if (path === '' || text === '' || why === '' || replacement === '') {
     return { result: `Error: path, text, ${isEdit ? 'new_text ' : ''}and why are required.` }
   }
@@ -892,7 +881,7 @@ async function proposeRemoval($: EngineInterface, e: unknown, isEdit: boolean, p
     flags: replacement === undefined ? [] : newHintFlags(kind, replacement, servers, servers.length > 0, mcpTools),
   }
   const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
-  const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, input.tool_use_id)}`
+  const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, e.tool_use_id)}`
   await $.fs.write(pending, removalProposal(hint, found.item, review, replacement))
   state.hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
   $.ui.invalidate('ui.render')
@@ -924,103 +913,22 @@ export const register: Register = (on, options) => {
   // Claude Code skips a hooks module's classic.SessionStart.
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register({
-      name: 'run_code',
-      description: RUN_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'Body of an async JavaScript function.' },
-        },
-        required: ['code'],
-      },
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'search_tools',
-      description: SEARCH_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Keywords; empty lists every MCP tool.' },
-          limit: { type: 'number', description: `Most tools to return (default ${SEARCH_LIMIT}).` },
-        },
-        required: ['query'],
-      },
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'add_hint',
-      description: ADD_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          server: { type: 'string', description: 'The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.' },
-          text: { type: 'string', description: 'The hint: one short, factual sentence.' },
-          why: { type: 'string', description: 'What failed before and what worked, in one sentence.' },
-          tools: { type: 'array', items: { type: 'string' }, description: 'Optional: tool names on that server (globs allowed) when the hint is for some tools only.' },
-          scope: { type: 'string', enum: ['user', 'project'], description: 'Default "user".' },
-        },
-        required: ['server', 'text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'remove_hint',
-      description: REMOVE_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
-          text: { type: 'string', description: 'The hint to remove, as shown.' },
-          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
-        },
-        required: ['path', 'text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'edit_hint',
-      description: EDIT_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
-          text: { type: 'string', description: 'The hint to change, as shown.' },
-          new_text: { type: 'string', description: 'The corrected hint: one short, factual sentence.' },
-          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
-        },
-        required: ['path', 'text', 'new_text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'save_function',
-      description: SAVE_FUNCTION_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'A JavaScript name: programs call it as lib.<name>(args).' },
-          description: { type: 'string', description: 'What it returns, in one sentence.' },
-          code: { type: 'string', description: 'An async function expression with one argument, such as async ({ cloudId, jql }) => { ... }. It can use call, sleep and the other run_code functions.' },
-          why: { type: 'string', description: 'Which task it did and why the task comes back, in one sentence.' },
-        },
-        required: ['name', 'description', 'code', 'why'],
-      },
-    })
+    for (const name of TOOL_NAMES) await $.tool.register(registration(name))
     return next(e)
   })
 
   // save_function never activates a function: it writes a proposal under
   // functions/pending/, which loads only after the person reads the code
   // and presses Approve. The model cannot press a button.
-  on('tool.call', { tool: SAVE_FUNCTION }, async ($, e) => {
-    const input = e as unknown as { name?: unknown; description?: unknown; code?: unknown; why?: unknown; tool_use_id: string }
-    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
-    const [name, description, code, why] = [text(input.name), oneLine(text(input.description)), text(input.code), oneLine(text(input.why))]
+  on('tool.call', { tool: TOOL.save_function }, async ($, e) => {
+    const input = parseInput('save_function', e)
+    const [name, description, code, why] = [input.name.trim(), oneLine(input.description), input.code.trim(), oneLine(input.why)]
     if (why === '' || why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
     const problem = functionError(name, description, code)
     if (problem !== undefined) return { result: `Error: ${problem}.` }
     const dir = await functionsDir($)
     if (dir === undefined) return { result: 'Error: the function folder is not known (HOME is not set).' }
-    const path = `${dir}/pending/${pendingFileName(`${name}.md`, input.tool_use_id)}`
+    const path = `${dir}/pending/${pendingFileName(`${name}.md`, e.tool_use_id)}`
     const [current, shown] = await Promise.all([
       readFunction($, `${dir}/${name}.md`),
       approvalShown($),
@@ -1036,7 +944,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => (debugLog($, `save_function failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: save_function failed; see the debug log.' }))
 
   // The save_function row: the code to read, with Approve and Discard.
-  on('ui.render', { component: 'ToolResult', props: { tool: SAVE_FUNCTION } }, async ($, e, next) => {
+  on('ui.render', { component: 'ToolResult', props: { tool: TOOL.save_function } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
@@ -1056,12 +964,9 @@ export const register: Register = (on, options) => {
   // The proposal also carries a review for that person (Review): the model's
   // reason, a classifier's guess of the kind, and what code-mode saw. All of
   // it is advice: none of it approves or refuses a proposal.
-  on('tool.call', { tool: ADD_HINT }, async ($, e) => {
-    const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown; tool_use_id: string }
-    const server = typeof input.server === 'string' ? input.server.trim() : ''
-    const text = typeof input.text === 'string' ? input.text.trim() : ''
-    const why = typeof input.why === 'string' ? oneLine(input.why) : ''
-    const tools = Array.isArray(input.tools) ? input.tools.filter((t): t is string => typeof t === 'string') : []
+  on('tool.call', { tool: TOOL.add_hint }, async ($, e) => {
+    const input = parseInput('add_hint', e)
+    const [server, text, why, tools] = [input.server.trim(), input.text.trim(), oneLine(input.why), input.tools]
     const scope = input.scope === 'project' ? 'project' : 'user'
     if (server === '' || text === '' || why === '') return { result: 'Error: server, text and why are required.' }
     if (text.length > 500) return { result: 'Error: a hint is one short sentence (500 characters at most).' }
@@ -1091,7 +996,7 @@ export const register: Register = (on, options) => {
     // A UUID key makes an unreadable file name: name the file by the tool instead.
     const isUuid = isUuidLike(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
-    const path = `${target.dir}/pending/${pendingFileName(fileName, input.tool_use_id)}`
+    const path = `${target.dir}/pending/${pendingFileName(fileName, e.tool_use_id)}`
     const failures = (await sessionOf($)).tries.failedTries.get(key) ?? 0
     const review: Review = {
       why,
@@ -1115,9 +1020,9 @@ export const register: Register = (on, options) => {
   // most, a removed one costs every session. edit_hint is a removal that
   // puts a new hint in the old one's place; its new text gets the checks of
   // add_hint, so a change cannot carry what a new hint would be warned about.
-  on('tool.call', { tool: REMOVE_HINT }, ($, e) => proposeRemoval($, e, false, projectHints))
+  on('tool.call', { tool: TOOL.remove_hint }, ($, e) => proposeRemoval($, e, false, projectHints))
     .catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
-  on('tool.call', { tool: EDIT_HINT }, ($, e) => proposeRemoval($, e, true, projectHints))
+  on('tool.call', { tool: TOOL.edit_hint }, ($, e) => proposeRemoval($, e, true, projectHints))
     .catch(($, e, next) => (debugLog($, `edit_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: edit_hint failed; see the debug log.' }))
 
   // The add_hint, remove_hint and edit_hint rows show the proposal with Approve and
@@ -1125,7 +1030,7 @@ export const register: Register = (on, options) => {
   // app does not; the band above the prompt covers it). A press is the
   // person's own act; $.store keeps the decision so the row still shows it
   // after a reload.
-  for (const tool of [ADD_HINT, REMOVE_HINT, EDIT_HINT]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
+  for (const tool of [TOOL.add_hint, TOOL.remove_hint, TOOL.edit_hint]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
@@ -1242,10 +1147,9 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on('tool.call', { tool: 'mcp__code-mode__search_tools' }, async ($, e) => {
-    const input = e as unknown as { query?: unknown; limit?: unknown }
-    const query = typeof input.query === 'string' ? input.query : ''
-    const limit = Math.min(100, Math.max(1, Number(input.limit) || SEARCH_LIMIT))
+  on('tool.call', { tool: TOOL.search_tools }, async ($, e) => {
+    const { query, limit: asked } = parseInput('search_tools', e)
+    const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     const all = (await $.tool.list()).filter(t => t.mcp && isCallable(t.name, $.plugin.name))
     const found = rankTools(all, query, limit)
     if (found.length === 0) {
@@ -1270,8 +1174,8 @@ export const register: Register = (on, options) => {
     return { result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}` }
   }).catch(($, e, next) => (debugLog($, `search_tools failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: search_tools failed; see the debug log.' }))
 
-  on('tool.call', { tool: 'mcp__code-mode__run_code' }, async ($, e) => {
-    const code = String((e as unknown as { code?: unknown }).code ?? '')
+  on('tool.call', { tool: TOOL.run_code }, async ($, e) => {
+    const { code } = parseInput('run_code', e)
     if (code.trim() === '') return { result: 'Error: code is empty.' }
     const problems = await checkProgram($, code).catch(err => (debugLog($, `cannot check the program: ${errorText(err)}`), ''))
     if (problems !== '') return { result: problems }

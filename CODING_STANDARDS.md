@@ -5,7 +5,7 @@ enforces; the others rely on discipline.
 
 ## Code
 - `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`,
-  `hooks/hints.ts`, `hooks/functions.ts` and `hooks/paths.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
+  `hooks/hints.ts`, `hooks/functions.ts`, `hooks/paths.ts` and `hooks/tools.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
   `[test: tsconfig.pure.json fails when a pure helper imports claude-code, register.tsx or a Node module]`
@@ -17,6 +17,9 @@ enforces; the others rely on discipline.
 - Make each path into `.claude/code-mode` with a helper from `hooks/paths.ts`: `hintsFolder`, `functionsFolder` or
   `codeModePath`. The guard reads `guardedDirs` there, so the guard and the loaders name the same folders.
   `[test: code.check.mjs]` `[test: hints.test.ts guards each folder of guardedDirs]`
+- Add or change a tool of this plugin in `TOOLS` in `hooks/tools.ts`: the registration, the full ids (`TOOL`) and the
+  typed input (`parseInput`) come from there. In the hooks and the `.ts` tests, write `TOOL.run_code`, never the full
+  id `mcp__code-mode__run_code`. `[test: code.check.mjs]`
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
@@ -68,7 +71,7 @@ enforces; the others rely on discipline.
 - Run `claude plugin validate .` after a change to a manifest.
 
 ## Model-facing text
-The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
+The text the model reads is part of the product: the input schemas in `TOOLS` in `hooks/tools.ts`,
 `RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION`, `EDIT_HINT_DESCRIPTION`, `TRANSFER_TEXT`, the transfer blocks and the hint
 preamble in `hooks/hints.ts`, `SAVE_FUNCTION_DESCRIPTION`, the functions section and the fix note in `hooks/functions.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
 the bundled hints in `hints/`.

@@ -4,7 +4,10 @@
 // Checked here: the hooks read the time only through $.clock, so a test can
 // set it with mock.clock. Only hooks/paths.ts types out a path into
 // .claude/code-mode, so the loaders and the hint-file guard name the same
-// folders.
+// folders. Only hooks/tools.ts types out the full id of a tool of this
+// plugin, in the hooks and in the tests that the engine runs. The .mjs tests
+// run in plain Node, which cannot import hooks/tools.ts, so they are not
+// scanned: smoke.e2e.mjs fails at once when an id changes.
 //
 //   node tests/code.check.mjs
 
@@ -15,43 +18,69 @@ import { fileURLToPath } from 'node:url'
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const HOOKS = fs.readdirSync(path.join(ROOT, 'hooks')).filter(f => /\.tsx?$/.test(f)).sort().map(f => path.join(ROOT, 'hooks', f))
+const filesIn = (dir, pattern) => fs.readdirSync(path.join(ROOT, dir)).filter(f => pattern.test(f)).sort().map(f => `${dir}/${f}`)
+const FILES = [...filesIn('hooks', /\.tsx?$/), ...filesIn('tests', /\.ts$/)]
 
-// [pattern, message, the one file it skips]. Date.now(), Date() and new
-// Date() read the time. new Date(ms) only formats it.
+const inHooks = rel => rel.startsWith('hooks/')
+
+// Each rule and the files it applies to. Date.now(), Date() and new Date()
+// read the time. new Date(ms) only formats it.
 const RULES = [
-  [/\bDate\.now\b|(?<!new\s+)\bDate\s*\(|\bnew Date\s*\(\s*\)/, 'reads the time without $.clock: use await $.clock.now()'],
-  [/code-mode\\?\/|codeModePath\(.*['"`](hints|functions)['"`]/, 'types out a path into .claude/code-mode: use a helper from hooks/paths.ts', 'hooks/paths.ts'],
+  {
+    pattern: /\bDate\.now\b|(?<!new\s+)\bDate\s*\(|\bnew Date\s*\(\s*\)/,
+    message: 'reads the time without $.clock: use await $.clock.now()',
+    applies: inHooks,
+  },
+  {
+    pattern: /code-mode\\?\/|codeModePath\(.*['"`](hints|functions)['"`]/,
+    message: 'types out a path into .claude/code-mode: use a helper from hooks/paths.ts',
+    applies: rel => inHooks(rel) && rel !== 'hooks/paths.ts',
+  },
+  {
+    pattern: /mcp__code-mode__/,
+    message: 'types out the id of a code-mode tool: use TOOL from hooks/tools.ts',
+    applies: rel => rel !== 'hooks/tools.ts',
+  },
 ]
 
 // The problems of one file, as "file:line: message". Comments are skipped.
-const codeProblems = (rel, text) =>
-  text.split('\n').flatMap((raw, i) => {
+const codeProblems = (rel, text) => {
+  const rules = RULES.filter(r => r.applies(rel))
+  return text.split('\n').flatMap((raw, i) => {
     const code = raw.replace(/\/\*.*?\*\//g, '')
     const line = /^\s*\/?\*/.test(code) ? '' : code.replace(/(^|\s)\/\/.*$/, '')
-    return RULES.filter(([pattern, , skips]) => skips !== rel && pattern.test(line)).map(([, message]) => `${rel}:${i + 1}: ${message}`)
+    return rules.filter(r => r.pattern.test(line)).map(r => `${rel}:${i + 1}: ${r.message}`)
   })
+}
+
+// The line numbers in `code` (1-based) that `rel` reports.
+const flagged = (rel, code) => codeProblems(rel, code.join('\n')).map(p => Number(p.split(':')[1]))
 
 const tests = {
-  'the checks catch each rule': () => {
-    const code = ['const a = Date.now()', 'const b = new Date()', 'const c = Date()', 'const d = new  Date(await $.clock.now())', '// Date.now()', ' * Date.now()', '/** Date.now() */', "const e = 'https://x' + Date.now()", '/* now */ const f = Date.now()']
-    const found = codeProblems('x.ts', code.join('\n')).join('\n')
-    assert.ok(found.includes('x.ts:1:'), 'Date.now()')
-    assert.ok(found.includes('x.ts:2:'), 'new Date()')
-    assert.ok(found.includes('x.ts:3:'), 'Date()')
-    assert.ok(found.includes('x.ts:8:'), 'after a URL')
-    assert.ok(found.includes('x.ts:9:'), 'after a block comment')
-    for (const n of [4, 5, 6, 7]) assert.ok(!found.includes(`x.ts:${n}:`), code[n - 1])
+  'the clock rule': () => {
+    const code = ['const a = Date.now()', 'const b = new Date()', 'const c = Date()', "const e = 'https://x' + Date.now()", '/* now */ const f = Date.now()', 'const d = new  Date(await $.clock.now())', '// Date.now()', ' * Date.now()', '/** Date.now() */']
+    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2, 3, 4, 5])
+    assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests may read the time')
   },
   'only hooks/paths.ts types out a code-mode path': () => {
-    const code = ['const d = `${home}/.claude/code-mode/hints`', '/code-mode\\/+(hints)/.test(c)', "codeModePath(await $.session.root(), 'hints')", "const t = 'mcp__code-mode__run_code'", '// ~/.claude/code-mode/metrics', "codeModePath(home, 'metrics')"]
-    const found = codeProblems('hooks/x.ts', code.join('\n')).join('\n')
-    for (const n of [1, 2, 3]) assert.ok(found.includes(`x.ts:${n}:`), code[n - 1])
-    for (const n of [4, 5, 6]) assert.ok(!found.includes(`x.ts:${n}:`), code[n - 1])
-    assert.deepEqual(codeProblems('hooks/paths.ts', code[0]), [])
+    const code = ['const d = `${home}/.claude/code-mode/hints`', '/code-mode\\/+(hints)/.test(c)', "codeModePath(await $.session.root(), 'hints')", '// ~/.claude/code-mode/metrics', "codeModePath(home, 'metrics')"]
+    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2, 3])
+    assert.deepEqual(flagged('hooks/paths.ts', code), [])
+    assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests name the guarded folders')
   },
-  'the hooks follow the rules': () => {
-    const problems = HOOKS.flatMap(f => codeProblems(path.relative(ROOT, f), fs.readFileSync(f, 'utf8')))
+  'only hooks/tools.ts types out a tool id': () => {
+    const code = ["on('tool.call', { tool: 'mcp__code-mode__run_code' })", 'const t = `mcp__code-mode__${name}`', "const s = 'mcp__fake__echo'", '// mcp__code-mode__run_code']
+    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
+    assert.deepEqual(flagged('tests/x.test.ts', code), [1, 2])
+    assert.deepEqual(flagged('hooks/tools.ts', code), [])
+  },
+  // TOOL in hooks/tools.ts types out the plugin name; Claude Code takes it from the manifest.
+  'hooks/tools.ts builds the ids with the name in plugin.json': () => {
+    const { name } = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin/plugin.json'), 'utf8'))
+    assert.ok(fs.readFileSync(path.join(ROOT, 'hooks/tools.ts'), 'utf8').includes(`\`mcp__${name}__\${name}\``), `TOOL must build mcp__${name}__<tool>`)
+  },
+  'the hooks and tests follow the rules': () => {
+    const problems = FILES.flatMap(rel => codeProblems(rel, fs.readFileSync(path.join(ROOT, rel), 'utf8')))
     assert.deepEqual(problems, [], `${problems.join('\n')}\n\nThe rules are in CODING_STANDARDS.md.`)
   },
 }
