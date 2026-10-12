@@ -5,7 +5,7 @@
 // A function file is markdown: front matter with the name and description,
 // then one js code block with an async function expression.
 
-import { transferBlock } from './hints'
+import { oneLine, transferBlock } from './hints'
 
 /** A saved function, or a proposal of one (`why`, only while it is pending). */
 export type SavedFunction = { name: string; description: string; code: string; path: string; why?: string }
@@ -23,8 +23,6 @@ export const functionError = (name: string, description: string, code: string): 
   if (code.includes('```')) return 'code must not contain ```'
   return undefined
 }
-
-const oneLine = (text: string): string => text.replace(/\s*\n\s*/g, ' ').trim()
 
 /** The text of a function file. */
 export const formatFunction = (f: Omit<SavedFunction, 'path'>): string =>
@@ -107,6 +105,59 @@ export const functionsFor = (functions: readonly SavedFunction[], tools: readonl
     wanted.some(w => f.name.toLowerCase().includes(w) || f.description.toLowerCase().includes(w)))
 }
 
+// Above this many line pairs between the equal first and last lines, codeDiff
+// shows all old lines, then all new ones: the table of common lines grows
+// with the product of the two sizes.
+const MAX_DIFF_CELLS = 250_000
+
+/**
+ * The change from one function's code to another, as one unified-diff hunk
+ * with every line, so the card shows the whole new code with its changes.
+ */
+export const codeDiff = (before: string, after: string): string => {
+  const a = before.split('\n')
+  const b = after.split('\n')
+  const head = `@@ -1,${a.length} +1,${b.length} @@`
+  // The equal lines at the start and at the end need no table.
+  let start = 0
+  while (start < a.length && start < b.length && a[start] === b[start]) start++
+  let end = 0
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++
+  const same = (lines: string[]) => lines.map(l => ` ${l}`)
+  const x = a.slice(start, a.length - end)
+  const y = b.slice(start, b.length - end)
+  const middle: string[] = []
+  if (x.length * y.length > MAX_DIFF_CELLS) {
+    middle.push(...x.map(l => `-${l}`), ...y.map(l => `+${l}`))
+  } else {
+    // common[i][j]: the most lines that x[i..] and y[j..] have in common, in order.
+    const common = Array.from({ length: x.length + 1 }, () => new Uint32Array(y.length + 1))
+    for (let i = x.length - 1; i >= 0; i--) {
+      for (let j = y.length - 1; j >= 0; j--) {
+        common[i]![j] = x[i] === y[j] ? common[i + 1]![j + 1]! + 1 : Math.max(common[i + 1]![j]!, common[i]![j + 1]!)
+      }
+    }
+    let i = 0
+    let j = 0
+    while (i < x.length || j < y.length) {
+      if (i < x.length && j < y.length && x[i] === y[j]) {
+        middle.push(` ${x[i++]}`)
+        j++
+      } else if (i < x.length && (j === y.length || common[i + 1]![j]! >= common[i]![j + 1]!)) middle.push(`-${x[i++]}`)
+      else middle.push(`+${y[j++]}`)
+    }
+  }
+  return [head, ...same(a.slice(0, start)), ...middle, ...same(a.slice(a.length - end))].join('\n')
+}
+
+/** The saved functions of a run that an error came from: a frame in their file, or a compile error. */
+export const failedFunctions = (message: string, names: readonly string[]): string[] =>
+  names.filter(n => message.includes(`lib/${n}.js:`) || message.includes(`lib.${n} does not compile`))
+
+/** The note after a run that failed in a saved function. */
+export const functionFixNudge = (names: readonly string[]): string =>
+  names.length === 0 ? '' : `## A saved function failed\n\nThe error comes from ${names.map(n => `lib.${n}`).join(', ')}. If its code is wrong now (a tool or its result changed), read it with return lib.<name>.toString(), fix it, and propose the fix with save_function under the same name.`
+
 /** The functions section of a search_tools result. */
 export const formatFunctions = (functions: readonly SavedFunction[]): string =>
   functions.length === 0 ? '' : [
@@ -118,4 +169,6 @@ export const formatFunctions = (functions: readonly SavedFunction[]): string =>
 
 export const SAVE_FUNCTION_DESCRIPTION = `Propose a program part as a saved function, for a task that comes back. Programs in later sessions then call it as await lib.<name>(args), and search_tools lists it. The function has no effect until the person reads the code and approves it.
 
-Save only code that worked in run_code in this session. It must be an async function expression with one argument and no data of the person in it: pass ids, keys and queries as arguments.`
+Save only code that worked in run_code in this session. It must be an async function expression with one argument and no data of the person in it: pass ids, keys and queries as arguments.
+
+To change a saved function, read its code with return lib.<name>.toString() in run_code, then propose the new code under the same name.`
