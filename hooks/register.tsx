@@ -36,6 +36,7 @@ import {
   reviewFields,
   serverKeyOf,
   serverLabel,
+  staleDecisionKeys,
   targetsOf,
   textFlags,
   toolsByServer,
@@ -449,12 +450,19 @@ async function discardPending($: EngineInterface, path: string): Promise<void> {
   await $.process.run(['rm', '-f', path])
 }
 
+// Keep a decision for its row, within MAX_DECISIONS (see hints.ts).
+async function rememberDecision($: EngineInterface, path: string, decision: Record<string, unknown>): Promise<void> {
+  const key = decisionKey(path)
+  for (const stale of staleDecisionKeys(await $.store.keys(), key)) await $.store.delete(stale)
+  await $.store.set(key, decision)
+}
+
 // One decision, from the add_hint or remove_hint row or from the band: act
 // on the file, remember the decision by path (the row reads it), and redraw both.
 async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded', projectHints: boolean): Promise<void> {
   const isRemoval = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user').remove !== undefined
   const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
-  await $.store.set(decisionKey(path), { action, dest, isRemoval })
+  await rememberDecision($, path, { action, dest, isRemoval })
   $.ui.invalidate('ui.render')
 }
 
@@ -622,7 +630,7 @@ async function decideFunction($: EngineInterface, path: string, action: 'approve
     await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
   }
   await $.process.run(['rm', '-f', path])
-  await $.store.set(decisionKey(path), { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
+  await rememberDecision($, path, { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
   $.ui.invalidate('ui.render')
 }
 
