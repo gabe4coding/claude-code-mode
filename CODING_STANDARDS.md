@@ -8,6 +8,7 @@ enforces; the others rely on discipline.
   `hooks/hints.ts` and `hooks/functions.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
+  `[test: tsconfig.pure.json fails when a pure helper imports claude-code, register.tsx or a Node module]`
 - Context for the model at session start goes in `hooks/session-start.sh`, a command hook in `hooks/hooks.json`.
   Claude Code's built-in security module skips a hooks module's `classic.SessionStart`, so a module handler never
   runs. A set option reaches the script as `CLAUDE_PLUGIN_OPTION_<KEY>`.
@@ -17,6 +18,7 @@ enforces; the others rely on discipline.
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
+  `[test: runner.integration.mjs loads the runner with Node alone, so an import of a package fails]`
 - `LAUNCH`, `NO_NETWORK` and `MKTEMP` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
   exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
   `[test: runner.integration.mjs fails when a copy differs]`
@@ -42,6 +44,7 @@ enforces; the others rely on discipline.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
   - `node tests/code.check.mjs`: the code rules marked `[test: code.check.mjs]`.
+  - `npx -p typescript tsc -p tsconfig.pure.json`: the types of the pure helpers, with no Claude Code types.
 - `node tests/smoke.e2e.mjs`: real `claude -p` with the plugin and the bench's fake server. It needs a login and
   costs API usage, so it is not one of the checks and CI does not run it. Run it after a change to `hooks/` or
   `runtime/`, before a release, and after you raise the pinned Claude Code version. Its checks read the transcript,
@@ -49,7 +52,7 @@ enforces; the others rely on discipline.
 - CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block
   (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works. CI pins the Claude Code version for `claude plugin test .`, and
   a weekly job runs the tests with the newest release.
-- The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
+- The full type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
   Run it in step 3 of the loop. If `.claude-plugin/types/` is missing, start `claude --plugin-dir .` one time in
   this worktree (see `docs/troubleshooting.mdx`, Limits).
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
