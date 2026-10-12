@@ -90,10 +90,12 @@ the bundled hints in `hints/`.
   where the model needs it: argument types and hints in the `search_tools` result, server hints after a failed call,
   the limit in the message of a cut result.
 - `run_code` and `search_tools` load in every session (`isDeferred: false`), so each word costs tokens in every
-  session. `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
+  session. `[test: code-mode.test.ts fails when their registrations grow; raise the limit only for text that changes what the model does]`
+  `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
   `remove_hint` and `edit_hint` are deferred too: the hint preamble names them, so the model learns of them when it
   sees a hint.
   `save_function` is deferred: the `run_code` description names it.
+  `[test: code-mode.test.ts fails when no front description or the hint preamble names a deferred tool]`
 - One way to do a thing. The runner also accepts `tools.<server>.<tool>()`, but descriptions show only `call()`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 
