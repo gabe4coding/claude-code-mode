@@ -28,6 +28,9 @@ enforces; the others rely on discipline.
 - `LAUNCH`, `NO_NETWORK` and `MKTEMP` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
   exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
   `[test: runner.integration.mjs fails when a copy differs]`
+- To add a kind of message that the runner sends, add it to `RunnerMessage` and `RUNNER_FIELDS` in
+  `hooks/protocol.ts`, and give it a case in the message loop of `run_code`. The host drops a message of a kind
+  that is not in `RUNNER_FIELDS`. `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Never weaken a sandbox layer, the guard of hint and function files or the approval of proposals to make a test
   pass. Each one is a
   safety rule (see `docs/hints.mdx` and `docs/how-it-works.mdx`).

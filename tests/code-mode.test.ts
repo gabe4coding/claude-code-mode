@@ -73,6 +73,19 @@ describe('protocol', () => {
     expect(rest).toBe(`${MARK}{"t":"do`)
   })
 
+  test('takeMessages skips a message of an unknown kind or with a field of the wrong type', () => {
+    const lines = [
+      { t: 'call', id: 1, tool: 'mcp__a__b', args: {} },
+      { t: 'exec', id: 2 },
+      { t: 'toString', id: 3 },
+      { t: 'call', id: '4', tool: 'mcp__a__b' },
+      { t: 'done', value: '1', logs: 'x' },
+      null,
+      { t: 'error', message: 'boom', logs: [] },
+    ].map(m => `${MARK}${JSON.stringify(m)}\n`)
+    expect(takeMessages(lines.join('')).messages.map(m => m.t)).toEqual(['call', 'error'])
+  })
+
   test('isCallable allows MCP tools but not this plugin or built-ins', () => {
     expect(isCallable('mcp__linear__list', 'code-mode')).toBe(true)
     expect(isCallable(TOOL.run_code, 'code-mode')).toBe(false)

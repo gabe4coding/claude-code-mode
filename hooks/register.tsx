@@ -1330,16 +1330,34 @@ export const register: Register = (on, options) => {
         const taken = takeMessages(buffer + piece.text)
         buffer = taken.rest
         for (const m of taken.messages) {
-          if (m.t === 'call') {
-            calls++
-            started.set(m.id, m.tool)
-            answers.push(limit(() => answer(m.id, m.tool, m.args)))
-          } else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
-          else if (m.t === 'save') answers.push(answerLocal(m.id, () => save(m.name, m.data)))
-          else if (m.t === 'read') answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
-          else if (m.t === 'resources') answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
-          else if (m.t === 'resource') answers.push(answerLocal(m.id, () => readResource(m.server, m.uri)))
-          else outcome = m
+          switch (m.t) {
+            case 'call':
+              calls++
+              started.set(m.id, m.tool)
+              answers.push(limit(() => answer(m.id, m.tool, m.args)))
+              break
+            case 'recall':
+              answers.push(answerRecall(m.id, m.ref))
+              break
+            case 'save':
+              answers.push(answerLocal(m.id, () => save(m.name, m.data)))
+              break
+            case 'read':
+              answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
+              break
+            case 'resources':
+              answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
+              break
+            case 'resource':
+              answers.push(answerLocal(m.id, () => readResource(m.server, m.uri)))
+              break
+            case 'done':
+            case 'error':
+              outcome = m
+              break
+            default:
+              m satisfies never // a new kind needs a case here
+          }
         }
       }
       ended = true
