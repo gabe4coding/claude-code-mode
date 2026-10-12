@@ -1,0 +1,5 @@
+# Commits that git blame skips. GitHub reads this file. For local blame,
+# run one time: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the existing files with Prettier (0.12.2)
+3f321e3c10fd4125875666172fafa356fd5d0f92
