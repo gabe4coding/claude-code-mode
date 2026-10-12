@@ -18,12 +18,15 @@ const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8'
 const parts = version => version.split('.').map(Number)
 const isHigher = (a, b) => {
   const [x, y] = [parts(a), parts(b)]
-  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
+  for (let i = 0; i < Math.max(x.length, y.length); i++)
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
   return false
 }
 
 const base = git('merge-base', process.argv[2] ?? 'origin/main', 'HEAD')
-const changed = git('diff', '--name-only', base).split('\n').filter(f => PLUGIN_PATHS.some(p => f === p || f.startsWith(p)))
+const changed = git('diff', '--name-only', base)
+  .split('\n')
+  .filter(f => PLUGIN_PATHS.some(p => f === p || f.startsWith(p)))
 const before = JSON.parse(git('show', `${base}:${MANIFEST}`)).version
 const now = JSON.parse(fs.readFileSync(path.join(ROOT, MANIFEST), 'utf8')).version
 

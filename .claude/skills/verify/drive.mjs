@@ -48,7 +48,13 @@ const die = msg => {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const readJsonl = file =>
-  fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
+  fs.existsSync(file)
+    ? fs
+        .readFileSync(file, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
 const projectDirOf = cwd => path.join(HOME, 'projects', fs.realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, '-'))
 const fill = (text, meta) => text.replaceAll('{srv}', meta.server)
 
@@ -58,7 +64,11 @@ function newRun() {
   const dir = fs.mkdtempSync(path.join(base, 'cm-verify-'))
   fs.mkdirSync(path.join(dir, 'cwd'))
   const meta = { dir, server: `verify_${crypto.randomUUID().slice(0, 8)}`, sessions: [] }
-  const server = { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: path.join(dir, 'calls.jsonl') } }
+  const server = {
+    command: 'node',
+    args: [path.join(ROOT, 'bench', 'fake-server.mjs')],
+    env: { BENCH_LOG: path.join(dir, 'calls.jsonl') },
+  }
   fs.writeFileSync(path.join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { [meta.server]: server } }))
   saveMeta(meta)
   return meta
@@ -81,12 +91,24 @@ async function run() {
   meta.sessions.push(session)
   saveMeta(meta)
   const argv = [
-    '-p', fill(args[0], meta),
-    '--restricted', '--strict-mcp-config', '--mcp-config', path.join(meta.dir, 'mcp.json'),
-    '--plugin-dir', ROOT,
-    '--settings', settingsFile(meta, flags.settings),
-    '--output-format', 'json', '--session-id', session, '--max-budget-usd', '0.5',
-    '--model', flags.model ?? 'haiku',
+    '-p',
+    fill(args[0], meta),
+    '--restricted',
+    '--strict-mcp-config',
+    '--mcp-config',
+    path.join(meta.dir, 'mcp.json'),
+    '--plugin-dir',
+    ROOT,
+    '--settings',
+    settingsFile(meta, flags.settings),
+    '--output-format',
+    'json',
+    '--session-id',
+    session,
+    '--max-budget-usd',
+    '0.5',
+    '--model',
+    flags.model ?? 'haiku',
   ]
   if (flags.auto) argv.push('--permission-mode', 'auto')
   if (flags.allow) argv.push('--allowedTools', fill(flags.allow, meta))
@@ -107,26 +129,41 @@ async function run() {
 // What the run did, read from its files: never from the words of the model alone.
 function evidence(meta) {
   const projectDir = projectDirOf(path.join(meta.dir, 'cwd'))
-  const out = fs.existsSync(path.join(meta.dir, 'out.json')) ? fs.readFileSync(path.join(meta.dir, 'out.json'), 'utf8') : ''
+  const out = fs.existsSync(path.join(meta.dir, 'out.json'))
+    ? fs.readFileSync(path.join(meta.dir, 'out.json'), 'utf8')
+    : ''
   const result = out ? JSON.parse(out) : {}
   const rows = meta.sessions.flatMap(s => readJsonl(path.join(projectDir, `${s}.jsonl`)))
   const blocks = rows.flatMap(r => (Array.isArray(r.message?.content) ? r.message.content : []))
   const textOf = c => (typeof c === 'string' ? c : (c ?? []).map(b => b.text ?? '').join('\n'))
   const savedDir = s => path.join(projectDir, s, 'tool-results')
-  console.log(JSON.stringify({
-    dir: meta.dir,
-    server: meta.server,
-    sessions: meta.sessions,
-    exit: meta.exit,
-    isError: result.is_error,
-    costUsd: result.total_cost_usd,
-    reply: result.result,
-    calls: readJsonl(path.join(meta.dir, 'calls.jsonl')).map(({ tool, args, isError }) => ({ tool, args, isError })),
-    toolUses: blocks.filter(b => b.type === 'tool_use').map(b => ({ name: b.name, input: b.input })),
-    toolResults: blocks.filter(b => b.type === 'tool_result').map(b => textOf(b.content).slice(0, 800)),
-    hookContext: rows.filter(r => r.attachment?.type === 'hook_additional_context').flatMap(r => r.attachment.content).filter(t => t.includes('code-mode')),
-    savedResults: meta.sessions.flatMap(s => (fs.existsSync(savedDir(s)) ? fs.readdirSync(savedDir(s)) : [])),
-  }, null, 2))
+  console.log(
+    JSON.stringify(
+      {
+        dir: meta.dir,
+        server: meta.server,
+        sessions: meta.sessions,
+        exit: meta.exit,
+        isError: result.is_error,
+        costUsd: result.total_cost_usd,
+        reply: result.result,
+        calls: readJsonl(path.join(meta.dir, 'calls.jsonl')).map(({ tool, args, isError }) => ({
+          tool,
+          args,
+          isError,
+        })),
+        toolUses: blocks.filter(b => b.type === 'tool_use').map(b => ({ name: b.name, input: b.input })),
+        toolResults: blocks.filter(b => b.type === 'tool_result').map(b => textOf(b.content).slice(0, 800)),
+        hookContext: rows
+          .filter(r => r.attachment?.type === 'hook_additional_context')
+          .flatMap(r => r.attachment.content)
+          .filter(t => t.includes('code-mode')),
+        savedResults: meta.sessions.flatMap(s => (fs.existsSync(savedDir(s)) ? fs.readdirSync(savedDir(s)) : [])),
+      },
+      null,
+      2,
+    ),
+  )
 }
 
 function clean(meta) {
@@ -136,7 +173,8 @@ function clean(meta) {
   console.log(`cleaned ${meta.dir}`)
 }
 
-const tmux = (...a) => execFileSync('tmux', ['-L', SOCKET, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const tmux = (...a) =>
+  execFileSync('tmux', ['-L', SOCKET, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 const capture = () => tmux('capture-pane', '-p', '-t', 'v')
 async function waitFor(text, seconds = 30) {
   for (let i = 0; i < seconds * 2; i++) {
@@ -155,9 +193,39 @@ function click(label) {
   console.log(`clicked ${label} at row ${row + 1}, col ${col}`)
 }
 function startClaude(meta, extra = []) {
-  const argv = ['claude', ...extra, '--plugin-dir', ROOT, '--strict-mcp-config', '--mcp-config', path.join(meta.dir, 'mcp.json'), '--settings', path.join(meta.dir, 'settings.json'), '--model', meta.model]
+  const argv = [
+    'claude',
+    ...extra,
+    '--plugin-dir',
+    ROOT,
+    '--strict-mcp-config',
+    '--mcp-config',
+    path.join(meta.dir, 'mcp.json'),
+    '--settings',
+    path.join(meta.dir, 'settings.json'),
+    '--model',
+    meta.model,
+  ]
   // remain-on-exit keeps the pane, so a capture shows why Claude Code ended.
-  tmux('new-session', '-d', '-s', 'v', '-x', '150', '-y', '45', '-c', path.join(meta.dir, 'cwd'), argv.map(a => `'${a}'`).join(' '), ';', 'set-option', '-t', 'v', 'remain-on-exit', 'on')
+  tmux(
+    'new-session',
+    '-d',
+    '-s',
+    'v',
+    '-x',
+    '150',
+    '-y',
+    '45',
+    '-c',
+    path.join(meta.dir, 'cwd'),
+    argv.map(a => `'${a}'`).join(' '),
+    ';',
+    'set-option',
+    '-t',
+    'v',
+    'remain-on-exit',
+    'on',
+  )
 }
 // The trust dialog of the run's own empty folder. Keys sent too fast pick "No, exit".
 async function acceptTrust() {
@@ -169,7 +237,8 @@ async function acceptTrust() {
 }
 
 // projectHints sends the proposals to the run's own project, not to ~/.claude.
-const BAND_SETTINGS = '{"permissions":{"allow":["mcp__code-mode__add_hint","mcp__code-mode__remove_hint"]},"pluginConfigs":{"code-mode":{"options":{"projectHints":true}}}}'
+const BAND_SETTINGS =
+  '{"permissions":{"allow":["mcp__code-mode__add_hint","mcp__code-mode__remove_hint"]},"pluginConfigs":{"code-mode":{"options":{"projectHints":true}}}}'
 
 async function band() {
   const [sub, a1, a2] = args
@@ -199,9 +268,14 @@ async function band() {
     startClaude(loadMeta(a1), ['--continue'])
   } else if (sub === 'stop') {
     const meta = loadMeta(a1)
-    try { tmux('kill-server') } catch {}
+    try {
+      tmux('kill-server')
+    } catch {}
     meta.sessions = fs.existsSync(projectDirOf(path.join(meta.dir, 'cwd')))
-      ? fs.readdirSync(projectDirOf(path.join(meta.dir, 'cwd'))).filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -6))
+      ? fs
+          .readdirSync(projectDirOf(path.join(meta.dir, 'cwd')))
+          .filter(f => f.endsWith('.jsonl'))
+          .map(f => f.slice(0, -6))
       : []
     clean(meta)
   } else die('usage: drive.mjs band start|send|wait|capture|click|files|restart|stop')

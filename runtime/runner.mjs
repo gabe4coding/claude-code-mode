@@ -215,8 +215,7 @@ const BOOTSTRAP = String.raw`
 })()
 `
 
-const runSync = (src, filename) =>
-  new vm.Script(src, { filename }).runInContext(context, { timeout: timeoutMs })
+const runSync = (src, filename) => new vm.Script(src, { filename }).runInContext(context, { timeout: timeoutMs })
 
 try {
   runSync(BOOTSTRAP, 'code-mode-bootstrap.js')
@@ -236,7 +235,10 @@ try {
     } catch (err) {
       const message = JSON.stringify(`lib.${name} does not compile: ${err?.message ?? err}`)
       const code = JSON.stringify(String(src))
-      runSync(`globalThis.__lib[${key}] = Object.defineProperty(async () => { throw new SyntaxError(${message}) }, 'toString', { value: () => ${code} })`, 'x.js')
+      runSync(
+        `globalThis.__lib[${key}] = Object.defineProperty(async () => { throw new SyntaxError(${message}) }, 'toString', { value: () => ${code} })`,
+        'x.js',
+      )
     }
   }
   runSync('delete globalThis.__lib', 'x.js')
@@ -249,8 +251,16 @@ try {
     for (const id of waiting) {
       const file = path.join(xdir, `r${id}.json`)
       let text
-      try { text = fs.readFileSync(file, 'utf8') } catch { continue }
-      try { JSON.parse(text) } catch { continue } // still being written
+      try {
+        text = fs.readFileSync(file, 'utf8')
+      } catch {
+        continue
+      }
+      try {
+        JSON.parse(text)
+      } catch {
+        continue
+      } // still being written
       waiting.delete(id)
       deliver(id, text)
     }

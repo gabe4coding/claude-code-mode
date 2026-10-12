@@ -15,7 +15,12 @@ import { fileURLToPath } from 'node:url'
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const docsIn = dir => fs.readdirSync(path.join(dir, 'docs')).filter(f => f.endsWith('.mdx')).sort().map(f => path.join(dir, 'docs', f))
+const docsIn = dir =>
+  fs
+    .readdirSync(path.join(dir, 'docs'))
+    .filter(f => f.endsWith('.mdx'))
+    .sort()
+    .map(f => path.join(dir, 'docs', f))
 const USER_DOCS = [path.join(ROOT, 'README.md'), ...docsIn(ROOT)]
 // Not written to the STE rules, but their links into the docs must keep working.
 const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md'].map(f => path.join(ROOT, f))
@@ -46,7 +51,10 @@ const proseLines = text => {
       return
     }
     if (fenced || /^\s*(\||<|#)/.test(raw)) return
-    const line = raw.replace(/`[^`]*`/g, 'X').replace(/\]\([^)]*\)/g, ']').replaceAll('**', '')
+    const line = raw
+      .replace(/`[^`]*`/g, 'X')
+      .replace(/\]\([^)]*\)/g, ']')
+      .replaceAll('**', '')
     lines.push([offset + i + 1, line])
   })
   return lines
@@ -93,7 +101,8 @@ export const docProblems = (file, root = ROOT) => {
     const meta = Object.fromEntries([...(m?.[1] ?? '').matchAll(/^(\w+):\s*(.+)$/gm)].map(x => [x[1], x[2]]))
     if (!meta.title || !meta.description) problems.push(`${rel}:1: the front matter needs a title and a description`)
     const h1 = (m ? text.slice(m[0].length) : text).match(/^# (.+)$/m)
-    if (meta.title && (!h1 || h1[1] !== meta.title)) problems.push(`${rel}: the H1 must be the front matter title "${meta.title}"`)
+    if (meta.title && (!h1 || h1[1] !== meta.title))
+      problems.push(`${rel}: the H1 must be the front matter title "${meta.title}"`)
   }
 
   let fenced = false
@@ -113,7 +122,8 @@ export const docProblems = (file, root = ROOT) => {
   }
   for (const sentence of sentences(text)) {
     const words = sentence.split(/\s+/).filter(w => w !== '').length
-    if (words > MAX_WORDS) problems.push(`${rel}: a sentence of ${words} words (max ${MAX_WORDS}): "${sentence.trim().slice(0, 70)}…"`)
+    if (words > MAX_WORDS)
+      problems.push(`${rel}: a sentence of ${words} words (max ${MAX_WORDS}): "${sentence.trim().slice(0, 70)}…"`)
   }
   return problems
 }
@@ -131,7 +141,8 @@ const linkProblems = file => {
     const [targetPath, anchor] = link.split('#')
     const target = targetPath ? path.resolve(path.dirname(file), targetPath) : file
     if (!fs.existsSync(target)) problems.push(`${rel}: a link to a missing file: ${link}`)
-    else if (anchor && /\.mdx?$/.test(target) && !anchors(target).has(anchor)) problems.push(`${rel}: a link to a missing heading: ${link}`)
+    else if (anchor && /\.mdx?$/.test(target) && !anchors(target).has(anchor))
+      problems.push(`${rel}: a link to a missing heading: ${link}`)
   }
   return problems
 }
@@ -146,9 +157,20 @@ const tests = {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-docs-'))
     const doc = path.join(dir, 'x.mdx')
     const long = `${Array(26).fill('word').join(' ')}.`
-    fs.writeFileSync(doc, `---\ntitle: X\ndescription: Y\n---\n\n# Z\n\nIt's here; you should just look, e.g. now.\n\n${long}\n\n\`code; should\` is fine.\n`)
+    fs.writeFileSync(
+      doc,
+      `---\ntitle: X\ndescription: Y\n---\n\n# Z\n\nIt's here; you should just look, e.g. now.\n\n${long}\n\n\`code; should\` is fine.\n`,
+    )
     const found = docProblems(doc, dir).join('\n')
-    for (const message of ['H1 must be', 'contraction', 'modal verb', 'filler word', 'semicolon', 'Latin', '26 words']) {
+    for (const message of [
+      'H1 must be',
+      'contraction',
+      'modal verb',
+      'filler word',
+      'semicolon',
+      'Latin',
+      '26 words',
+    ]) {
       assert.ok(found.includes(message), message)
     }
     assert.ok(!found.includes(':12:'))
@@ -160,15 +182,20 @@ const tests = {
   'bundled hints name their server and have bullets': () => {
     // The format of docs/hints.mdx. A file that breaks it loads for no server, and nothing else reports it.
     const dir = path.join(ROOT, 'hints')
-    const problems = fs.readdirSync(dir).filter(f => f.endsWith('.md')).flatMap(f => {
-      const text = fs.readFileSync(path.join(dir, f), 'utf8')
-      const m = text.match(FRONT_MATTER)
-      if (!m) return [`hints/${f}: no front matter`]
-      return [
-        ...(/^(servers|identify)\s*:\s*\S/m.test(m[1]) ? [] : [`hints/${f}: no servers or identify in the front matter`]),
-        ...(/^- \S/m.test(text.slice(m[0].length)) ? [] : [`hints/${f}: no bullet`]),
-      ]
-    })
+    const problems = fs
+      .readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .flatMap(f => {
+        const text = fs.readFileSync(path.join(dir, f), 'utf8')
+        const m = text.match(FRONT_MATTER)
+        if (!m) return [`hints/${f}: no front matter`]
+        return [
+          ...(/^(servers|identify)\s*:\s*\S/m.test(m[1])
+            ? []
+            : [`hints/${f}: no servers or identify in the front matter`]),
+          ...(/^- \S/m.test(text.slice(m[0].length)) ? [] : [`hints/${f}: no bullet`]),
+        ]
+      })
     assert.deepEqual(problems, [], problems.join('\n'))
   },
   'links and anchors resolve': () => {

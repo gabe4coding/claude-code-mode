@@ -32,20 +32,36 @@ const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
 
 const echo = m =>
-  m.t === 'resources' ? { ok: true, value: [{ uri: 'file:///a.md', server: m.server ?? 'any' }] }
-  : m.t === 'resource' ? { ok: true, value: [{ uri: m.uri, text: `text of ${m.server} ${m.uri}` }] }
-  : m.t === 'save' ? { ok: true, value: { saved: m.name, data: m.data } }
-  : m.t === 'read' ? { ok: true, value: `text of ${m.path}` }
-  : m.t === 'recall' ? (m.ref === 4 ? { ok: true, value: { recalled: m.ref } } : { ok: false, error: `no result #${m.ref}` })
-  : m.tool.endsWith('fail') ? { ok: false, error: 'boom' } : { ok: true, value: { tool: m.tool, args: m.args } }
+  m.t === 'resources'
+    ? { ok: true, value: [{ uri: 'file:///a.md', server: m.server ?? 'any' }] }
+    : m.t === 'resource'
+      ? { ok: true, value: [{ uri: m.uri, text: `text of ${m.server} ${m.uri}` }] }
+      : m.t === 'save'
+        ? { ok: true, value: { saved: m.name, data: m.data } }
+        : m.t === 'read'
+          ? { ok: true, value: `text of ${m.path}` }
+          : m.t === 'recall'
+            ? m.ref === 4
+              ? { ok: true, value: { recalled: m.ref } }
+              : { ok: false, error: `no result #${m.ref}` }
+            : m.tool.endsWith('fail')
+              ? { ok: false, error: 'boom' }
+              : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
 // An `answer` that returns undefined writes no reply: a call that never finishes.
-const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env, lib } = {}) => {
+const run = (
+  code,
+  { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env, lib } = {},
+) => {
   // The plugin's own command, so CI runs it on Linux and on macOS.
   const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
   return new Promise(resolve => {
-    const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir], { env })
+    const child = spawn(
+      '/bin/sh',
+      ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir],
+      { env },
+    )
     child.stdin.on('error', () => {}) // a probe exits without reading stdin
     child.stdin.end(JSON.stringify({ code, timeoutMs, lib }))
     let buffer = ''
@@ -63,7 +79,8 @@ const run = (code, { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = 
         else {
           calls++
           const reply = answer(m)
-          if (reply !== undefined) setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(reply)), 10)
+          if (reply !== undefined)
+            setTimeout(() => fs.writeFileSync(path.join(xdir, `r${m.id}.json`), JSON.stringify(reply)), 10)
         }
       }
     })
@@ -103,7 +120,10 @@ const probe = async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
     fs.writeFileSync(path.join(dir, 'probe.mjs'), PROBE)
-    const r = await run('', { script: path.join(dir, 'probe.mjs'), env: { ...process.env, PROBE_PORT: String(server.address().port) } })
+    const r = await run('', {
+      script: path.join(dir, 'probe.mjs'),
+      env: { ...process.env, PROBE_PORT: String(server.address().port) },
+    })
     assert.equal(r.outcome?.t, 'done', `the probe did not finish: exit ${r.exit}`)
     return JSON.parse(r.outcome.value)
   } finally {
@@ -136,11 +156,19 @@ const cases = {
     const src = read('hooks/register.tsx')
     const block = src.match(/const LAUNCH = \[\n([\s\S]*?)\n\]\.join\('\\n'\)/)
     assert.ok(block, 'LAUNCH not found in hooks/register.tsx')
-    assert.deepEqual(block[1].split('\n').map(l => l.trim().replace(/^'(.*)',?$/, '$1')), LAUNCH.split('\n'), 'LAUNCH differs')
+    assert.deepEqual(
+      block[1].split('\n').map(l => l.trim().replace(/^'(.*)',?$/, '$1')),
+      LAUNCH.split('\n'),
+      'LAUNCH differs',
+    )
     assert.ok(src.includes(`const NO_NETWORK = '${NO_NETWORK}'`), 'NO_NETWORK differs')
-    assert.ok(src.includes(`const MKTEMP = ${JSON.stringify(MKTEMP).replaceAll('"', "'").replaceAll(',', ', ')}`), 'MKTEMP differs')
+    assert.ok(
+      src.includes(`const MKTEMP = ${JSON.stringify(MKTEMP).replaceAll('"', "'").replaceAll(',', ', ')}`),
+      'MKTEMP differs',
+    )
     assert.equal(MARK, '\u0001cm ')
-    for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts']) assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
+    for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts'])
+      assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
   },
 
   // The host reads only the kinds in RUNNER_FIELDS (hooks/protocol.ts) and drops any other.
@@ -157,7 +185,9 @@ const cases = {
     const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'))
     assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /hooks\/session-start\.sh/)
     const context = env => {
-      const out = execFileSync('/bin/sh', [path.join(ROOT, 'hooks', 'session-start.sh')], { env: { PATH: process.env.PATH, ...env } })
+      const out = execFileSync('/bin/sh', [path.join(ROOT, 'hooks', 'session-start.sh')], {
+        env: { PATH: process.env.PATH, ...env },
+      })
       const parsed = JSON.parse(String(out))
       assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart')
       return parsed.hookSpecificOutput.additionalContext
@@ -219,7 +249,11 @@ const cases = {
       const bad = []
       for (const f of [() => saveFile(1, "x"), () => saveFile("a.json", undefined), () => readFile({})]) bad.push(await Promise.resolve().then(f).catch(e => e.name))
       return [saved, text, bad]`)
-    assert.deepEqual(value(r), [{ saved: 'rows.csv', data: [{ a: 1 }] }, 'text of ids.txt', ['TypeError', 'TypeError', 'TypeError']])
+    assert.deepEqual(value(r), [
+      { saved: 'rows.csv', data: [{ a: 1 }] },
+      'text of ids.txt',
+      ['TypeError', 'TypeError', 'TypeError'],
+    ])
   },
 
   'resources and readResource go through the host': async () => {
@@ -238,14 +272,28 @@ const cases = {
       broken: 'async () => {',
       'bad name': 'async () => 1',
     }
-    const r = await run(`
+    const r = await run(
+      `
       const missing = await Promise.resolve().then(() => lib.nope()).catch(e => e.message)
       const broken = await lib.broken().catch(e => e.name + ": " + e.message)
       try { lib.twice = 1 } catch {}
       const written = typeof lib.twice === "function" ? "refused" : "written"
       const escape = await Promise.resolve().then(() => lib.twice.constructor("return process")()).catch(e => e.name)
-      return [await lib.twice({ n: 2 }), await lib.viaOther({ n: 3 }), missing, broken.startsWith("SyntaxError: lib.broken does not compile"), lib.broken.toString(), lib.twice.toString() === ${JSON.stringify(lib.twice)}, written, escape, typeof globalThis.__lib, Object.keys(lib)]`, { lib })
-    assert.deepEqual(value(r), [4, 7, 'lib.nope is not a saved function: search_tools lists them', true, 'async () => {', true, 'refused', 'EvalError', 'undefined', ['twice', 'viaOther', 'broken']])
+      return [await lib.twice({ n: 2 }), await lib.viaOther({ n: 3 }), missing, broken.startsWith("SyntaxError: lib.broken does not compile"), lib.broken.toString(), lib.twice.toString() === ${JSON.stringify(lib.twice)}, written, escape, typeof globalThis.__lib, Object.keys(lib)]`,
+      { lib },
+    )
+    assert.deepEqual(value(r), [
+      4,
+      7,
+      'lib.nope is not a saved function: search_tools lists them',
+      true,
+      'async () => {',
+      true,
+      'refused',
+      'EvalError',
+      'undefined',
+      ['twice', 'viaOther', 'broken'],
+    ])
   },
 
   'an error in a saved function shows its frame': async () => {
@@ -257,7 +305,10 @@ const cases = {
     assert.equal(value(await run('try { await call("mcp__s__fail") } catch (e) { return e.message }')), 'boom'),
 
   'no host globals': async () =>
-    assert.deepEqual(value(await run('return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __deliver]')), Array(5).fill('undefined')),
+    assert.deepEqual(
+      value(await run('return [typeof require, typeof process, typeof fetch, typeof setTimeout, typeof __deliver]')),
+      Array(5).fill('undefined'),
+    ),
 
   'no escape through constructors': async () => {
     for (const code of [
@@ -271,10 +322,12 @@ const cases = {
       'return resources.constructor("return 1")()',
       'try { await call("mcp__s__fail") } catch (e) { return e.constructor.constructor("return process")().pid }',
       'return (await call("mcp__s__t")).constructor.constructor("return process")().pid',
-    ]) assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)
+    ])
+      assert.match(failure(await run(code)) ?? 'escaped', /EvalError/, code)
   },
 
-  'wall-clock timeout': async () => assert.match(failure(await run('await new Promise(() => {})', { timeoutMs: 500 })), /timeout/),
+  'wall-clock timeout': async () =>
+    assert.match(failure(await run('await new Promise(() => {})', { timeoutMs: 500 })), /timeout/),
 
   'a call with no reply ends at the time limit, and try/catch does not hide it': async () => {
     const answer = m => (m.tool === 'mcp__s__hang' ? undefined : echo(m))
@@ -296,7 +349,12 @@ const cases = {
     const r = await probe()
     assert.deepEqual(
       { write: r.write, read: r.read, spawn: r.spawn, worker: r.worker },
-      { write: 'ERR_ACCESS_DENIED', read: 'ERR_ACCESS_DENIED', spawn: 'ERR_ACCESS_DENIED', worker: 'ERR_ACCESS_DENIED' },
+      {
+        write: 'ERR_ACCESS_DENIED',
+        read: 'ERR_ACCESS_DENIED',
+        spawn: 'ERR_ACCESS_DENIED',
+        worker: 'ERR_ACCESS_DENIED',
+      },
     )
   },
 
@@ -322,7 +380,10 @@ const cases = {
     : {}),
 
   ...(process.env.EXPECT_NETWORK_BLOCK && !HAS_NETWORK_BLOCK
-    ? { 'this machine has a network block': () => assert.fail('EXPECT_NETWORK_BLOCK is set, but neither sandbox-exec nor unshare -rn works here') }
+    ? {
+        'this machine has a network block': () =>
+          assert.fail('EXPECT_NETWORK_BLOCK is set, but neither sandbox-exec nor unshare -rn works here'),
+      }
     : {}),
 }
 
