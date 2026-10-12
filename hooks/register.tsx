@@ -9,6 +9,7 @@ import {
   TRANSFER_TEXT,
   activePathOf,
   appendHint,
+  appendItems,
   asCode,
   canApprove,
   codeNames,
@@ -482,18 +483,19 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
 
 // Approve: merge the proposal's bullets into the active file beside pending/
 // (or move the whole file when there is none yet), then remove the proposal.
+// A bullet the file has already is not added again (see appendItems).
 async function approvePending($: EngineInterface, path: string, projectHints: boolean): Promise<string> {
   const proposal = String(await $.fs.read(path))
-  const removal = parseHint(proposal, path, 'user')
-  if (removal.remove !== undefined) {
-    const dest = await approveRemoval($, removal, projectHints)
+  const hint = parseHint(proposal, path, 'user')
+  if (hint.remove !== undefined) {
+    const dest = await approveRemoval($, hint, projectHints)
     await $.process.run(['rm', '-f', path])
     return dest
   }
   const dest = activePathOf(path)
   const current = await readIfExists($, dest)
-  const bullets = parseHint(proposal, path, 'user').body.split('\n').filter(l => l.trim() !== '').join('\n')
-  await $.fs.write(dest, current === undefined ? withoutReview(proposal) : `${current.replace(/\s*$/, '')}\n${bullets}\n`)
+  const text = current === undefined || current.trim() === '' ? withoutReview(proposal) : appendItems(current, hintItems(hint.body))
+  if (text !== current) await $.fs.write(dest, text)
   await $.process.run(['rm', '-f', path])
   return dest
 }
@@ -731,18 +733,22 @@ async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[
 }
 
 // Approve: the proposal becomes functions/<name>.md, without its reason, and
-// replaces a function with that name. Discard: the proposal goes.
+// replaces a function with that name. An Approve that cannot write it fails
+// and keeps the proposal.
+async function saveFunction($: EngineInterface, path: string): Promise<string> {
+  const [proposal, dir] = await Promise.all([readFunction($, path), functionsDir($)])
+  if (proposal === undefined || dir === undefined || !isUnder(path, `${dir}/pending`)) throw new Error(`not a function proposal in the function folder: ${path}`)
+  const dest = `${dir}/${proposal.name}.md`
+  await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
+  return dest
+}
+
+// Approve saves the function; both then remove the proposal.
 function decideFunction($: EngineInterface, path: string, action: Action): Promise<Decision | undefined> {
   return decideOnce($, path, async () => {
-    const proposal = await readFunction($, path)
-    const dir = await functionsDir($)
-    let dest: string | undefined
-    if (action === 'approved' && proposal !== undefined && dir !== undefined && path.startsWith(`${dir}/pending/`)) {
-      dest = `${dir}/${proposal.name}.md`
-      await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
-    }
+    const dest = action === 'approved' ? await saveFunction($, path) : undefined
     await $.process.run(['rm', '-f', path])
-    return { action: dest === undefined ? 'discarded' : action, dest, isFunction: true }
+    return { action, dest, isFunction: true }
   })
 }
 

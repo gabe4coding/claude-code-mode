@@ -395,7 +395,11 @@ export const serverLabel = (hint: Pick<Hint, 'servers' | 'identify'>): string =>
   return hint.servers[0] ?? 'unknown server'
 }
 
-/** The new text of a hint file after adding one bullet; creates the frontmatter when the file is new. */
+/**
+ * The new text of a hint file after adding one bullet; creates the frontmatter when the file is new.
+ * A hint that the file has already is not added again, so an Approve that runs again after a failure
+ * does not add it two times.
+ */
 export const appendHint = (
   existing: string | undefined,
   servers: readonly string[],
@@ -404,7 +408,7 @@ export const appendHint = (
   text: string,
 ): string => {
   const bullet = `- ${oneLine(text)}`
-  if (existing !== undefined && existing.trim() !== '') return `${existing.replace(/\s*$/, '')}\n${bullet}\n`
+  if (existing !== undefined && existing.trim() !== '') return appendItems(existing, [bullet])
   const list = (xs: readonly string[]) => `[${xs.map(x => JSON.stringify(x)).join(', ')}]`
   const head = [
     `servers: ${list(servers)}`,
@@ -453,6 +457,18 @@ const splitFile = (text: string): { head: string; body: string } => {
   return m ? { head: m[1]!.replace(/\n?$/, '\n'), body: m[2]! } : { head: '', body: text }
 }
 
+/** A hint file's text with `items` at the end, without the ones (by key) that it has already. */
+export const appendItems = (text: string, items: readonly string[]): string => {
+  const have = new Set(hintItems(splitFile(text).body).map(hintKey))
+  const added = items.filter(i => {
+    const key = hintKey(i)
+    if (have.has(key)) return false
+    have.add(key)
+    return true
+  })
+  return added.length === 0 ? text : `${text.trimEnd()}\n${added.join('\n')}\n`
+}
+
 /** A hint file's text without one hint (by key); undefined when no hint is left. */
 export const removeFromFile = (text: string, key: string): string | undefined => {
   const { head, body } = splitFile(text)
@@ -460,12 +476,16 @@ export const removeFromFile = (text: string, key: string): string | undefined =>
   return rest === '' ? undefined : `${head}${rest}\n`
 }
 
-/** A hint file's text with one hint (by key) replaced; undefined when the hint is not in it. */
+/**
+ * A hint file's text with one hint (by key) replaced; undefined when the hint is not in it. When the
+ * file has the new hint already, the old one only goes.
+ */
 export const replaceInFile = (text: string, key: string, replacement: string): string | undefined => {
   const { head, body } = splitFile(text)
   const items = hintItems(body)
   if (!items.some(i => hintKey(i) === key)) return undefined
   const bullet = `- ${oneLine(replacement)}`
+  if (items.some(i => hintKey(i) === hintKey(bullet))) return removeFromFile(text, key)
   return `${head}${items.map(i => (hintKey(i) === key ? bullet : i)).join('\n')}\n`
 }
 
