@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { TRANSFER_TEXT, activePathOf, appendHint, canApprove, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removalTransfer, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { TRANSFER_TEXT, activePathOf, appendHint, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removalTransfer, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -113,6 +113,15 @@ describe('hint files', () => {
     expect(activePathOf(pending)).toBe(`${USER_DIR}/gmail.md`)
     expect(pendingPathOf(`Proposed a hint.\npending: ${pending}`)).toBe(pending)
     expect(pendingPathOf(`Proposed.\n\n\`\`\`text\npending: other.md\n\`\`\`\npending: ${pending}`)).toBe(pending)
+  })
+
+  // $.store refuses a key over 256 characters, so the band's decision on a
+  // proposal in a deep project failed before this key.
+  test('the decision key of a pending file fits the store limit', () => {
+    const short = `${USER_DIR}/pending/gmail--abcdef234567.md`
+    expect(decisionKey(short)).toBe(`decision:${short}`)
+    const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/pending/gmail--abcdef234567.md`
+    expect(decisionKey(deep)).toBe('decision:gmail--abcdef234567.md')
   })
 
   test('a review goes into the frontmatter, parses back, and approval drops it', () => {
@@ -355,7 +364,7 @@ describe('add_hint and its approval row', () => {
     expect(removalTransfer({ server: 'Mail', text: 'Use ```json``` fences.', why: 'W.' }).startsWith('````text\nFind this code-mode hint with search_tools')).toBe(true)
   })
 
-  for (const [name, value] of [['CLAUDE_CODE_ENTRYPOINT', 'local-agent'], ['CLAUDE_CODE_REMOTE', 'true']]) {
+  for (const [name, value] of [['CLAUDE_CODE_ENTRYPOINT', 'local-agent'], ['CLAUDE_CODE_REMOTE', 'true']] as const) {
     test(`add_hint still writes the proposal, and gives a block to paste elsewhere (${name}=${value})`, async ($, on) => {
       const fs = fakeHome(on, {}, { [TOOL]: 'claude.ai Things' })
       fs.env[name] = value

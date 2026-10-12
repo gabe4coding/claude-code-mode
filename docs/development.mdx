@@ -47,7 +47,7 @@ node tests/docs.check.mjs
 If you develop with Claude Code, put the three checks in this loop before each commit:
 
 1. Run `/simplify`. This built-in skill cleans up the diff and applies the fixes.
-2. Run the three checks.
+2. Run the three checks. After a change to `hooks/` or `tests/`, also run the type check.
 3. Run `/verify` after a change to `hooks/`, `runtime/` or `hints/`. This built-in skill drives the change end to
    end. It has nothing to drive in a change to tests or docs only.
 4. If a step changes code, start again at step 1.
@@ -78,6 +78,8 @@ node tests/smoke.e2e.mjs
 - It needs a logged-in Claude Code. It costs API usage, less than $0.01 with Haiku. Use `--model` to change the model.
 - The prompt gives the model an exact program. The checks read the transcript, the calls to the fake server and the
   files of the plugin. They do not read the reply of the model.
+- It sets a low `MAX_MCP_OUTPUT_TOKENS`, so Claude Code saves one result to a file. The plugin finds the note of
+  Claude Code by its wording, and a new release can change it. Then the check of the full result fails.
 - If a check says that the model did not do a step, run the test again. The model can skip a step.
 - A failed run keeps its folder, with the transcript. The test prints the path. To keep the folder of a run that
   passes, add `--keep`.

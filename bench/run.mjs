@@ -25,6 +25,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TASKS } from './data.mjs'
+import { forgetRuns } from './forget.mjs'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const arg = (name, fallback) => {
@@ -42,7 +43,6 @@ const allowDirect = process.argv.includes('--allow-direct')
 const label = arg('--label', '')
 const out = reportOnly ?? arg('--out', path.join(os.tmpdir(), `code-mode-bench-${new Date().toISOString().replace(/[:.]/g, '-')}`))
 const METRICS = path.join(os.homedir(), '.claude', 'code-mode', 'metrics')
-const LEARNED = ['shapes.json', 'args.json'].map(f => path.join(os.homedir(), '.claude', 'code-mode', f))
 // Each run has its own server name, so no run sees the result shapes and the
 // argument names that an earlier run saved. The end of the bench removes them.
 const BENCH_SERVER = /^mcp__bench_[0-9a-f]{8}__/
@@ -183,9 +183,6 @@ if (reportOnly) {
       console.log(`${String(rows.length).padStart(3)}/${jobs.length} ${row.task}-${label || row.arm}-${row.rep} ${row.correct ? 'ok   ' : 'WRONG'} calls=${row.mcpCalls} direct=${row.directCalls} dup=${row.duplicates} runs=${row.runs} recalls=${row.recalls} $${row.costUsd.toFixed(3)}`)
     }
   }))
-  for (const file of LEARNED.filter(f => fs.existsSync(f))) {
-    const learned = JSON.parse(fs.readFileSync(file, 'utf8'))
-    fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([tool]) => !BENCH_SERVER.test(tool))), null, 2)}\n`)
-  }
+  forgetRuns(tool => BENCH_SERVER.test(tool))
   report(rows)
 }

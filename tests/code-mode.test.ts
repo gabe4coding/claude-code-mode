@@ -34,6 +34,9 @@ import {
   toValue,
 } from '../hooks/protocol'
 
+// The test kit has setTimeout. The hook types that tsconfig loads do not: hooks use $.clock.
+declare function setTimeout(fn: (value: unknown) => void, ms: number): unknown
+
 const RUN = 'mcp__code-mode__run_code'
 
 // No `ceiling` here: the engine sets it from the tool and drops a hook's own,
@@ -606,7 +609,7 @@ describe('the check before a run', () => {
     fakeServer(on)
     const host = fakeHost(on)
     on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-    on('fs.read', ($, e) => (host.written[e.path] === undefined ? { deny: 'no file' } : { value: host.written[e.path] }))
+    on('fs.read', ($, e) => (e.path in host.written ? { value: host.written[e.path]! } : { deny: 'no file' }))
     on('tool.list', () => ({ value: TOOLS }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { query: 'x', maxResults: 5 } }, { tool: 'mcp__fake__fail', args: { nope: 1 } }) })
     expect(JSON.parse(host.written['/home/u/.claude/code-mode/args.json']!)).toEqual({ mcp__fake__echo: ['query', 'maxResults'] })
@@ -863,7 +866,7 @@ describe('output projection', () => {
     fakeServer(on)
     const files = fakeHost(on).written
     on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-    on('fs.read', ($, e) => (files[e.path] === undefined ? { deny: 'no file' } : { value: files[e.path] }))
+    on('fs.read', ($, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'no file' }))
     on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }] }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }) })
     expect(JSON.parse(files['/home/u/.claude/code-mode/shapes.json']!)).toEqual({ mcp__fake__echo: '{echoed: {n}}' })
