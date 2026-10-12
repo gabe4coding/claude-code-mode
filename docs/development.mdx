@@ -19,7 +19,7 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `hooks/functions.ts` | Pure helpers for saved functions: the file format, the checks and the search. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
 | `hints/` | The bundled hints. |
-| `tests/` | The tests of the hooks, the sandbox and the docs. |
+| `tests/` | The tests of the hooks, the sandbox and the docs, and a smoke test with real Claude Code. |
 | `bench/` | The output projection bench: a fake MCP server, its data with traps, and the runner. |
 | `scripts/` | `projection-report.mjs`: compares your runs with output projection on and off, from the metrics files. |
 | `docs/` | The user docs. |
@@ -55,6 +55,25 @@ CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` 
   release changed something that the plugin uses. Fix the plugin, then increase the fixed version.
 - For each pull request, it runs `tests/version.check.mjs`. This check fails if the plugin changed and its version
   did not increase.
+
+### Smoke test
+
+The smoke test runs real headless Claude Code with this plugin and the fake MCP server of the bench. The other tests
+replace one side of each connection with a fake. This test runs all the parts together.
+
+Run it after a change to `hooks/` or `runtime/`, before a release, and after you increase the Claude Code version:
+
+```bash
+node tests/smoke.e2e.mjs
+```
+
+- It needs a logged-in Claude Code. It costs API usage, less than $0.01 with Haiku. Use `--model` to change the model.
+- The prompt gives the model an exact program. The checks read the transcript, the calls to the fake server and the
+  files of the plugin. They do not read the reply of the model.
+- If a check says that the model did not do a step, run the test again. The model can skip a step.
+- A failed run keeps its folder, with the transcript. The test prints the path. To keep the folder of a run that
+  passes, add `--keep`.
+- CI does not run the smoke test, because CI has no login.
 
 To develop with the engine types in your editor, load the plugin once with `claude --plugin-dir .`. Claude Code then
 writes `.claude-plugin/types/`, which `tsconfig.json` uses. Git does not track this folder, so make it again in each
