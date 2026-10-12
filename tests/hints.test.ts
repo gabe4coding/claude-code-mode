@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, bundledRef, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, refTarget, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
 import { guardedDirs } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
 import { HOME, TMP, fakeHome, textOf } from './fakes'
@@ -624,6 +624,9 @@ describe('remove_hint', () => {
     const hint = parseHint(FILE, '/plugin/hints/mail.md', 'bundled')
     expect(hintRef(hint)).toBe('bundled:mail.md')
     expect(hintRef({ ...hint, scope: 'user' })).toBe('/plugin/hints/mail.md')
+    expect(refTarget(hintRef(hint))).toEqual({ bundled: true, file: 'mail.md' })
+    expect(refTarget(hintRef({ ...hint, scope: 'user' }))).toEqual({ bundled: false, file: 'mail.md', path: '/plugin/hints/mail.md' })
+    expect(refTarget(bundledRef('mail.md'))).toEqual(refTarget(hintRef(hint)))
     const proposal = parseHint(removalProposal(hint, '- Mail returns JSON.', { why: 'W.', flags: [] }), '/p.md', 'user')
     expect(proposal.remove).toBe('bundled:mail.md')
     expect(proposal.servers).toEqual(['Mail'])

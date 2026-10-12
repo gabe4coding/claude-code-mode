@@ -5,7 +5,8 @@
 // set it with mock.clock. Only hooks/paths.ts types out a path into
 // .claude/code-mode, so the loaders and the hint-file guard name the same
 // folders. Only hooks/tools.ts types out the full id of a tool of this
-// plugin, in the hooks and in the tests that the engine runs. The .mjs tests
+// plugin, in the hooks and in the tests that the engine runs. Only
+// hooks/hints.ts types out the `bundled:` prefix of a hint ref. The .mjs tests
 // run in plain Node, which cannot import hooks/tools.ts, so they are not
 // scanned: smoke.e2e.mjs fails at once when an id changes.
 //
@@ -41,6 +42,11 @@ const RULES = [
     message: 'types out the id of a code-mode tool: use TOOL from hooks/tools.ts',
     applies: rel => rel !== 'hooks/tools.ts',
   },
+  {
+    pattern: /['"`]bundled:/,
+    message: 'reads or makes a hint ref by hand: use hintRef, bundledRef or refTarget from hooks/hints.ts',
+    applies: rel => inHooks(rel) && rel !== 'hooks/hints.ts',
+  },
 ]
 
 // The problems of one file, as "file:line: message". Comments are skipped.
@@ -73,6 +79,12 @@ const tests = {
     assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
     assert.deepEqual(flagged('tests/x.test.ts', code), [1, 2])
     assert.deepEqual(flagged('hooks/tools.ts', code), [])
+  },
+  'only hooks/hints.ts types out a bundled hint ref': () => {
+    const code = ["if (ref.startsWith('bundled:')) {", 'const r = `bundled:${file}`', "if (hint.scope === 'bundled') {", '// bundled:<name>']
+    assert.deepEqual(flagged('hooks/x.ts', code), [1, 2])
+    assert.deepEqual(flagged('hooks/hints.ts', code), [])
+    assert.deepEqual(flagged('tests/x.test.ts', code), [], 'tests check the refs')
   },
   // TOOL in hooks/tools.ts types out the plugin name; Claude Code takes it from the manifest.
   'hooks/tools.ts builds the ids with the name in plugin.json': () => {
