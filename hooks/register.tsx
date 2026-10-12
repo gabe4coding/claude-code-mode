@@ -24,6 +24,7 @@ import {
   hintsFor,
   hintApplies,
   isUnder,
+  isUuidLike,
   kindQuestion,
   newHintFlags,
   normalize,
@@ -309,43 +310,39 @@ async function readIfExists($: EngineInterface, path: string): Promise<string | 
   return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
 }
 
-// The result shape of each MCP tool from its last call that worked, in any
-// session: search_tools shows it, so a first program need not guess it.
-async function shapesPath($: EngineInterface): Promise<string | undefined> {
+// What runs learn about each MCP tool, in a JSON file in ~/.claude/code-mode
+// that every session shares. `parse` drops what the plugin cannot have
+// written; `merge` gives undefined when a run learned nothing new.
+type Learned<T, L extends ReadonlyMap<string, unknown>> = {
+  file: string
+  parse: (text: string) => T
+  merge: (current: T, learned: L) => T | undefined
+}
+
+// The result shape of each MCP tool from its last call that worked:
+// search_tools shows it, so a first program need not guess it.
+const SHAPES: Learned<Shapes, ReadonlyMap<string, string>> = { file: 'shapes.json', parse: parseShapes, merge: mergeShapes }
+
+// The argument names of each MCP tool from its calls that worked:
+// search_tools shows them when no types file declares the tool, and the
+// check before a run finds a name close to one of them.
+const ARG_NAMES: Learned<ArgNames, ReadonlyMap<string, readonly string[]>> = { file: 'args.json', parse: parseArgNames, merge: mergeArgNames }
+
+async function learnedPath($: EngineInterface, file: string): Promise<string | undefined> {
   const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/shapes.json` : undefined
+  return home ? `${home}/.claude/code-mode/${file}` : undefined
 }
 
-async function readShapes($: EngineInterface): Promise<Shapes> {
-  const path = await shapesPath($)
-  return path === undefined ? {} : parseShapes(String(await $.fs.read(path).catch(() => '')))
+async function readLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineInterface, store: Learned<T, L>): Promise<T> {
+  const path = await learnedPath($, store.file)
+  return store.parse(path === undefined ? '' : String(await $.fs.read(path).catch(() => '')))
 }
 
-// Writes only when a shape changed, so most runs write nothing.
-async function saveShapes($: EngineInterface, learned: ReadonlyMap<string, string>): Promise<void> {
-  const path = await shapesPath($)
+// Writes only when something changed, so most runs write nothing.
+async function saveLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineInterface, store: Learned<T, L>, learned: L): Promise<void> {
+  const path = await learnedPath($, store.file)
   if (path === undefined || learned.size === 0) return
-  const next = mergeShapes(await readShapes($), learned)
-  if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
-}
-
-// The argument names of each MCP tool from its calls that worked, in any
-// session: search_tools shows them when no types file declares the tool, and
-// the check before a run finds a name close to one of them.
-async function argNamesPath($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/args.json` : undefined
-}
-
-async function readArgNames($: EngineInterface): Promise<ArgNames> {
-  const path = await argNamesPath($)
-  return path === undefined ? {} : parseArgNames(String(await $.fs.read(path).catch(() => '')))
-}
-
-async function saveArgNames($: EngineInterface, learned: ReadonlyMap<string, readonly string[]>): Promise<void> {
-  const path = await argNamesPath($)
-  if (path === undefined || learned.size === 0) return
-  const next = mergeArgNames(await readArgNames($), learned)
+  const next = store.merge(await readLearned($, store), learned)
   if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
 }
 
@@ -381,7 +378,7 @@ async function readForProgram($: EngineInterface, path: string): Promise<Reply> 
 async function checkProgram($: EngineInterface, code: string): Promise<string> {
   const calls = literalCalls(code).filter(c => isCallable(c.tool, $.plugin.name))
   if (calls.length === 0) return ''
-  const [list, dts, learned] = await Promise.all([$.tool.list(), mcpTypes($), readArgNames($)])
+  const [list, dts, learned] = await Promise.all([$.tool.list(), mcpTypes($), readLearned($, ARG_NAMES)])
   const tools = new Set(list.filter(t => t.mcp && isCallable(t.name, $.plugin.name)).map(t => t.name))
   const specOf = (tool: string) => {
     const declaration = dts === '' ? undefined : extractDeclaration(dts, tool)
@@ -591,6 +588,12 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
 const seenText = (failures: number): string =>
   failures === 0 ? 'No failed call to this server in this session.' : `${failures} run${failures === 1 ? '' : 's'} with a failed call to this server in this session.`
 
+// How many hints the file at path has now, or undefined when it cannot be read.
+async function hintCount($: EngineInterface, path: string, scope: HintScope): Promise<number | undefined> {
+  const text = await $.fs.read(path).catch(() => undefined)
+  return text === undefined ? undefined : hintItems(parseHint(String(text), path, scope).body).length
+}
+
 // The review fields of a proposal's card, with the active file it goes to
 // (or, for a removal, comes out of) and how many hints that file has now.
 async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields> {
@@ -599,18 +602,15 @@ async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields>
     const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
     const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
     // A change of a bundled hint names the user file that Approve writes.
-    const [text, ownFile] = await Promise.all([
-      $.fs.read(path).catch(() => undefined),
+    const [hints, ownFile] = await Promise.all([
+      hintCount($, path, hint.scope),
       bundled && hint.replace !== undefined ? bundledChangeName($, name, hint) : undefined,
     ])
-    const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
     return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled, ownFile })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
-  const current = (await $.fs.exists(dest).catch(() => false)) ? String(await $.fs.read(dest).catch(() => '')) : undefined
-  const hints = current === undefined ? undefined : parseHint(current, dest, hint.scope).body.split('\n').filter(l => /^\s*[-*]\s/.test(l)).length
-  return reviewFields(hint, { file, hints })
+  return reviewFields(hint, { file, hints: await hintCount($, dest, hint.scope) })
 }
 
 type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markdown'>
@@ -1088,7 +1088,7 @@ export const register: Register = (on, options) => {
     const longest = [...offered].sort((a, b) => b.length - a.length)[0]
     const identify = named ?? longest
     // A UUID key makes an unreadable file name: name the file by the tool instead.
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(servers[0]!)
+    const isUuid = isUuidLike(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
     const path = `${target.dir}/pending/${pendingFileName(fileName, input.tool_use_id)}`
     const failures = (await sessionOf($)).tries.failedTries.get(key) ?? 0
@@ -1252,7 +1252,7 @@ export const register: Register = (on, options) => {
       return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
     }
 
-    const [dts, shapes, argNames] = await Promise.all([mcpTypes($), projection ? readShapes($) : ({} as Shapes), readArgNames($)])
+    const [dts, shapes, argNames] = await Promise.all([mcpTypes($), projection ? readLearned($, SHAPES) : ({} as Shapes), readLearned($, ARG_NAMES)])
     const blocks = found.map(t => {
       const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
       const names = argNames[t.name] === undefined ? '' : `names from earlier calls: {${argNames[t.name]!.join(', ')}}; `
@@ -1455,8 +1455,10 @@ export const register: Register = (on, options) => {
       if (isCallable(tool, $.plugin.name)) failed.add(tool)
     }
 
-    await saveShapes($, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`))
-    await saveArgNames($, argNames).catch(err => debugLog($, `cannot write the argument names: ${errorText(err)}`))
+    await Promise.all([
+      saveLearned($, SHAPES, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`)),
+      saveLearned($, ARG_NAMES, argNames).catch(err => debugLog($, `cannot write the argument names: ${errorText(err)}`)),
+    ])
 
     // Hints for the servers whose calls failed: the likely fix is often there.
     // A hint that cannot be read never costs the run its result.
