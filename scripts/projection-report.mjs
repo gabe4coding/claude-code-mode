@@ -62,7 +62,8 @@ const report = arm => {
     'runs with a cut result': pct(rs.filter(r => r.cut).length, rs.length),
     'runs with an empty result': pct(rs.filter(r => r.empty).length, rs.length),
     'median characters out': median(rs.map(r => r.outChars)),
-    'characters in per character out': sum(rs, r => r.outChars) === 0 ? '-' : (sum(rs, r => r.inChars) / sum(rs, r => r.outChars)).toFixed(1),
+    'characters in per character out':
+      sum(rs, r => r.outChars) === 0 ? '-' : (sum(rs, r => r.inChars) / sum(rs, r => r.outChars)).toFixed(1),
   }
 }
 
@@ -70,4 +71,5 @@ const off = report(false)
 const on = report(true)
 const width = Math.max(...Object.keys(off).map(k => k.length))
 console.log(`${''.padEnd(width)}  ${'off'.padStart(10)}  ${'on'.padStart(10)}`)
-for (const key of Object.keys(off)) console.log(`${key.padEnd(width)}  ${String(off[key]).padStart(10)}  ${String(on[key]).padStart(10)}`)
+for (const key of Object.keys(off))
+  console.log(`${key.padEnd(width)}  ${String(off[key]).padStart(10)}  ${String(on[key]).padStart(10)}`)

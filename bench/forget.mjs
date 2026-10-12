@@ -13,7 +13,10 @@ const DIR = path.join(os.homedir(), '.claude', 'code-mode')
 export const forgetRuns = (isRunTool, sessionIds = []) => {
   for (const file of ['shapes.json', 'args.json'].map(f => path.join(DIR, f)).filter(f => fs.existsSync(f))) {
     const learned = JSON.parse(fs.readFileSync(file, 'utf8'))
-    fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([tool]) => !isRunTool(tool))), null, 2)}\n`)
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([tool]) => !isRunTool(tool))), null, 2)}\n`,
+    )
   }
   for (const id of sessionIds) {
     fs.rmSync(path.join(DIR, 'files', id), { recursive: true, force: true })
