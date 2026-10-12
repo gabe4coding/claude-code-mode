@@ -226,7 +226,8 @@ try {
   runSync('delete globalThis.__deliver; delete globalThis.__start', 'x.js')
 
   // The saved functions, each compiled in the context as its own file. One
-  // that does not compile throws its error when the program calls it.
+  // that does not compile throws its error when the program calls it, and its
+  // toString still gives its code, so the model can read the code to fix it.
   for (const [name, src] of Object.entries(input.lib ?? {})) {
     if (!/^[A-Za-z_$][\w$]{0,39}$/.test(name)) continue
     const key = JSON.stringify(name)
@@ -234,7 +235,8 @@ try {
       runSync(`globalThis.__lib[${key}] = (${src}\n)`, `lib/${name}.js`)
     } catch (err) {
       const message = JSON.stringify(`lib.${name} does not compile: ${err?.message ?? err}`)
-      runSync(`globalThis.__lib[${key}] = async () => { throw new SyntaxError(${message}) }`, 'x.js')
+      const code = JSON.stringify(String(src))
+      runSync(`globalThis.__lib[${key}] = Object.defineProperty(async () => { throw new SyntaxError(${message}) }, 'toString', { value: () => ${code} })`, 'x.js')
     }
   }
   runSync('delete globalThis.__lib', 'x.js')

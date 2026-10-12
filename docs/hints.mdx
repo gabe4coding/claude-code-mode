@@ -80,8 +80,13 @@ While proposals wait, a band above the prompt shows "● 2 proposals for code mo
 **Review** button.
 
 1. Click **Review**. The band shows one proposal at a time. Click **Previous** and **Next** to see the others.
-2. Read the hint and the review. Approve only a hint that you can write yourself.
-3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal.
+2. Read the hint and the review. Approve only a hint that you can write yourself. If the proposal is taller than
+   the band, scroll the band to read all of it.
+3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal. These
+   buttons are at the top of the band, above the proposal. If the hint file has the same hint already, Approve does
+   not add it again.
+4. The band shows the result, for example "✓ Hint approved", or the error if the step failed. Click **Show next** to
+   see the next proposal. Thus a double click cannot approve the next proposal too.
 
 The band shows the proposals of all sessions, closed and headless (`claude -p`) sessions too. Where Claude Code
 draws plugin tool results, the `add_hint` row also shows the proposal with the same buttons. The desktop app does
@@ -103,8 +108,8 @@ code-mode hint with add_hint". To approve the hint:
 3. Let the model propose the hint again in that session.
 4. Review the proposal in the band, then click **Approve** or **Discard**.
 
-A removal with `remove_hint` gives a block too. The model finds the hint with `search_tools` and proposes the
-removal. The plugin finds these apps from `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_CODE_REMOTE`, which Claude Code sets.
+A removal with `remove_hint` and a change with `edit_hint` give a block too. The model finds the hint with
+`search_tools` and proposes the removal or the change again. The plugin finds these apps from `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_CODE_REMOTE`, which Claude Code sets.
 
 ### The review on each card
 
@@ -164,6 +169,29 @@ its entry from `removed.json`.
 
 To remove a hint by hand, delete its bullet from the hint file in your editor.
 
+## Change a hint that is wrong
+
+If a hint is wrong or incomplete, the model can propose a corrected hint with `edit_hint`. The model gives the path
+of the hint file, the text of the hint and the new text.
+
+When the model calls `edit_hint`, this occurs:
+
+1. The model does not see the old hint again in the current session.
+2. A change proposal goes to `pending/`. Its card in the band has the title "Change of a usage hint". The card
+   shows the hint now and the new hint.
+3. If you click **Approve**, the plugin puts the new hint in the place of the old hint in its hint file.
+4. If you click **Discard**, the hint file does not change. The model sees the old hint again in the session.
+
+The plugin checks the new hint as it checks a new hint from `add_hint`. Thus the card shows the same warnings. See
+[The review on each card](#the-review-on-each-card).
+
+For a bundled hint, the plugin adds the old hint to `~/.claude/code-mode/hints/removed.json`. It writes the new
+hint to the file of the same name in `~/.claude/code-mode/hints/`, for example `jira.md`. If your file of that
+name is for other servers or tools, the plugin writes the new hint to `jira-changed.md`. If that file is also for
+other servers or tools, it uses `jira-changed-2.md`, and so on. The card names the file.
+
+To change a hint by hand, edit its bullet in your editor.
+
 ## Safety rules
 
 The model follows hints as it follows a `CLAUDE.md` file. Thus a person who can write a hint can control what the
@@ -173,8 +201,8 @@ model does with your MCP tools. These rules make a bad hint less probable:
   `projectHints` only for projects that you trust.
 - **A proposal has no effect until you approve it.** A tool result, for example a Slack message or a Jira issue, can
   contain text that tells the model to save a hint. Such text cannot make a standing instruction.
-- **A removal has no effect on a hint file until you approve it.** Text in a tool result can make the model hide
-  a hint, but only for the current session.
+- **A removal or a change has no effect on a hint file until you approve it.** Text in a tool result can make the
+  model hide a hint, but only for the current session.
 - **Each proposal shows a review.** It shows why the model proposed the hint, what the plugin saw, and warnings.
   See [The review on each card](#the-review-on-each-card).
 - **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
