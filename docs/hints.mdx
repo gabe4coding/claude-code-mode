@@ -90,6 +90,22 @@ not draw them, so there only the band shows proposals.
 To approve a proposal by hand, move its bullets into the hint file of the server. To discard it, delete its file in
 `pending/`.
 
+### In Cowork and in cloud sessions
+
+Cowork and the cloud sessions of the web and mobile apps do not show the band. Thus you cannot approve a proposal
+there. In a cloud session, the files in `~/.claude` are also lost when the session ends.
+
+In these apps, the model still proposes the hint. It also shows a text block that starts with "Propose this
+code-mode hint with add_hint". To approve the hint:
+
+1. Copy the block.
+2. Paste it into Claude Code in a terminal or in the desktop app, not in Cowork.
+3. Let the model propose the hint again in that session.
+4. Review the proposal in the band, then click **Approve** or **Discard**.
+
+A removal with `remove_hint` gives a block too. The model finds the hint with `search_tools` and proposes the
+removal. The plugin finds these apps from `CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_CODE_REMOTE`, which Claude Code sets.
+
 ### The review on each card
 
 Each field of the card has a label above its value. The table gives the source of each field, so you know whom

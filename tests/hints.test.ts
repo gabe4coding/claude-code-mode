@@ -1,17 +1,19 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { activePathOf, appendHint, findItem, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { TRANSFER_TEXT, activePathOf, appendHint, canApprove, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removalTransfer, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
 
 // A fake file system and session beneath the plugin. `files` maps absolute
-// paths to text; `written` records each write the plugin makes.
+// paths to text; `written` records each write the plugin makes. `env` sets
+// a variable; any other variable reads as HOME.
 const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string, string> = {}, onWrite?: (path: string, text: string) => void, withRm = true) => {
   const written: Record<string, string> = {}
   const checked: string[] = []
+  const env: Record<string, string> = {}
   const all = () => ({ ...files, ...written })
-  on('env.get', () => ({ value: HOME }))
+  on('env.get', ($, e) => ({ value: env[e.name] ?? HOME }))
   on('fs.exists', ($, e) => (checked.push(e.path), { value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
   on('fs.list', ($, e) => {
     const prefix = `${e.path}/`
@@ -51,7 +53,7 @@ const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string
     }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { written, removed, checked }
+  return { written, removed, checked, env }
 }
 
 const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
@@ -110,6 +112,7 @@ describe('hint files', () => {
     expect(pending).toBe(`${USER_DIR}/pending/gmail--abcdef234567.md`)
     expect(activePathOf(pending)).toBe(`${USER_DIR}/gmail.md`)
     expect(pendingPathOf(`Proposed a hint.\npending: ${pending}`)).toBe(pending)
+    expect(pendingPathOf(`Proposed.\n\n\`\`\`text\npending: other.md\n\`\`\`\npending: ${pending}`)).toBe(pending)
   })
 
   test('a review goes into the frontmatter, parses back, and approval drops it', () => {
@@ -339,6 +342,40 @@ describe('add_hint and its approval row', () => {
     expect(Object.keys(fs.written)).toEqual([])
   })
 
+  test('canApprove is false in Cowork and in cloud sessions only', () => {
+    for (const entrypoint of ['local-agent', 'local_agent', 'remote_cowork', 'remote_cowork_trigger']) expect(canApprove(entrypoint, undefined)).toBe(false)
+    for (const remote of ['true', '1', 'TRUE']) expect(canApprove('remote_mobile', remote)).toBe(false)
+    for (const entrypoint of ['cli', 'claude-desktop', 'claude-vscode', 'sdk-cli', undefined]) expect(canApprove(entrypoint, undefined)).toBe(true)
+    expect(canApprove('cli', 'false')).toBe(true)
+  })
+
+  test('a transfer block keeps the fields on their own lines, in a fence longer than any backticks in them', () => {
+    expect(hintTransfer({ server: 'claude.ai Things', tools: ['get_thing'], scope: 'user', text: 'Pass ids\nas strings.', why: WHY }))
+      .toBe(`\`\`\`text\nPropose this code-mode hint with add_hint. Keep the text as it is.\nserver: claude.ai Things\ntools: get_thing\nscope: user\ntext: Pass ids as strings.\nwhy: ${WHY}\n\`\`\``)
+    expect(removalTransfer({ server: 'Mail', text: 'Use ```json``` fences.', why: 'W.' }).startsWith('````text\nFind this code-mode hint with search_tools')).toBe(true)
+  })
+
+  for (const [name, value] of [['CLAUDE_CODE_ENTRYPOINT', 'local-agent'], ['CLAUDE_CODE_REMOTE', 'true']]) {
+    test(`add_hint still writes the proposal, and gives a block to paste elsewhere (${name}=${value})`, async ($, on) => {
+      const fs = fakeHome(on, {}, { [TOOL]: 'claude.ai Things' })
+      fs.env[name] = value
+      classifyAs(on, 'argument')
+      const r = textOf(await $.tool.call({ tool: 'mcp__code-mode__add_hint', server: 'bbbb-2222', text: 'Pass ids as strings.', why: WHY }))
+      const path = Object.keys(fs.written)[0]!
+      expect(r).toBe(`Proposed a user hint for claude.ai Things. ${TRANSFER_TEXT}\n\n${hintTransfer({ server: 'claude.ai Things', tools: [], scope: 'user', text: 'Pass ids as strings.', why: WHY })}\npending: ${path}`)
+      expect(fs.written[path]).toBe(REVIEWED)
+      expect(pendingPathOf(r)).toBe(path)
+    })
+  }
+
+  test('add_hint names a server with a UUID name by its tool in the block', async ($, on) => {
+    const uuidTool = 'mcp__0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0__get_thing'
+    fakeHome(on, {}, { [uuidTool]: '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0' }).env.CLAUDE_CODE_ENTRYPOINT = 'remote_cowork'
+    classifyAs(on, 'argument')
+    const r = textOf(await $.tool.call({ tool: 'mcp__code-mode__add_hint', server: '0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0', text: 'x', why: 'y' }))
+    expect(r).toContain('server: the server with the tool get_thing\n')
+  })
+
   test('add_hint refuses project scope while project hints are off', async ($, on) => {
     const fs = fakeHome(on, {})
     const r = await $.tool.call({ tool: 'mcp__code-mode__add_hint', server: 'X', text: 'y', why: 'z', scope: 'project' })
@@ -533,6 +570,16 @@ describe('remove_hint', () => {
     const shown = await search($)
     expect(shown).not.toContain('Mail returns JSON.')
     expect(shown).toContain('Pass ids as strings.')
+  })
+
+  test('in a cloud session, hides the hint and gives a block to paste elsewhere', async ($, on) => {
+    const path = `${USER_DIR}/mail-cloud.md`
+    const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    fs.env.CLAUDE_CODE_REMOTE = 'true'
+    const r = textOf(await remove($, path, 'Mail returns JSON.'))
+    const pending = Object.keys(fs.written)[0]!
+    expect(r).toBe(`Hid the hint in this session and proposed to remove it from ${path}. ${TRANSFER_TEXT}\n\n${removalTransfer({ server: 'Mail', text: 'Mail returns JSON.', why: 'It returns TSV now.' })}\npending: ${pending}`)
+    expect(await search($)).not.toContain('Mail returns JSON.')
   })
 
   test('the end of a session drops the hints it hid', async ($, on) => {

@@ -5,6 +5,8 @@
 // A function file is markdown: front matter with the name and description,
 // then one js code block with an async function expression.
 
+import { transferBlock } from './hints'
+
 /** A saved function, or a proposal of one (`why`, only while it is pending). */
 export type SavedFunction = { name: string; description: string; code: string; path: string; why?: string }
 
@@ -38,6 +40,19 @@ export const formatFunction = (f: Omit<SavedFunction, 'path'>): string =>
     '```',
     '',
   ].join('\n')
+
+/** A proposal as a block for the model of another session (see canApprove). */
+export const functionTransfer = (f: Omit<SavedFunction, 'path'>): string =>
+  transferBlock([
+    'Propose this code-mode function with save_function. Keep the code as it is.',
+    `name: ${f.name}`,
+    `description: ${oneLine(f.description)}`,
+    ...(f.why === undefined ? [] : [`why: ${oneLine(f.why)}`]),
+    'code:',
+    '```js',
+    f.code.trim(),
+    '```',
+  ])
 
 /** A function file as a SavedFunction, or undefined when it is not one. */
 export const parseFunction = (text: string, path: string): SavedFunction | undefined => {
