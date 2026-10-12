@@ -381,7 +381,8 @@ export const resolvePath = (path: string, home: string, cwd: string): string => 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */
 export const isUnder = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir.replace(/\/$/, '')}/`)
 
-const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
+/** True for a server named by UUID, as the desktop app names claude.ai connectors: no name to read. */
+export const isUuidLike = (server: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(server)
 
 /**
  * A readable name for a hint's server, in Markdown: its /mcp name without
@@ -389,7 +390,7 @@ const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
  * connectors), the tool that identifies it.
  */
 export const serverLabel = (hint: Pick<Hint, 'servers' | 'identify'>): string => {
-  const named = hint.servers.find(s => !UUID_LIKE.test(s))
+  const named = hint.servers.find(s => !isUuidLike(s))
   if (named) return named.replace(/^claude\.ai\s+/i, '')
   if (hint.identify[0]) return `server with ${asCode(hint.identify[0])}`
   return hint.servers[0] ?? 'unknown server'
