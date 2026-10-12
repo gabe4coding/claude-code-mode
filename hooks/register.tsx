@@ -26,6 +26,7 @@ import {
   normalize,
   parseHint,
   pendingFileName,
+  decisionKey,
   pendingPathOf,
   parseRemoved,
   removalProposal,
@@ -453,7 +454,7 @@ async function discardPending($: EngineInterface, path: string): Promise<void> {
 async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded', projectHints: boolean): Promise<void> {
   const isRemoval = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user').remove !== undefined
   const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
-  await $.store.set(`decision:${path}`, { action, dest, isRemoval })
+  await $.store.set(decisionKey(path), { action, dest, isRemoval })
   $.ui.invalidate('ui.render')
 }
 
@@ -621,7 +622,7 @@ async function decideFunction($: EngineInterface, path: string, action: 'approve
     await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
   }
   await $.process.run(['rm', '-f', path])
-  await $.store.set(`decision:${path}`, { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
+  await $.store.set(decisionKey(path), { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
   $.ui.invalidate('ui.render')
 }
 
@@ -841,7 +842,7 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string } | undefined
+    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string } | undefined
     if (decision?.action === 'approved') return <Text color="green">✓ Function saved: {decision.dest}</Text>
     if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
     const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
@@ -969,7 +970,7 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(`decision:${path}`)) as { action: string; dest?: string; isRemoval?: boolean } | undefined
+    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string; isRemoval?: boolean } | undefined
 
     if (decision?.action === 'approved') {
       return <Text color="green">{decision.isRemoval ? '✓ Hint removed' : '✓ Hint approved'}: {decision.dest}</Text>
