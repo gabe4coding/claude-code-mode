@@ -17,7 +17,11 @@ import {
   hintItems,
   hintTransfer,
   hintKey,
+  bundledRef,
+  hiddenKey,
   hintRef,
+  refTarget,
+  type HiddenKey,
   hintsFor,
   hintApplies,
   isUnder,
@@ -228,9 +232,9 @@ async function approvalShown($: EngineInterface): Promise<boolean> {
 }
 
 // Per session, because one hooks module serves each session of the host (the
-// desktop app runs many). `hidden`: the hints remove_hint hid (`hintRef` +
-// newline + `hintKey`); they stay hidden in that session whatever the person
-// decides, unless the person discards the removal. `tries`: servers whose
+// desktop app runs many). `hidden`: the hints remove_hint hid (`hiddenKey`);
+// they stay hidden in that session whatever the person decides, unless the
+// person discards the removal. `tries`: servers whose
 // calls failed and have not worked since, and search_tools queries that found
 // nothing; a run that works after them is the moment to propose a hint
 // (hintNudge). `failedTries` counts the runs with a failed try per server,
@@ -244,7 +248,7 @@ async function approvalShown($: EngineInterface): Promise<boolean> {
 // JSON line per run, when on.
 type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number>; usedTools: Set<string>; nudged: Set<string> }
 type Kept = { next: number; results: Map<number, { json: string; at: number }>; chars: number; seen: Map<string, number> }
-type SessionState = { hidden: Set<string>; tries: Tries; kept: Kept; metrics: string[] }
+type SessionState = { hidden: Set<HiddenKey>; tries: Tries; kept: Kept; metrics: string[] }
 const bySession = new Map<string, SessionState>()
 
 async function sessionOf($: EngineInterface): Promise<SessionState> {
@@ -388,10 +392,13 @@ async function loadHints($: EngineInterface, projectHints: boolean): Promise<Hin
   const [hints, { hidden }, dirs] = await Promise.all([loadHintFiles($, projectHints), sessionOf($), hintDirs($, projectHints)])
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   const removedText = userDir === undefined ? '' : await $.fs.read(removedFile(userDir)).catch(() => '')
-  const removed = new Set(parseRemoved(String(removedText)).map(r => `bundled:${r.file}\n${r.hint}`))
+  const removed = new Set(parseRemoved(String(removedText)).map(r => hiddenKey(bundledRef(r.file), r.hint)))
   return hints.flatMap(h => {
     const ref = hintRef(h)
-    const drop = (key: string) => hidden.has(`${ref}\n${key}`) || removed.has(`${ref}\n${key}`)
+    const drop = (key: string) => {
+      const k = hiddenKey(ref, key)
+      return hidden.has(k) || removed.has(k)
+    }
     if (!hintItems(h.body).some(i => drop(hintKey(i)))) return [h]
     const body = withoutItems(h.body, drop)
     return body === '' ? [] : [{ ...h, body }]
@@ -437,13 +444,14 @@ async function bundledChangeName($: EngineInterface, file: string, hint: Hint): 
 // pending file names it, and a pending file is only as safe as the folder it is in.
 async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
   const ref = hint.remove!
+  const target = refTarget(ref)
   const key = hintKey(hint.body)
   const dirs = await hintDirs($, projectHints)
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   // The new hint at the end of a file, with the old hint's frontmatter when the file is new or empty.
   const withNew = (text: string | undefined) => appendHint(text, hint.servers, hint.identify, hint.tools, hint.replace!)
-  if (ref.startsWith('bundled:')) {
-    const file = ref.slice('bundled:'.length)
+  if (target.bundled) {
+    const { file } = target
     if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
     // The new hint first: if a write fails, the old hint still shows.
     const path = removedFile(userDir)
@@ -458,18 +466,19 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
     await $.fs.write(path, `${JSON.stringify(removed, null, 2)}\n`)
     return dest
   }
-  const dir = dirs.find(d => d.scope !== 'bundled' && ref.startsWith(`${d.dir}/`) && !ref.slice(d.dir.length + 1).includes('/'))
-  if (dir === undefined || !ref.endsWith('.md')) throw new Error(`not a hint file: ${ref}`)
-  const text = await readIfExists($, ref)
+  const { path } = target
+  const dir = dirs.find(d => d.scope !== 'bundled' && path.startsWith(`${d.dir}/`) && !path.slice(d.dir.length + 1).includes('/'))
+  if (dir === undefined || !path.endsWith('.md')) throw new Error(`not a hint file: ${path}`)
+  const text = await readIfExists($, path)
   if (hint.replace !== undefined) {
-    await $.fs.write(ref, (text === undefined ? undefined : replaceInFile(text, key, hint.replace)) ?? withNew(text))
-    return ref
+    await $.fs.write(path, (text === undefined ? undefined : replaceInFile(text, key, hint.replace)) ?? withNew(text))
+    return path
   }
-  if (text === undefined) return ref
+  if (text === undefined) return path
   const rest = removeFromFile(text, key)
-  if (rest === undefined) await $.process.run(['rm', '-f', ref])
-  else await $.fs.write(ref, rest)
-  return ref
+  if (rest === undefined) await $.process.run(['rm', '-f', path])
+  else await $.fs.write(path, rest)
+  return path
 }
 
 // Approve: merge the proposal's bullets into the active file beside pending/
@@ -495,7 +504,7 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
 // again in the session that hid it.
 async function discardPending($: EngineInterface, path: string): Promise<void> {
   const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
-  if (hint.remove !== undefined) for (const { hidden } of bySession.values()) hidden.delete(`${hint.remove}\n${hintKey(hint.body)}`)
+  if (hint.remove !== undefined) for (const { hidden } of bySession.values()) hidden.delete(hiddenKey(hint.remove, hintKey(hint.body)))
   await $.process.run(['rm', '-f', path])
 }
 
@@ -587,15 +596,14 @@ async function hintCount($: EngineInterface, path: string, scope: HintScope): Pr
 // (or, for a removal, comes out of) and how many hints that file has now.
 async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields> {
   if (hint.remove !== undefined) {
-    const bundled = hint.remove.startsWith('bundled:')
-    const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
-    const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
+    const target = refTarget(hint.remove)
+    const path = target.bundled ? `${$.plugin.root}/hints/${target.file}` : target.path
     // A change of a bundled hint names the user file that Approve writes.
     const [hints, ownFile] = await Promise.all([
       hintCount($, path, hint.scope),
-      bundled && hint.replace !== undefined ? bundledChangeName($, name, hint) : undefined,
+      target.bundled && hint.replace !== undefined ? bundledChangeName($, target.file, hint) : undefined,
     ])
-    return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled, ownFile })
+    return reviewFields(hint, { file: target.file, hints, kind: proposalKind(hint), isBundled: target.bundled, ownFile })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
@@ -883,7 +891,7 @@ async function proposeRemoval($: EngineInterface, e: { tool_use_id: string }, is
   const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
   const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, e.tool_use_id)}`
   await $.fs.write(pending, removalProposal(hint, found.item, review, replacement))
-  state.hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
+  state.hidden.add(hiddenKey(hintRef(hint), hintKey(found.item)))
   $.ui.invalidate('ui.render')
   const done = `Hid the hint in this session and proposed to ${isEdit ? 'change it in' : 'remove it from'} ${path}.`
   if (!shown) {

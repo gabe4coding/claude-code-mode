@@ -17,6 +17,10 @@ enforces; the others rely on discipline.
 - Make each path into `.claude/code-mode` with a helper from `hooks/paths.ts`: `hintsFolder`, `functionsFolder` or
   `codeModePath`. The guard reads `guardedDirs` there, so the guard and the loaders name the same folders.
   `[test: code.check.mjs]` `[test: hints.test.ts guards each folder of guardedDirs]`
+- Make a hint ref with `hintRef` or `bundledRef`, and read one with `refTarget` (all in `hooks/hints.ts`). Make the
+  key of a hidden or removed hint with `hiddenKey`. The types `HintRef` and `HiddenKey` refuse a plain string: the
+  full type check finds it in `register.tsx`, and `tsconfig.pure.json` in the pure helpers.
+  `[test: code.check.mjs fails when a hook outside hints.ts types out the bundled: prefix]`
 - Add or change a tool of this plugin in `TOOLS` in `hooks/tools.ts`: the registration, the full ids (`TOOL`) and the
   typed input (`parseInput`) come from there. In the hooks and the `.ts` tests, write `TOOL.run_code`, never the full
   id `mcp__code-mode__run_code`. `[test: code.check.mjs]`

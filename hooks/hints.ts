@@ -26,7 +26,7 @@ export type Hint = {
   body: string
   review?: Review
   /** In a removal proposal: the hint file (`hintRef`) that the hint goes out of. */
-  remove?: string
+  remove?: HintRef
   /** In a change proposal: the new text of the hint that `remove` names. */
   replace?: string
 }
@@ -78,7 +78,9 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
     if (removes) {
       key = undefined
       const value = parseJson(removes[2]!)
-      if (typeof value === 'string') hint[removes[1] as 'remove' | 'replace'] = value
+      if (typeof value !== 'string') continue
+      if (removes[1] === 'remove') hint.remove = value as HintRef
+      else hint.replace = value
       continue
     }
     const reviewed = line.match(REVIEW_FIELD)
@@ -492,10 +494,30 @@ export const replaceInFile = (text: string, key: string, replacement: string): s
 
 /**
  * How a removal names a hint file: its path, or `bundled:<name>` for a
- * bundled one, whose folder changes with each plugin version.
+ * bundled one, whose folder changes with each plugin version. Make one with
+ * `hintRef` or `bundledRef`, and read one with `refTarget`.
  */
-export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): string =>
-  hint.scope === 'bundled' ? `bundled:${hint.path.slice(hint.path.lastIndexOf('/') + 1)}` : hint.path
+export type HintRef = string & { readonly __hintRef: never }
+
+/** One hint of one file, in the set of hidden or removed hints: `hiddenKey` makes it. */
+export type HiddenKey = string & { readonly __hiddenKey: never }
+
+const BUNDLED = 'bundled:'
+
+const fileName = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
+
+export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): HintRef =>
+  hint.scope === 'bundled' ? bundledRef(fileName(hint.path)) : (hint.path as HintRef)
+
+/** The ref of a bundled hint file, by its file name. */
+export const bundledRef = (file: string): HintRef => `${BUNDLED}${file}` as HintRef
+
+/** The file a ref names: a bundled file by its name, or another file by its path. `file` is the name in both. */
+export const refTarget = (ref: HintRef): { bundled: true; file: string } | { bundled: false; file: string; path: string } =>
+  ref.startsWith(BUNDLED) ? { bundled: true, file: ref.slice(BUNDLED.length) } : { bundled: false, file: fileName(ref), path: ref }
+
+/** The key of the hint `key` (a `hintKey`) in the file `ref`. */
+export const hiddenKey = (ref: HintRef, key: string): HiddenKey => `${ref}\n${key}` as HiddenKey
 
 /**
  * A removal proposal: the hint's own frontmatter (for the card and for a new
