@@ -46,21 +46,27 @@ const mcp = path.join(out, 'mcp.json')
 fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { [server]: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } } } }))
 
 // list_issues has an allow rule. create_ticket has no rule: claude -p cannot
-// ask, so the call must be refused. A deny rule does not fit here: it removes
-// the tool from the session, and the check before the run then stops the
-// whole program.
+// ask, so the call must be refused. get_deploys has a deny rule, which takes
+// it out of the session: the check before the run must stop the second
+// program and say that a deny rule can hide the tool.
 const PROGRAM = `const issues = await call("${tool('list_issues')}", { project: "OPS" })
 const denied = await call("${tool('create_ticket')}", { title: "smoke" }).then(() => "ran", e => e.message)
 const saved = await saveFile("smoke.json", { total: issues.total })
 const back = JSON.parse(await readFile(saved))
 return { total: issues.total, back: back.total, denied, process: typeof process, require: typeof require }`
-const PROMPT = `Do these two steps, in this order. Do not change the program.
+const DENIED_PROGRAM = `return await call("${tool('get_deploys')}", { date: "2026-10-09" })`
+const PROMPT = `Do these three steps, in this order. Do not change the program.
 1. Call ${RUN} with exactly this code:
 ${PROGRAM}
 2. Call ${SEARCH} with the query "list issues".
+3. Call ${RUN} with exactly this code:
+${DENIED_PROGRAM}
 Then reply with the word DONE.`
 
-const settings = { pluginConfigs: { 'code-mode': { options: { blockDirectMcp: true, metrics: true } } } }
+const settings = {
+  permissions: { deny: [tool('get_deploys')] },
+  pluginConfigs: { 'code-mode': { options: { blockDirectMcp: true, metrics: true } } },
+}
 const argv = [
   '-p', PROMPT,
   '--restricted', '--strict-mcp-config', '--mcp-config', mcp,
@@ -90,9 +96,10 @@ const projectDir = path.join(HOME, 'projects', fs.realpathSync(cwd).replace(/[^a
 const transcript = readLines(path.join(projectDir, `${sessionId}.jsonl`))
 const blocks = transcript.flatMap(row => (Array.isArray(row.message?.content) ? row.message.content : []))
 const uses = blocks.filter(b => b.type === 'tool_use')
-const resultText = name => {
-  const use = uses.find(b => b.name === name)
-  assert.ok(use, `the model did not call ${name}`)
+// The result of the nth call of a tool (0 is the first).
+const resultText = (name, n = 0) => {
+  const use = uses.filter(b => b.name === name)[n]
+  assert.ok(use, `the model did not call ${name}${n === 0 ? '' : ` ${n + 1} times`}`)
   const result = blocks.find(b => b.type === 'tool_result' && b.tool_use_id === use.id)
   assert.ok(result, `${name} has no result`)
   return typeof result.content === 'string' ? result.content : result.content.map(c => c.text ?? '').join('\n')
@@ -147,10 +154,17 @@ const cases = {
     assert.match(text, /returns \(earlier call\): \{total, issues: /, text)
   },
 
+  'the check before a run names a deny rule for a hidden tool': () => {
+    const text = resultText(RUN, 1)
+    assert.ok(text.includes(`no tool "${tool('get_deploys')}" on the connected server "${server}"; if the name is right, a deny rule hides it`), text)
+    assert.deepEqual(calls.filter(c => c.tool === 'get_deploys'), [])
+  },
+
+  // A program that the check before a run stops writes no line.
   'metrics: one line for the run': () => {
     const rows = readLines(metricsFile)
-    assert.equal(rows.length, uses.filter(b => b.name === RUN).length, `rows: ${JSON.stringify(rows)}`)
-    assert.equal(rows[0]?.ok, true, `rows: ${JSON.stringify(rows)}`)
+    assert.equal(rows.length, 1, `rows: ${JSON.stringify(rows)}`)
+    assert.equal(rows[0].ok, true, `rows: ${JSON.stringify(rows)}`)
   },
 }
 

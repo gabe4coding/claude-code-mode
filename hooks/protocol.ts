@@ -601,7 +601,9 @@ export type CallProblem = { line: number; text: string; isGuess: boolean }
 /**
  * The wrong names in the literal calls of a program: a tool that is not
  * connected, and with a declaration, an unknown or a missing argument. With
- * only the names of earlier calls, a name close to one of them.
+ * only the names of earlier calls, a name close to one of them. A deny rule
+ * takes a tool out of the session, and the engine cannot check a tool that is
+ * not there: so for a server that is connected, the result names both causes.
  */
 export const checkCalls = (
   calls: readonly LiteralCall[],
@@ -613,7 +615,12 @@ export const checkCalls = (
   for (const c of calls) {
     if (tools.size > 0 && !tools.has(c.tool) && splitToolName(c.tool) !== undefined) {
       const near = nearest(c.tool, [...tools], 3)
-      problems.push({ line: c.line, text: `no MCP tool "${c.tool}" is connected${near === undefined ? '' : ` (did you mean "${near}"?)`}`, isGuess: false })
+      const guess = near === undefined ? '' : ` (did you mean "${near}"?)`
+      const server = splitToolName(c.tool)!.server
+      const text = [...tools].some(t => splitToolName(t)?.server === server)
+        ? `no tool "${c.tool}" on the connected server "${server}"${guess}; if the name is right, a deny rule hides it`
+        : `no MCP tool "${c.tool}" is connected${guess}`
+      problems.push({ line: c.line, text, isGuess: false })
       continue
     }
     if (c.keys === undefined) continue
