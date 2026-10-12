@@ -3,9 +3,12 @@ import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { MARK } from '../hooks/protocol'
 import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
+  codeDiff,
+  failedFunctions,
   formatFunction,
   formatFunctions,
   functionError,
+  functionFixNudge,
   functionTransfer,
   functionsFor,
   parseFunction,
@@ -98,6 +101,26 @@ describe('function files', () => {
     )
     expect(formatFunctions([])).toBe('')
   })
+
+  test('codeDiff shows every line, with the removed lines before the added ones', () => {
+    expect(codeDiff('a\nb\nc', 'a\nB\nc\nd')).toBe('@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d')
+    expect(codeDiff('a', 'a')).toBe('@@ -1,1 +1,1 @@\n a')
+    // Too large for the table of common lines: all old lines, then all new ones,
+    // between the equal first and last lines.
+    const lines = (p: string) => Array.from({ length: 600 }, (_, i) => `${p}${i}`)
+    const diff = codeDiff(['top', ...lines('a'), 'end'].join('\n'), ['top', ...lines('b'), 'end'].join('\n')).split('\n')
+    expect(diff.slice(0, 3)).toEqual(['@@ -1,602 +1,602 @@', ' top', '-a0'])
+    expect(diff.slice(601, 604)).toEqual(['-a599', '+b0', '+b1'])
+    expect(diff.at(-1)).toBe(' end')
+  })
+
+  test('failedFunctions finds the saved functions an error came from', () => {
+    const stack = 'Error: boom\n    at eval (lib/page.js:3:11)\n    at async code.js:1:14'
+    expect(failedFunctions(stack, ['page', 'searchAll'])).toEqual(['page'])
+    expect(failedFunctions('SyntaxError: lib.searchAll does not compile: x', ['page', 'searchAll'])).toEqual(['searchAll'])
+    expect(functionFixNudge([])).toBe('')
+    expect(functionFixNudge(['page'])).toContain('The error comes from lib.page.')
+  })
 })
 
 describe('save_function', () => {
@@ -147,13 +170,38 @@ describe('save_function', () => {
     expect(JSON.stringify(await ui.drawn())).toContain('Function saved')
   })
 
+  test('an Approve that cannot save the function fails and keeps the proposal', async ($, on) => {
+    mock.store(on)
+    const files: Record<string, string> = { [PENDING]: PROPOSAL }
+    const fs = fakeHome(on, files)
+    const ui = await $.ui.mount(row)
+    // the file changed after the drawing, and is no function now
+    files[PENDING] = 'not a function'
+    await ui.press({ key: 'approve' }).catch(() => undefined)
+    expect(fs.removed).toEqual([])
+    expect(fs.written).toEqual({})
+  })
+
+  test('a proposal with the name of a saved function shows the change from its code', async ($, on) => {
+    mock.store(on)
+    const old = CODE.replace('return r.issues', 'return r')
+    const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${DIR}/searchAll.md`]: formatFunction({ name: 'searchAll', description: 'Old.', code: old }) })
+    const ui = await $.ui.mount(row)
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('**Change of a saved function**')
+    expect(drawn).toContain('Now: Old.')
+    expect(drawn).toContain(JSON.stringify(codeDiff(old, CODE)).slice(1, -1))
+    await ui.press({ key: 'approve' })
+    expect(fs.written[`${DIR}/searchAll.md`]).toBe(formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }))
+  })
+
   test('the band lists function proposals with the hint proposals', async ($, on) => {
     mock.store(on)
     const fs = fakeHome(on, { [PENDING]: PROPOSAL })
     const ui = await $.ui.mount(band)
     expect(JSON.stringify(await ui.drawn())).toContain('1 proposal for code mode: 1 function')
     await ui.press({ key: 'review' })
-    await ui.press({ key: 'discard-f-0' })
+    await ui.press({ key: 'discard-0' })
     expect(fs.removed).toEqual([PENDING])
     expect(fs.written[`${DIR}/searchAll.md`]).toBe(undefined)
   })
@@ -177,6 +225,17 @@ describe('saved functions in programs', () => {
     await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' })
     expect(Object.keys(input.lib ?? {}).sort()).toEqual(['page', 'searchAll'])
     expect(input.lib?.page).toBe(CODE)
+  })
+
+  test('a run that fails in a saved function asks for a fix, once per function in a session', async ($, on) => {
+    fakeHome(on, { ...files })
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'TypeError: x is undefined\n    at eval (lib/page.js:2:9)', logs: [] })}\n` }
+      return { value: { code: 0, signal: null } }
+    })
+    const run = async () => textOf(await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' }))
+    expect(await run()).toContain('## A saved function failed\n\nThe error comes from lib.page.')
+    expect(await run()).not.toContain('A saved function failed')
   })
 
   test('search_tools lists the functions that call a found tool', async ($, on) => {

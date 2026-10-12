@@ -234,8 +234,8 @@ const cases = {
       try { lib.twice = 1 } catch {}
       const written = typeof lib.twice === "function" ? "refused" : "written"
       const escape = await Promise.resolve().then(() => lib.twice.constructor("return process")()).catch(e => e.name)
-      return [await lib.twice({ n: 2 }), await lib.viaOther({ n: 3 }), missing, broken.startsWith("SyntaxError: lib.broken does not compile"), written, escape, typeof globalThis.__lib, Object.keys(lib)]`, { lib })
-    assert.deepEqual(value(r), [4, 7, 'lib.nope is not a saved function: search_tools lists them', true, 'refused', 'EvalError', 'undefined', ['twice', 'viaOther', 'broken']])
+      return [await lib.twice({ n: 2 }), await lib.viaOther({ n: 3 }), missing, broken.startsWith("SyntaxError: lib.broken does not compile"), lib.broken.toString(), lib.twice.toString() === ${JSON.stringify(lib.twice)}, written, escape, typeof globalThis.__lib, Object.keys(lib)]`, { lib })
+    assert.deepEqual(value(r), [4, 7, 'lib.nope is not a saved function: search_tools lists them', true, 'async () => {', true, 'refused', 'EvalError', 'undefined', ['twice', 'viaOther', 'broken']])
   },
 
   'an error in a saved function shows its frame': async () => {

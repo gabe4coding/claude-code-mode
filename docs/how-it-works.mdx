@@ -7,8 +7,8 @@ description: The path of one run_code call, from the program to the result, and 
 
 ## One run
 
-1. When a session starts, the plugin adds its four tools and tells the model to use `run_code` for MCP calls.
-   Hooks for the user interface draw the band and the rows of `add_hint` and `remove_hint`.
+1. When a session starts, the plugin adds its six tools and tells the model to use `run_code` for MCP calls.
+   Hooks for the user interface draw the band and the rows of `add_hint`, `remove_hint` and `edit_hint`.
 2. The model calls `run_code`. Claude Code does the normal permission check of this call.
 3. The plugin checks the tool names and argument names in the program. If a name is wrong, the program does not
    run. See [The check before a run](./usage.mdx#the-check-before-a-run).
