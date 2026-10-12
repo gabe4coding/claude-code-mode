@@ -44,7 +44,14 @@ const cwd = path.join(out, 'cwd')
 fs.mkdirSync(cwd)
 const log = path.join(out, 'calls.jsonl')
 const mcp = path.join(out, 'mcp.json')
-fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { [server]: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } } } }))
+fs.writeFileSync(
+  mcp,
+  JSON.stringify({
+    mcpServers: {
+      [server]: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } },
+    },
+  }),
+)
 
 // The low MAX_MCP_OUTPUT_TOKENS makes Claude Code save the list_issues result
 // (all of ISSUES) to a file and give a note with its path. The plugin
@@ -74,18 +81,35 @@ const settings = {
   pluginConfigs: { 'code-mode': { options: { blockDirectMcp: true, metrics: true } } },
 }
 const argv = [
-  '-p', PROMPT,
-  '--restricted', '--strict-mcp-config', '--mcp-config', mcp,
-  '--plugin-dir', ROOT,
-  '--settings', JSON.stringify(settings),
-  '--allowedTools', `${RUN},${SEARCH},${tool('list_issues')}`,
-  '--output-format', 'json', '--session-id', sessionId, '--max-budget-usd', '0.5',
-  '--model', model,
+  '-p',
+  PROMPT,
+  '--restricted',
+  '--strict-mcp-config',
+  '--mcp-config',
+  mcp,
+  '--plugin-dir',
+  ROOT,
+  '--settings',
+  JSON.stringify(settings),
+  '--allowedTools',
+  `${RUN},${SEARCH},${tool('list_issues')}`,
+  '--output-format',
+  'json',
+  '--session-id',
+  sessionId,
+  '--max-budget-usd',
+  '0.5',
+  '--model',
+  model,
 ]
 
 console.log(`claude -p with ${model}, into ${out}`)
 const exit = await new Promise(resolve => {
-  const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MAX_MCP_OUTPUT_TOKENS } })
+  const child = spawn('claude', argv, {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, MAX_MCP_OUTPUT_TOKENS },
+  })
   const timer = setTimeout(() => child.kill(), TIMEOUT_MS)
   child.stdout.on('data', d => fs.appendFileSync(path.join(out, 'out.json'), d))
   child.stderr.on('data', d => fs.appendFileSync(path.join(out, 'stderr.txt'), d))
@@ -96,7 +120,14 @@ const exit = await new Promise(resolve => {
   })
 })
 
-const readLines = file => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [])
+const readLines = file =>
+  fs.existsSync(file)
+    ? fs
+        .readFileSync(file, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
 const HOME = path.join(os.homedir(), '.claude')
 const projectDir = path.join(HOME, 'projects', fs.realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, '-'))
 const transcript = readLines(path.join(projectDir, `${sessionId}.jsonl`))
@@ -122,17 +153,31 @@ const cases = {
 
   // The option reaches the command hook as CLAUDE_PLUGIN_OPTION_BLOCKDIRECTMCP.
   'the SessionStart hook gives its context, with the option set': () => {
-    const context = transcript.filter(r => r.attachment?.type === 'hook_additional_context').flatMap(r => r.attachment.content)
-    assert.ok(context.some(t => t.includes('Direct MCP tool calls are denied.')), `context: ${JSON.stringify(context)}`)
+    const context = transcript
+      .filter(r => r.attachment?.type === 'hook_additional_context')
+      .flatMap(r => r.attachment.content)
+    assert.ok(
+      context.some(t => t.includes('Direct MCP tool calls are denied.')),
+      `context: ${JSON.stringify(context)}`,
+    )
   },
 
   'the model calls run_code, and no MCP tool directly': () => {
-    assert.ok(uses.some(b => b.name === RUN), `tool calls: ${uses.map(b => b.name).join(', ')}`)
-    assert.deepEqual(uses.filter(b => b.name.startsWith(`mcp__${server}__`)).map(b => b.name), [])
+    assert.ok(
+      uses.some(b => b.name === RUN),
+      `tool calls: ${uses.map(b => b.name).join(', ')}`,
+    )
+    assert.deepEqual(
+      uses.filter(b => b.name.startsWith(`mcp__${server}__`)).map(b => b.name),
+      [],
+    )
   },
 
   'a nested call with an allow rule reaches the MCP server': () => {
-    assert.deepEqual(calls.filter(c => c.tool === 'list_issues').map(c => c.args), [{ project: 'OPS' }])
+    assert.deepEqual(
+      calls.filter(c => c.tool === 'list_issues').map(c => c.args),
+      [{ project: 'OPS' }],
+    )
   },
 
   'the program runs in the sandbox and returns its value': () => {
@@ -146,14 +191,20 @@ const cases = {
     const text = resultText(RUN)
     assert.match(text, /"denied": "/, text)
     assert.doesNotMatch(text, /"denied": "ran"/, text)
-    assert.deepEqual(calls.filter(c => c.tool === 'create_ticket'), [])
+    assert.deepEqual(
+      calls.filter(c => c.tool === 'create_ticket'),
+      [],
+    )
   },
 
   'a result that Claude Code saved to a file reaches the program whole': () => {
     // A large hook output of another plugin is saved there too, as hook-*.
     const saved = path.join(projectDir, sessionId, 'tool-results')
     const results = fs.existsSync(saved) ? fs.readdirSync(saved).filter(f => !f.startsWith('hook-')) : []
-    assert.ok(results.length > 0, `Claude Code saved no MCP result to a file: lower MAX_MCP_OUTPUT_TOKENS (${MAX_MCP_OUTPUT_TOKENS})`)
+    assert.ok(
+      results.length > 0,
+      `Claude Code saved no MCP result to a file: lower MAX_MCP_OUTPUT_TOKENS (${MAX_MCP_OUTPUT_TOKENS})`,
+    )
     assert.match(resultText(RUN), new RegExp(`"count": ${ISSUES.length}\\b`))
   },
 
@@ -170,8 +221,16 @@ const cases = {
 
   'the check before a run names a deny rule for a hidden tool': () => {
     const text = resultText(RUN, 1)
-    assert.ok(text.includes(`no tool "${tool('get_deploys')}" on the connected server "${server}"; if the name is right, a deny rule hides it`), text)
-    assert.deepEqual(calls.filter(c => c.tool === 'get_deploys'), [])
+    assert.ok(
+      text.includes(
+        `no tool "${tool('get_deploys')}" on the connected server "${server}"; if the name is right, a deny rule hides it`,
+      ),
+      text,
+    )
+    assert.deepEqual(
+      calls.filter(c => c.tool === 'get_deploys'),
+      [],
+    )
   },
 
   // A program that the check before a run stops writes no line.

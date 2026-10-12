@@ -11,6 +11,10 @@ export type CodeModeReviewResult = null | { text: string; color?: 'green' | 'red
 
 declare module 'claude-code' {
   interface PluginState {
-    'code-mode': { isReviewOpen: CodeModeReviewOpen; reviewIndex: CodeModeReviewIndex; reviewResult: CodeModeReviewResult }
+    'code-mode': {
+      isReviewOpen: CodeModeReviewOpen
+      reviewIndex: CodeModeReviewIndex
+      reviewResult: CodeModeReviewResult
+    }
   }
 }
