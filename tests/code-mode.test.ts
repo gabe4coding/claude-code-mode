@@ -1,5 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import { TOOL, TOOL_NAMES, parseInput, registration } from '../hooks/tools'
 import {
   MARK,
   argNamesOf,
@@ -37,7 +38,7 @@ import {
 // The test kit has setTimeout. The hook types that tsconfig loads do not: hooks use $.clock.
 declare function setTimeout(fn: (value: unknown) => void, ms: number): unknown
 
-const RUN = 'mcp__code-mode__run_code'
+const RUN = TOOL.run_code
 
 // No `ceiling` here: the engine sets it from the tool and drops a hook's own,
 // so the organization-ceiling path cannot be faked in this kit.
@@ -76,7 +77,7 @@ describe('protocol', () => {
 
   test('isCallable allows MCP tools but not this plugin or built-ins', () => {
     expect(isCallable('mcp__linear__list', 'code-mode')).toBe(true)
-    expect(isCallable('mcp__code-mode__run_code', 'code-mode')).toBe(false)
+    expect(isCallable(TOOL.run_code, 'code-mode')).toBe(false)
     expect(isCallable('Bash', 'code-mode')).toBe(false)
   })
 
@@ -484,7 +485,7 @@ describe('run_code', () => {
     const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'Bash', args: { command: 'id' } }, { tool: RUN }) })
     const text = textOf(r)
     expect(text).toContain('not \\"Bash\\"')
-    expect(text).toContain('not \\"mcp__code-mode__run_code\\"')
+    expect(text).toContain(`not \\"${TOOL.run_code}\\"`)
   })
 
   test('runs at most 8 nested calls at a time', async ($, on) => {
@@ -615,7 +616,7 @@ describe('the check before a run', () => {
     on('tool.list', () => ({ value: TOOLS }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { query: 'x', maxResults: 5 } }, { tool: 'mcp__fake__fail', args: { nope: 1 } }) })
     expect(JSON.parse(host.written['/home/u/.claude/code-mode/args.json']!)).toEqual({ mcp__fake__echo: ['query', 'maxResults'] })
-    const found = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'echo' }))
+    const found = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))
     expect(found).toContain('names from earlier calls: {query, maxResults}')
     const text = textOf(await $.tool.call({ tool: RUN, code: 'return await call("mcp__fake__echo", { query: "y", maxResult: 5 })' }))
     expect(text).toContain('argument "maxResult" is not a name that earlier calls used (did you mean "maxResults"?)')
@@ -635,7 +636,7 @@ describe('search_tools', () => {
     const dts = 'interface McpToolInputs {\n  "mcp__mail__send": { to: string }\n}'
     on('fs.stat', () => ({ value: { kind: 'file', size: dts.length, mtimeMs: 1, isLink: false } }))
     on('fs.read', () => ({ value: dts }))
-    const r = await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send email' })
+    const r = await $.tool.call({ tool: TOOL.search_tools, query: 'send email' })
     const text = textOf(r)
     expect(text).toContain('### mcp__mail__send\nSend an email\nargs: { to: string }')
     expect(text).toContain('mcp__mail__list')
@@ -649,7 +650,7 @@ describe('search_tools', () => {
     let reads = 0
     on('fs.stat', () => ({ value: { kind: 'file', size: 10, mtimeMs, isLink: false } }))
     on('fs.read', () => (reads++, { value: `interface McpToolInputs {\n  "mcp__mail__send": { v: ${mtimeMs} }\n}` }))
-    const search = async () => textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' }))
+    const search = async () => textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'send' }))
     await search()
     expect(await search()).toContain('args: { v: 1 }')
     expect(reads).toBe(1)
@@ -664,7 +665,7 @@ describe('the debug log', () => {
     const logs: string[] = []
     on('ui.log', ($, e) => (logs.push(`${e.to}: ${e.text}`), { value: undefined }))
     on('tool.list', () => ({ deny: 'no tool list' }))
-    const r = await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'send' })
+    const r = await $.tool.call({ tool: TOOL.search_tools, query: 'send' })
     expect(textOf(r)).toContain('search_tools failed; see the debug log')
     expect(logs.some(l => l.startsWith('debug: code-mode: search_tools failed (throw): ') && l.includes('no tool list'))).toBe(true)
   })
@@ -877,7 +878,7 @@ describe('output projection', () => {
     on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }] }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }) })
     expect(JSON.parse(files['/home/u/.claude/code-mode/shapes.json']!)).toEqual({ mcp__fake__echo: '{echoed: {n}}' })
-    const text = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'echo' }))
+    const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))
     expect(text).toContain('returns (earlier call): {echoed: {n}}')
   })
 
@@ -889,7 +890,7 @@ describe('output projection', () => {
     on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }] }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
     expect(files['/home/u/.claude/code-mode/shapes.json']).toBe(undefined)
-    expect(textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'echo' }))).not.toContain('returns')
+    expect(textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))).not.toContain('returns')
   })
 
   test('metrics: one line per run with counts and sizes, no data', { options: { projection: true, metrics: true } }, async ($, on) => {
@@ -1021,7 +1022,7 @@ describe('hint nudge', () => {
     fakeServer(on)
     fakeHost(on)
     on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo the args', mcp: true }] }))
-    const miss = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'ticket' }))
+    const miss = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'ticket' }))
     expect(miss).toContain('No MCP tool matches')
     const after = await run($, { tool: 'mcp__fake__echo' })
     expect(after).toContain('search_tools found nothing for "ticket".')
@@ -1080,5 +1081,21 @@ describe('function nudge', () => {
     fakeHost(on)
     on('tool.call', { tool: 'mcp__fake__other' }, () => ({ result: '"other"' }))
     expect(await run($, [...calls(4), ...calls(1, 'mcp__fake__other')])).toContain('This program made 5 calls to echo, other.')
+  })
+})
+
+describe('the tool table', () => {
+  test('parseInput gives each value the type of its schema', () => {
+    expect(parseInput('add_hint', { server: ' s ', text: 1, tools: ['a', 2, 'b'], scope: 'project' })).toEqual({ server: ' s ', text: '', why: '', tools: ['a', 'b'], scope: 'project' })
+    expect(parseInput('search_tools', { query: 'q', limit: '5' }).limit).toBe(5)
+    for (const limit of [undefined, '', 'many', null]) expect(parseInput('search_tools', { query: 'q', limit }).limit).toBeUndefined()
+  })
+
+  test('each schema requires only its own properties, and only run_code and search_tools are in front', () => {
+    for (const name of TOOL_NAMES) {
+      const { inputSchema } = registration(name)
+      expect(inputSchema.required.every(k => k in inputSchema.properties)).toBe(true)
+    }
+    expect(TOOL_NAMES.filter(n => !registration(n).isDeferred)).toEqual(['run_code', 'search_tools'])
   })
 })

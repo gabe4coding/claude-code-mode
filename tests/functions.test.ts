@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import { TOOL } from '../hooks/tools'
 import { MARK } from '../hooks/protocol'
 import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
@@ -20,7 +21,7 @@ import {
 const HOME = '/home/test'
 const DIR = `${HOME}/.claude/code-mode/functions`
 const CODE = 'async ({ cloudId, jql }) => {\n  const r = await call("mcp__jira__search", { cloudId, jql })\n  return r.issues\n}'
-const SAVE = 'mcp__code-mode__save_function'
+const SAVE = TOOL.save_function
 
 const fn = (name: string, code: string, description = `Does ${name}.`): SavedFunction => ({ name, description, code, path: `${DIR}/${name}.md` })
 
@@ -222,7 +223,7 @@ describe('saved functions in programs', () => {
       yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: '1', logs: [] })}\n` }
       return { value: { code: 0, signal: null } }
     })
-    await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' })
+    await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' })
     expect(Object.keys(input.lib ?? {}).sort()).toEqual(['page', 'searchAll'])
     expect(input.lib?.page).toBe(CODE)
   })
@@ -233,14 +234,14 @@ describe('saved functions in programs', () => {
       yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'TypeError: x is undefined\n    at eval (lib/page.js:2:9)', logs: [] })}\n` }
       return { value: { code: 0, signal: null } }
     })
-    const run = async () => textOf(await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' }))
+    const run = async () => textOf(await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' }))
     expect(await run()).toContain('## A saved function failed\n\nThe error comes from lib.page.')
     expect(await run()).not.toContain('A saved function failed')
   })
 
   test('search_tools lists the functions that call a found tool', async ($, on) => {
     fakeHome(on, { ...files })
-    const text = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'search' }))
+    const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'search' }))
     expect(text).toContain('## Saved functions')
     expect(text).toContain('- lib.page({ cloudId, jql }): One page.')
     expect(text).toContain('- lib.searchAll(a): Every issue.')

@@ -18,6 +18,7 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `hooks/hints.ts` | Pure helpers for hint files: read, match, format and write. |
 | `hooks/functions.ts` | Pure helpers for saved functions: the file format, the checks and the search. |
 | `hooks/paths.ts` | Pure helpers for the folders in `.claude/code-mode`, and the list of folders that the guard protects. |
+| `hooks/tools.ts` | The table of the plugin's tools: the description, the input schema and the place of each one, the full ids, and the typed input of a call. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
 | `hints/` | The bundled hints. |
 | `tests/` | The tests of the hooks, the sandbox and the docs, and a smoke test with real Claude Code. |
