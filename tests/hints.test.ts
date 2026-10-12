@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { TRANSFER_TEXT, activePathOf, appendHint, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removalTransfer, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, removalProposal, removalTransfer, removeFromFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -122,6 +122,13 @@ describe('hint files', () => {
     expect(decisionKey(short)).toBe(`decision:${short}`)
     const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/pending/gmail--abcdef234567.md`
     expect(decisionKey(deep)).toBe('decision:gmail--abcdef234567.md')
+  })
+
+  test('the store keeps the newest decisions, and a decision made again becomes the newest', () => {
+    const keys = ['decision:a', 'other', 'decision:b', 'decision:c']
+    expect(staleDecisionKeys(keys, 'decision:d', 3)).toEqual(['decision:a'])
+    expect(staleDecisionKeys(keys, 'decision:b', 3)).toEqual(['decision:b'])
+    expect(staleDecisionKeys(keys, 'decision:d', 5)).toEqual([])
   })
 
   test('a review goes into the frontmatter, parses back, and approval drops it', () => {
@@ -284,9 +291,9 @@ describe('add_hint and its approval row', () => {
   const PROPOSAL = '---\nservers: ["claude.ai Things"]\nidentify: ["get_thing"]\n---\n- Pass ids as strings.\n'
   const OUTPUT = `Proposed a user hint for claude.ai Things.\npending: ${PENDING}`
   const SURFACES = ['terminal', 'desktop'] as const
-  const row = (surface: (typeof SURFACES)[number]) => ({
-    plugin: 'code-mode', surface, component: 'ToolResult' as const, requestId: ID,
-    props: { tool_use_id: ID, tool: 'mcp__code-mode__add_hint', output: OUTPUT, isErrored: false },
+  const row = (surface: (typeof SURFACES)[number], output = OUTPUT, id = ID) => ({
+    plugin: 'code-mode', surface, component: 'ToolResult' as const, requestId: id,
+    props: { tool_use_id: id, tool: 'mcp__code-mode__add_hint', output, isErrored: false },
   })
 
   const WHY = 'Numbers failed with error 400, strings worked.'
@@ -459,6 +466,20 @@ describe('add_hint and its approval row', () => {
       expect(JSON.stringify(await ui.drawn())).toContain('Hint discarded')
     })
   }
+
+  // Unbounded, the store passed 4 MiB and its set lost the decision.
+  test(`a decision drops the oldest past ${MAX_DECISIONS}, and the newest rows still show theirs`, async ($, on) => {
+    const old = Array.from({ length: MAX_DECISIONS }, (_, i) => `${USER_DIR}/pending/things--old${i}.md`)
+    mock.store(on, Object.fromEntries(old.map(p => [decisionKey(p), { action: 'approved', dest: `${USER_DIR}/things.md` }])))
+    fakeHome(on, { [PENDING]: PROPOSAL })
+    const ui = await $.ui.mount(row('terminal'))
+    await ui.press({ key: 'approve' })
+    await ui.unmount()
+    const drawn = async (path: string) => JSON.stringify(await (await $.ui.mount(row('terminal', `pending: ${path}`, `toolu_${path.slice(-12)}`))).drawn())
+    expect(await drawn(old[0]!)).toContain('Hint proposal is no longer pending.')
+    expect(await drawn(old[1]!)).toContain('Hint approved')
+    expect(await drawn(PENDING)).toContain('Hint approved')
+  })
 
   test('Approve appends to an active file that exists', async ($, on) => {
     mock.store(on)

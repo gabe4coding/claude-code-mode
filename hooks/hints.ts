@@ -302,11 +302,27 @@ export const pendingPathOf = (output: string): string | undefined =>
 // project has a longer path. Its file name is unique on its own: it ends in
 // the id of the tool call that wrote it.
 const MAX_STORE_KEY = 256
+const DECISION = 'decision:'
 
 /** The $.store key that keeps the decision on a pending file. */
 export const decisionKey = (path: string): string => {
-  const key = `decision:${path}`
-  return key.length <= MAX_STORE_KEY ? key : `decision:${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
+  const key = `${DECISION}${path}`
+  return key.length <= MAX_STORE_KEY ? key : `${DECISION}${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
+}
+
+// The store keeps one decision per proposal, so a decided row still shows it
+// after a reload. It keeps the newest MAX_DECISIONS only: $.store.set rejects
+// once the store holds 4 MiB of JSON, and a decision is at most about 500 bytes.
+export const MAX_DECISIONS = 500
+
+/**
+ * The keys to delete before `key` is set: `key` itself, so the set makes it
+ * the newest in insertion order, and the oldest decisions past `max - 1`.
+ */
+export const staleDecisionKeys = (keys: readonly string[], key: string, max = MAX_DECISIONS): string[] => {
+  const others = keys.filter(k => k.startsWith(DECISION) && k !== key)
+  const oldest = others.slice(0, Math.max(0, others.length - max + 1))
+  return keys.includes(key) ? [key, ...oldest] : oldest
 }
 
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
