@@ -45,7 +45,7 @@ enforces; the others rely on discipline.
 
 ## Model-facing text
 The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
-`RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION` and the hint
+`RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION`, `TRANSFER_TEXT`, the transfer blocks and the hint
 preamble in `hooks/hints.ts`, `SAVE_FUNCTION_DESCRIPTION` and the functions section in `hooks/functions.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
 the bundled hints in `hints/`.
 - Every sentence must change what the model does. Remove facts the model cannot act on (how approval works for the
