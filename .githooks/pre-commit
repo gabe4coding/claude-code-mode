@@ -1,0 +1,37 @@
+#!/bin/sh
+# Formats the staged files with Prettier, then stages the result. Turn it on
+# one time per clone:
+#   git config core.hooksPath .githooks
+set -euf
+
+# Only the kinds of files that Prettier formats, without Markdown and MDX
+# (.prettierignore), so a commit of docs starts no Prettier.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- \
+  '*.js' '*.cjs' '*.mjs' '*.jsx' '*.ts' '*.cts' '*.mts' '*.tsx' \
+  '*.json' '*.jsonc' '*.json5' '*.yml' '*.yaml' '*.css' '*.scss' '*.less' '*.html' '*.vue' '*.graphql')
+[ -n "$files" ] || exit 0
+IFS='
+'
+set -- $files
+
+# A file with staged and unstaged changes: formatting it and adding it would
+# stage the unstaged part too.
+partial=$(git diff --name-only -- "$@")
+if [ -n "$partial" ]; then
+  echo "pre-commit: these files also have unstaged changes. Stage or stash them, then commit again:" >&2
+  echo "$partial" >&2
+  exit 1
+fi
+
+# `git commit <path>` gives the hook a temporary index, and the real index
+# would keep the files that are not formatted. Check them only.
+case ${GIT_INDEX_FILE:-} in
+*/next-index-*)
+  sh scripts/format.sh --check --log-level warn -- "$@" && exit 0
+  echo "pre-commit: these files are not formatted. Run git add on them, then git commit with no paths." >&2
+  exit 1
+  ;;
+esac
+
+sh scripts/format.sh --write --log-level warn -- "$@"
+git add -- "$@"

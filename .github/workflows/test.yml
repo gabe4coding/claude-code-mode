@@ -10,7 +10,7 @@ on:
   pull_request:
   # Weekly, for hooks-latest. A run by hand also runs it.
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -24,10 +24,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node: ["22.13", "24"]
+        node: ['22.13', '24']
         include:
           - os: macos-latest
-            node: "24"
+            node: '24'
     name: ${{ matrix.os }} node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -42,7 +42,7 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: node tests/runner.integration.mjs
         env:
-          EXPECT_NETWORK_BLOCK: "1"
+          EXPECT_NETWORK_BLOCK: '1'
       - run: node tests/docs.check.mjs
       - run: node tests/code.check.mjs
 
@@ -56,8 +56,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: '24'
       - run: npx -y -p typescript@7.0.2 tsc -p tsconfig.pure.json
+
+  format:
+    # A commit without the pre-commit hook of .githooks/ fails here. The
+    # image has Node, so the job needs no setup-node.
+    name: format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sh scripts/format.sh --check .
 
   hooks:
     # The hooks against the fake host of claude-code/testing. It needs no login.
@@ -69,7 +79,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: '24'
       - run: npm install --global @anthropic-ai/claude-code@2.1.296
       - run: claude plugin test .
 
@@ -86,7 +96,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "24"
+          node-version: '24'
       - run: npm install --global @anthropic-ai/claude-code@latest
       - run: claude --version
       - run: claude plugin test .

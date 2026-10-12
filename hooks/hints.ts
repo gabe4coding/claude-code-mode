@@ -53,7 +53,11 @@ const REMOVE_FIELD = /^(remove|replace)\s*:\s*(.*)$/
 export type HintTarget = { serverKey: string; serverName?: string; serverTools?: readonly string[]; toolName: string }
 
 /** Lowercase, and every run of other characters as one `_`: "claude.ai Datadog" and "claude_ai_Datadog" agree. */
-export const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+export const normalize = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '')
 
 // A JSON list or string as JSON (what add_hint writes, so a value can hold a
 // comma), else a YAML-style list split at commas.
@@ -94,7 +98,8 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
       key = undefined
       const review: Review = (hint.review ??= { flags: [] })
       const value = parseJson(reviewed[2]!)
-      if (reviewed[1] === 'flags') review.flags = Array.isArray(value) ? value.filter((f): f is string => typeof f === 'string') : []
+      if (reviewed[1] === 'flags')
+        review.flags = Array.isArray(value) ? value.filter((f): f is string => typeof f === 'string') : []
       else if (typeof value === 'string') review[reviewed[1] as 'why' | 'kind' | 'seen'] = value
       continue
     }
@@ -136,7 +141,10 @@ export const withReview = (text: string, review: Review): string => {
 export const withoutReview = (text: string): string => {
   const m = text.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?[\s\S]*)$/)
   if (!m) return text
-  return `${m[1]}${m[2]!.split(/\r?\n/).filter(l => !REVIEW_FIELD.test(l)).join('\n')}${m[3]}`
+  return `${m[1]}${m[2]!
+    .split(/\r?\n/)
+    .filter(l => !REVIEW_FIELD.test(l))
+    .join('\n')}${m[3]}`
 }
 
 /** What a proposal can be, for `$.model.classify`. The last is the one to warn about. */
@@ -160,7 +168,11 @@ export const textFlags = (text: string, serverKeys: readonly string[], mcpTools:
   if (/https?:\/\/|\bwww\./i.test(text)) flags.push('It contains a link.')
   if (/[\w.+-]+@[\w-]+\.[a-z]{2,}/i.test(text)) flags.push('It contains an email address.')
   if (/[A-Za-z0-9_-]{32,}/.test(text)) flags.push('It contains a long id or key.')
-  if (/\b(approv\w*|permission\w*|confirm\w*|password\w*|credential\w*|api[ _-]?keys?|secrets?|ignore|bypass|override|without asking|do not (ask|tell))\b/i.test(text)) {
+  if (
+    /\b(approv\w*|permission\w*|confirm\w*|password\w*|credential\w*|api[ _-]?keys?|secrets?|ignore|bypass|override|without asking|do not (ask|tell))\b/i.test(
+      text,
+    )
+  ) {
     flags.push('It talks about approval, credentials, or what to tell the person.')
   }
   const others = new Set<string>()
@@ -168,7 +180,8 @@ export const textFlags = (text: string, serverKeys: readonly string[], mcpTools:
   for (const full of mcpTools) {
     if (serverKeys.includes(splitToolName(full)?.server ?? '')) continue
     const name = full.split('__').slice(2).join('__')
-    if (name.length >= 6 && /[_A-Z]/.test(name) && new RegExp(`(^|[^\\w])${escapeRegex(name)}($|[^\\w])`).test(text)) others.add(name)
+    if (name.length >= 6 && /[_A-Z]/.test(name) && new RegExp(`(^|[^\\w])${escapeRegex(name)}($|[^\\w])`).test(text))
+      others.add(name)
   }
   if (others.size > 0) flags.push(`It names a tool of another server: ${[...others].slice(0, 3).join(', ')}.`)
   return flags
@@ -180,7 +193,13 @@ export const textFlags = (text: string, serverKeys: readonly string[], mcpTools:
  * `serverKeys` are the hint's servers; `mcpTools` are the full names of all
  * connected MCP tools.
  */
-export const newHintFlags = (kind: string | undefined, text: string, serverKeys: readonly string[], isConnected: boolean, mcpTools: readonly string[]): string[] => [
+export const newHintFlags = (
+  kind: string | undefined,
+  text: string,
+  serverKeys: readonly string[],
+  isConnected: boolean,
+  mcpTools: readonly string[],
+): string[] => [
   ...(isConnected ? [] : ['Its server is not connected in this session.']),
   ...(kind === OTHER_INSTRUCTION ? ['A classifier reads it as an instruction, not as a fact about a call.'] : []),
   ...textFlags(text, serverKeys, mcpTools),
@@ -196,10 +215,23 @@ export type ProposalKind = 'add' | HintEdit['kind']
 export const proposalKind = (hint: Pick<Hint, 'edit'>): ProposalKind => hint.edit?.kind ?? 'add'
 
 /** The words a card and a decided row use for each kind of proposal. */
-export const PROPOSAL_TEXT: Record<ProposalKind, { title: string; label: string; approved: string; discarded: string }> = {
+export const PROPOSAL_TEXT: Record<
+  ProposalKind,
+  { title: string; label: string; approved: string; discarded: string }
+> = {
   add: { title: 'Usage hint', label: 'Hint', approved: '✓ Hint approved', discarded: 'Hint discarded.' },
-  removal: { title: 'Removal of a usage hint', label: 'Hint to remove', approved: '✓ Hint removed', discarded: 'Removal discarded. The hint stays.' },
-  change: { title: 'Change of a usage hint', label: 'Hint now', approved: '✓ Hint changed', discarded: 'Change discarded. The hint stays.' },
+  removal: {
+    title: 'Removal of a usage hint',
+    label: 'Hint to remove',
+    approved: '✓ Hint removed',
+    discarded: 'Removal discarded. The hint stays.',
+  },
+  change: {
+    title: 'Change of a usage hint',
+    label: 'Hint now',
+    approved: '✓ Hint changed',
+    discarded: 'Change discarded. The hint stays.',
+  },
 }
 
 /** What the person decided on a proposal, as $.store keeps it for its row. `dest`: the file Approve wrote. */
@@ -214,10 +246,13 @@ export const parseDecision = (value: unknown): Decision | undefined => {
   const v = value as Record<string, unknown>
   if (v.action !== 'approved' && v.action !== 'discarded') return undefined
   const kind: Decision['kind'] =
-    v.kind === 'function' || (typeof v.kind === 'string' && Object.hasOwn(PROPOSAL_TEXT, v.kind)) ? (v.kind as Decision['kind'])
-    : v.isFunction === true ? 'function'
-    : v.isRemoval === true ? 'removal'
-    : 'add'
+    v.kind === 'function' || (typeof v.kind === 'string' && Object.hasOwn(PROPOSAL_TEXT, v.kind))
+      ? (v.kind as Decision['kind'])
+      : v.isFunction === true
+        ? 'function'
+        : v.isRemoval === true
+          ? 'removal'
+          : 'add'
   return { action: v.action, ...(typeof v.dest === 'string' ? { dest: v.dest } : {}), kind }
 }
 
@@ -259,12 +294,21 @@ export const reviewFields = (
     warnings: r?.flags ?? [],
     ...(r?.seen ? { seen: `code-mode saw ${r.seen.replace(/^\w/, c => c.toLowerCase())}` } : {}),
     // A bundled change with no user file to write: Approve fails, so no reach.
-    file: where === undefined ? `Approve fails: code mode cannot read your own hint folder to change the bundled ${asCode(dest.file)}.` : `${where}. It applies ${reach}.`,
+    file:
+      where === undefined
+        ? `Approve fails: code mode cannot read your own hint folder to change the bundled ${asCode(dest.file)}.`
+        : `${where}. It applies ${reach}.`,
   }
 }
 
 const globToRegex = (glob: string): RegExp =>
-  new RegExp(`^${glob.split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i')
+  new RegExp(
+    `^${glob
+      .split('*')
+      .map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*')}$`,
+    'i',
+  )
 
 /**
  * A server pattern with `*` is a glob on the server's name or key. Without
@@ -276,10 +320,13 @@ export const serverMatches = (pattern: string, target: HintTarget): boolean => {
   const names = [target.serverKey, target.serverName].filter((n): n is string => !!n)
   if (pattern.includes('*')) return names.some(n => globToRegex(pattern).test(n))
   const p = normalize(pattern)
-  return p !== '' && names.some(n => {
-    const v = normalize(n)
-    return v === p || v.endsWith(`_${p}`)
-  })
+  return (
+    p !== '' &&
+    names.some(n => {
+      const v = normalize(n)
+      return v === p || v.endsWith(`_${p}`)
+    })
+  )
 }
 
 /**
@@ -312,11 +359,22 @@ export const toolsByServer = (toolNames: readonly string[]): Map<string, string[
 }
 
 /** Full tool names as hint targets. `names` maps a tool to its server's /mcp name, `offered` comes from toolsByServer. */
-export const targetsOf = (tools: readonly string[], names: Map<string, string>, offered: Map<string, string[]>): HintTarget[] =>
+export const targetsOf = (
+  tools: readonly string[],
+  names: Map<string, string>,
+  offered: Map<string, string[]>,
+): HintTarget[] =>
   tools.flatMap(tool => {
     const split = splitToolName(tool)
     return split
-      ? [{ serverKey: split.server, serverName: names.get(tool), serverTools: offered.get(split.server), toolName: split.name }]
+      ? [
+          {
+            serverKey: split.server,
+            serverName: names.get(tool),
+            serverTools: offered.get(split.server),
+            toolName: split.name,
+          },
+        ]
       : []
   })
 
@@ -351,7 +409,9 @@ export const formatHints = (hints: readonly Hint[], maxChars = 4000): string => 
 export const hintFileName = (server: string, tools: readonly string[]): string => {
   const base = normalize(server.replace(/^claude\.ai\s+/i, '')) || 'server'
   // A server named by one of its tools does not repeat that tool.
-  const toolPart = normalize(tools.filter(t => normalize(t) !== base).join('-')).slice(0, 40).replace(/_+$/, '')
+  const toolPart = normalize(tools.filter(t => normalize(t) !== base).join('-'))
+    .slice(0, 40)
+    .replace(/_+$/, '')
   return `${base}${toolPart === '' ? '' : `.${toolPart}`}.md`
 }
 
@@ -378,7 +438,9 @@ const DECISION = 'decision:'
 /** The $.store key that keeps the decision on a pending file. */
 export const decisionKey = (path: string): string => {
   const key = `${DECISION}${path}`
-  return key.length <= MAX_STORE_KEY ? key : `${DECISION}${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
+  return key.length <= MAX_STORE_KEY
+    ? key
+    : `${DECISION}${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
 }
 
 // The store keeps one decision per proposal, so a decided row still shows it
@@ -398,7 +460,8 @@ export const staleDecisionKeys = (keys: readonly string[], key: string, max = MA
 
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
 export const resolvePath = (path: string, home: string, cwd: string): string => {
-  const full = path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
+  const full =
+    path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
   const parts: string[] = []
   for (const part of full.split('/')) {
     if (part === '' || part === '.') continue
@@ -409,7 +472,8 @@ export const resolvePath = (path: string, home: string, cwd: string): string => 
 }
 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */
-export const isUnder = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir.replace(/\/$/, '')}/`)
+export const isUnder = (path: string, dir: string): boolean =>
+  path === dir || path.startsWith(`${dir.replace(/\/$/, '')}/`)
 
 /** True for a server named by UUID, as the desktop app names claude.ai connectors: no name to read. */
 export const isUuidLike = (server: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(server)
@@ -464,11 +528,17 @@ export const hintItems = (body: string): string[] => {
 }
 
 /** A hint as one comparable line: no bullet mark, single spaces. */
-export const hintKey = (item: string): string => item.replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim()
+export const hintKey = (item: string): string =>
+  item
+    .replace(/^\s*[-*]\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 
 /** The body without the hints whose key `drop` picks. */
 export const withoutItems = (body: string, drop: (key: string) => boolean): string =>
-  hintItems(body).filter(i => !drop(hintKey(i))).join('\n')
+  hintItems(body)
+    .filter(i => !drop(hintKey(i)))
+    .join('\n')
 
 /** The hint in `body` that `text` names: equal to it, or else the only one that contains it. */
 export const findItem = (body: string, text: string): { item?: string; error?: string } => {
@@ -541,8 +611,12 @@ export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): HintRef =>
 export const bundledRef = (file: string): HintRef => `${BUNDLED}${file}` as HintRef
 
 /** The file a ref names: a bundled file by its name, or another file by its path. `file` is the name in both. */
-export const refTarget = (ref: HintRef): { bundled: true; file: string } | { bundled: false; file: string; path: string } =>
-  ref.startsWith(BUNDLED) ? { bundled: true, file: ref.slice(BUNDLED.length) } : { bundled: false, file: fileName(ref), path: ref }
+export const refTarget = (
+  ref: HintRef,
+): { bundled: true; file: string } | { bundled: false; file: string; path: string } =>
+  ref.startsWith(BUNDLED)
+    ? { bundled: true, file: ref.slice(BUNDLED.length) }
+    : { bundled: false, file: fileName(ref), path: ref }
 
 /** The key of the hint `key` (a `hintKey`) in the file `ref`. */
 export const hiddenKey = (ref: HintRef, key: string): HiddenKey => `${ref}\n${key}` as HiddenKey
@@ -552,9 +626,14 @@ export const hiddenKey = (ref: HintRef, key: string): HiddenKey => `${ref}\n${ke
  * file), `remove`, `replace` for a change, the review, and the hint.
  */
 export const removalProposal = (hint: Hint, item: string, review: Review, replacement?: string): string => {
-  const fields = [`remove: ${JSON.stringify(hintRef(hint))}`, ...(replacement === undefined ? [] : [`replace: ${JSON.stringify(oneLine(replacement))}`])]
-  return withReview(appendHint(undefined, hint.servers, hint.identify, hint.tools, hintKey(item)), review)
-    .replace(/^---\n/, `---\n${fields.join('\n')}\n`)
+  const fields = [
+    `remove: ${JSON.stringify(hintRef(hint))}`,
+    ...(replacement === undefined ? [] : [`replace: ${JSON.stringify(oneLine(replacement))}`]),
+  ]
+  return withReview(appendHint(undefined, hint.servers, hint.identify, hint.tools, hintKey(item)), review).replace(
+    /^---\n/,
+    `---\n${fields.join('\n')}\n`,
+  )
 }
 
 /**
@@ -585,7 +664,13 @@ export const transferBlock = (lines: readonly string[]): string => {
 /** Text on one line: each line break with the spaces around it becomes one space. */
 export const oneLine = (text: string): string => text.replace(/\s*\n\s*/g, ' ').trim()
 
-export const hintTransfer = (p: { server: string; tools: readonly string[]; scope: string; text: string; why: string }): string =>
+export const hintTransfer = (p: {
+  server: string
+  tools: readonly string[]
+  scope: string
+  text: string
+  why: string
+}): string =>
   transferBlock([
     'Propose this code-mode hint with add_hint. Keep the text as it is.',
     `server: ${p.server}`,

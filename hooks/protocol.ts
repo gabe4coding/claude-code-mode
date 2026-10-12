@@ -131,7 +131,8 @@ export type SavedResult = { path: string; format: 'text' | 'json' | 'blocks' | '
 // with schema: …", "JSON array …") and the one for any tool's output. They
 // give the format and a path with spaces. A note in another wording is found
 // by the path alone: a path in this session's tool-results/ folder.
-const MCP_SAVED = /^Error: result \([^)]*\) exceeds maximum allowed tokens\. Output has been saved to (.+)\.\nFormat: ([^\n]*)/
+const MCP_SAVED =
+  /^Error: result \([^)]*\) exceeds maximum allowed tokens\. Output has been saved to (.+)\.\nFormat: ([^\n]*)/
 const OUTPUT_SAVED = /^<persisted-output>\n[^\n]*?(?:Full output saved to|were saved to): ([^\n]+)/
 const CUT = /exceeded the persist byte limit|only the first [^\n]* were saved to/
 const PATH = /\/[^\s"'`<>()]+/g
@@ -187,7 +188,8 @@ export const savedReply = (format: SavedResult['format'], fileText: string): Rep
 
 const clip = (text: string, max: number, whole?: number): string => {
   if (text.length <= max) return text
-  const fix = whole === undefined ? 'return less data' : `await recall(${whole}) returns the whole result: return a part of it`
+  const fix =
+    whole === undefined ? 'return less data' : `await recall(${whole}) returns the whole result: return a part of it`
   return `${text.slice(0, max)}\n… [${text.length - max} more characters cut; ${fix}]`
 }
 
@@ -219,7 +221,11 @@ export const formatOutcome = (
   }
   const logs = outcome?.logs ?? []
   if (logs.length > 0) parts.push(`--- console (${logs.length} lines) ---\n${clip(logs.join('\n'), 4000)}`)
-  parts.push(projection === undefined ? `--- ${calls} MCP call${calls === 1 ? '' : 's'} ---` : projectionFooter(projection, outcome))
+  parts.push(
+    projection === undefined
+      ? `--- ${calls} MCP call${calls === 1 ? '' : 's'} ---`
+      : projectionFooter(projection, outcome),
+  )
   return parts.join('\n\n')
 }
 
@@ -229,35 +235,59 @@ export const formatOutcome = (
  * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none),
  * and its status: `unfinished` when the run ended before its reply came.
  */
-export type CallRecord = { ref?: number; tool: string; status: 'ok' | 'failed' | 'unfinished'; chars: number; shape?: string; repeatOf?: number }
+export type CallRecord = {
+  ref?: number
+  tool: string
+  status: 'ok' | 'failed' | 'unfinished'
+  chars: number
+  shape?: string
+  repeatOf?: number
+}
 
 /**
  * What a run with output projection reports: its calls, the results it read
  * again with recall() and how old each one was, and the number of a cut result.
  */
-export type Projection = { calls: CallRecord[]; recalls: number; recalled: { ref: number; ageMs: number }[]; wholeRef?: number }
+export type Projection = {
+  calls: CallRecord[]
+  recalls: number
+  recalled: { ref: number; ageMs: number }[]
+  wholeRef?: number
+}
 
 const MAX_SHAPE_CHARS = 200
 const MAX_KEYS = 8
 const SAMPLE = 20
 
 const isEmpty = (v: unknown): boolean =>
-  v === null || v === undefined || v === '' ||
+  v === null ||
+  v === undefined ||
+  v === '' ||
   (Array.isArray(v) ? v.every(isEmpty) : typeof v === 'object' && Object.values(v as object).every(isEmpty))
 
 // The keys of many objects in first-seen order, each with its first value that is not empty.
 const mergeObjects = (items: Record<string, unknown>[]): Record<string, unknown> => {
   const merged: Record<string, unknown> = {}
-  for (const item of items) for (const [k, v] of Object.entries(item)) if (!(k in merged) || isEmpty(merged[k])) merged[k] = v
+  for (const item of items)
+    for (const [k, v] of Object.entries(item)) if (!(k in merged) || isEmpty(merged[k])) merged[k] = v
   return merged
 }
 
 // A key that reads as a field name: `status`, `next_cursor`, `realName`. Ids,
 // emails, ticket keys and other data used as keys do not.
-const isFieldName = (key: string): boolean => /^[A-Za-z_$][A-Za-z0-9_$]{0,39}$/.test(key) && (key.match(/\d/g)?.length ?? 0) <= 2
+const isFieldName = (key: string): boolean =>
+  /^[A-Za-z_$][A-Za-z0-9_$]{0,39}$/.test(key) && (key.match(/\d/g)?.length ?? 0) <= 2
 
 const kindOf = (v: unknown): string =>
-  v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v === 'object' ? `{${Object.keys(v as object).sort().join(',')}}` : typeof v
+  v === null
+    ? 'null'
+    : Array.isArray(v)
+      ? 'array'
+      : typeof v === 'object'
+        ? `{${Object.keys(v as object)
+            .sort()
+            .join(',')}}`
+        : typeof v
 
 // A map from data to values, such as error counts by service or users by
 // name: three keys or more whose values are all of one kind. A record's
@@ -277,9 +307,14 @@ const shapeAt = (v: unknown, depth: number, isRecord = false): string => {
     if (v.length === 0) return '[]'
     if (depth >= 2) return `[${v.length}]`
     const sample = v.slice(0, SAMPLE)
-    const objects = sample.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x))
+    const objects = sample.filter(
+      (x): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x),
+    )
     // The items are at the array's own depth: a list of records shows their keys.
-    const inner = objects.length === sample.length ? shapeAt(mergeObjects(objects), depth, objects.length > 1) : shapeAt(sample[0], depth + 1)
+    const inner =
+      objects.length === sample.length
+        ? shapeAt(mergeObjects(objects), depth, objects.length > 1)
+        : shapeAt(sample[0], depth + 1)
     return `[${v.length} × ${inner}]`
   }
   if (typeof v === 'object') {
@@ -314,7 +349,10 @@ export const shapeOf = (v: unknown): string => {
  */
 export const learnedShape = (v: unknown): string | undefined => {
   if (typeof v === 'string') return 'text'
-  const shape = shapeOf(v).replace(/\[\d+ × /g, '[').replace(/\[\d+\]/g, '[…]').replace(/\{\d+ keys?\}/g, '{…}')
+  const shape = shapeOf(v)
+    .replace(/\[\d+ × /g, '[')
+    .replace(/\[\d+\]/g, '[…]')
+    .replace(/\{\d+ keys?\}/g, '{…}')
   return /^(\[\]|\{\}|null)$/.test(shape) ? undefined : shape
 }
 
@@ -336,7 +374,10 @@ export const parseShapes = (text: string): Shapes => {
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
   return Object.fromEntries(
-    Object.entries(parsed).filter(([tool, shape]) => splitToolName(tool) !== undefined && tool.length <= 200 && typeof shape === 'string' && SHAPE.test(shape)),
+    Object.entries(parsed).filter(
+      ([tool, shape]) =>
+        splitToolName(tool) !== undefined && tool.length <= 200 && typeof shape === 'string' && SHAPE.test(shape),
+    ),
   )
 }
 
@@ -373,7 +414,8 @@ const csvCell = (v: unknown): string => {
 
 // Rows of objects get a header with every key; rows of arrays are the cells.
 const toCsv = (rows: readonly unknown[]): string => {
-  const isRecord = (r: unknown): r is Record<string, unknown> => r !== null && typeof r === 'object' && !Array.isArray(r)
+  const isRecord = (r: unknown): r is Record<string, unknown> =>
+    r !== null && typeof r === 'object' && !Array.isArray(r)
   if (rows.every(Array.isArray)) return rows.map(r => (r as unknown[]).map(csvCell).join(',')).join('\n')
   if (!rows.every(isRecord)) return rows.map(csvCell).join('\n')
   const keys = [...new Set(rows.flatMap(r => Object.keys(r)))]
@@ -384,7 +426,8 @@ const toCsv = (rows: readonly unknown[]): string => {
 export const fileText = (name: string, value: unknown): string => {
   if (typeof value === 'string') return value
   if (Array.isArray(value) && /\.csv$/i.test(name)) return `${toCsv(value)}\n`
-  if (Array.isArray(value) && /\.jsonl$/i.test(name)) return `${value.map(v => JSON.stringify(v) ?? 'null').join('\n')}\n`
+  if (Array.isArray(value) && /\.jsonl$/i.test(name))
+    return `${value.map(v => JSON.stringify(v) ?? 'null').join('\n')}\n`
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
@@ -416,7 +459,10 @@ export const parseArgNames = (text: string): ArgNames => {
 }
 
 /** The names with the ones a run used, or undefined when nothing is new. The oldest change goes first past the limit. */
-export const mergeArgNames = (current: ArgNames, learned: ReadonlyMap<string, readonly string[]>): ArgNames | undefined => {
+export const mergeArgNames = (
+  current: ArgNames,
+  learned: ReadonlyMap<string, readonly string[]>,
+): ArgNames | undefined => {
   const next = { ...current }
   let changed = false
   for (const [tool, names] of learned) {
@@ -604,7 +650,8 @@ export const editDistance = (a: string, b: string): number => {
   let row = Array.from({ length: b.length + 1 }, (_, j) => j)
   for (let i = 1; i <= a.length; i++) {
     const next = [i]
-    for (let j = 1; j <= b.length; j++) next.push(Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)))
+    for (let j = 1; j <= b.length; j++)
+      next.push(Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1)))
     row = next
   }
   return row[b.length]!
@@ -657,7 +704,11 @@ export const checkCalls = (
     if (spec !== undefined) {
       for (const key of spec.isOpen ? [] : c.keys.filter(k => !spec.names.includes(k))) {
         const near = nearest(key, spec.names, 3)
-        problems.push({ line: c.line, text: `${c.tool}: unknown argument "${key}"${near === undefined ? '' : ` (did you mean "${near}"?)`}`, isGuess: false })
+        problems.push({
+          line: c.line,
+          text: `${c.tool}: unknown argument "${key}"${near === undefined ? '' : ` (did you mean "${near}"?)`}`,
+          isGuess: false,
+        })
       }
       for (const name of spec.required.filter(n => !c.keys!.includes(n))) {
         problems.push({ line: c.line, text: `${c.tool}: missing required argument "${name}"`, isGuess: false })
@@ -667,7 +718,12 @@ export const checkCalls = (
     const names = learned[c.tool] ?? []
     for (const key of c.keys.filter(k => !names.includes(k))) {
       const near = typoOf(key, names)
-      if (near !== undefined) problems.push({ line: c.line, text: `${c.tool}: argument "${key}" is not a name that earlier calls used (did you mean "${near}"?)`, isGuess: true })
+      if (near !== undefined)
+        problems.push({
+          line: c.line,
+          text: `${c.tool}: argument "${key}" is not a name that earlier calls used (did you mean "${near}"?)`,
+          isGuess: true,
+        })
     }
   }
   return problems
@@ -679,7 +735,11 @@ export const problemReport = (problems: readonly CallProblem[]): string => {
   const escape = problems.some(p => p.isGuess)
     ? ['If a name is right, pass the arguments as a variable: the check reads only object literals.']
     : []
-  return ['Error: the program did not run, because some calls have wrong names. No call was made.', ...lines, ...escape].join('\n')
+  return [
+    'Error: the program did not run, because some calls have wrong names. No call was made.',
+    ...lines,
+    ...escape,
+  ].join('\n')
 }
 
 /** Runs at most `n` tasks at a time; the others wait in the order they came. */
@@ -721,9 +781,14 @@ const MAX_CALL_LINES = 8
 
 // JSON with sorted keys, so two calls with the same arguments match.
 const stable = (v: unknown): string =>
-  Array.isArray(v) ? `[${v.map(stable).join(',')}]`
-  : v !== null && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}`
-  : JSON.stringify(v) ?? 'null'
+  Array.isArray(v)
+    ? `[${v.map(stable).join(',')}]`
+    : v !== null && typeof v === 'object'
+      ? `{${Object.keys(v)
+          .sort()
+          .map(k => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`)
+          .join(',')}}`
+      : (JSON.stringify(v) ?? 'null')
 
 /** The identity of a call: the tool and its arguments. Two equal keys are the same call. */
 export const callKey = (tool: string, args: Record<string, unknown>): string => `${tool}\n${stable(args)}`
@@ -765,15 +830,27 @@ export const projectionFooter = (p: Projection, outcome: RunnerDone | RunnerErro
   const outChars = outcome?.t === 'done' ? outcome.value.length : 0
   const recalls = p.recalls === 0 ? '' : `, ${p.recalls} recall${p.recalls === 1 ? '' : 's'}`
   const head = `--- ${n} MCP call${n === 1 ? '' : 's'}${recalls}: ${charCount(inChars)} characters in, ${charCount(outChars)} out ---`
-  const recalled = p.recalled.length === 0 ? [] : [`recalled: ${[...new Map(p.recalled.map(r => [r.ref, r])).values()].map(r => `#${r.ref} (${age(r.ageMs)})`).join(', ')}`]
+  const recalled =
+    p.recalled.length === 0
+      ? []
+      : [
+          `recalled: ${[...new Map(p.recalled.map(r => [r.ref, r])).values()].map(r => `#${r.ref} (${age(r.ageMs)})`).join(', ')}`,
+        ]
   if (n === 0) return [head, ...recalled].join('\n')
   const lines = n <= MAX_CALL_LINES ? p.calls.map(callLine) : groupLines(p.calls)
-  const missed = missedData(outcome, p.calls) ? ['The result is empty, but the calls returned data: check the shapes.'] : []
-  return [head, ...lines, ...recalled, ...missed, 'await recall(n) returns result #n again, with no new call.'].join('\n')
+  const missed = missedData(outcome, p.calls)
+    ? ['The result is empty, but the calls returned data: check the shapes.']
+    : []
+  return [head, ...lines, ...recalled, ...missed, 'await recall(n) returns result #n again, with no new call.'].join(
+    '\n',
+  )
 }
 
 const words = (text: string): string[] =>
-  text.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1)
+  text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(w => w.length > 1)
 
 /** Ranks tools by how many query words their name and description hold. */
 export const rankTools = (tools: readonly ToolEntry[], query: string, limit: number): ToolEntry[] => {
@@ -864,11 +941,23 @@ export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give key
  * Also after a second run with a tool of a server that has no hint (`probed`,
  * tool names): the first run was often a probe of its arguments or result format.
  */
-export const hintNudge = (servers: readonly string[], missedSearches: readonly string[], probed: readonly string[] = []): string => {
+export const hintNudge = (
+  servers: readonly string[],
+  missedSearches: readonly string[],
+  probed: readonly string[] = [],
+): string => {
   if (servers.length === 0 && missedSearches.length === 0 && probed.length === 0) return ''
   const failed = servers.length === 0 ? [] : [`Calls to ${servers.join(', ')} failed earlier and work now.`]
-  const missed = missedSearches.length === 0 ? [] : [`search_tools found nothing for ${missedSearches.map(q => JSON.stringify(q)).join(', ')}.`]
-  const again = probed.length === 0 ? [] : [`An earlier run called ${probed.join(', ')} too, and no hint covers ${probed.length === 1 ? 'its server' : 'their servers'}.`]
+  const missed =
+    missedSearches.length === 0
+      ? []
+      : [`search_tools found nothing for ${missedSearches.map(q => JSON.stringify(q)).join(', ')}.`]
+  const again =
+    probed.length === 0
+      ? []
+      : [
+          `An earlier run called ${probed.join(', ')} too, and no hint covers ${probed.length === 1 ? 'its server' : 'their servers'}.`,
+        ]
   return `## Worth a hint\n\n${[...failed, ...missed, ...again].join(' ')} If you had to find out how it works (the search words, the tool, an argument, a result format), propose it with add_hint now, one short fact per hint, so the next session gets it right the first time.`
 }
 

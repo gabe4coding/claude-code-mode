@@ -19,7 +19,12 @@ export type FakeHomeOptions = {
 // `files` maps absolute paths to text; `written` records each write the
 // plugin makes. `serverOf` maps an MCP tool to its /mcp server name. `env`
 // sets a variable; any other variable reads as HOME.
-export const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string, string> = {}, options: FakeHomeOptions = {}) => {
+export const fakeHome = (
+  on: On,
+  files: Record<string, string>,
+  serverOf: Record<string, string> = {},
+  options: FakeHomeOptions = {},
+) => {
   const written: Record<string, string> = {}
   const removed: string[] = []
   const checked: string[] = []
@@ -27,7 +32,13 @@ export const fakeHome = (on: On, files: Record<string, string>, serverOf: Record
   const all = () => ({ ...files, ...written })
   on('env.get', ($, e) => ({ value: env[e.name] ?? HOME }))
   if (options.sessionId !== undefined) on('session.id', () => ({ value: options.sessionId! }))
-  on('fs.exists', ($, e) => (checked.push(e.path), { value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
+  on(
+    'fs.exists',
+    ($, e) => (
+      checked.push(e.path),
+      { value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }
+    ),
+  )
   on('fs.list', ($, e) => {
     const prefix = `${e.path}/`
     const names = new Set<string>()
@@ -51,7 +62,18 @@ export const fakeHome = (on: On, files: Record<string, string>, serverOf: Record
     return { value: undefined }
   })
   on('session.usage', () => ({
-    value: { context: { breakdown: { mcpTools: Object.entries(serverOf).map(([name, serverName]) => ({ name, serverName, tokens: 0, isLoaded: true })) } } } as never,
+    value: {
+      context: {
+        breakdown: {
+          mcpTools: Object.entries(serverOf).map(([name, serverName]) => ({
+            name,
+            serverName,
+            tokens: 0,
+            isLoaded: true,
+          })),
+        },
+      },
+    } as never,
   }))
   const tools = options.tools ?? Object.keys(serverOf).map(name => ({ name, description: `Tool ${name}` }))
   on('tool.list', () => ({ value: tools.map(t => ({ ...t, mcp: true })) }))
@@ -63,11 +85,23 @@ export const fakeHome = (on: On, files: Record<string, string>, serverOf: Record
       delete files[path]
       delete written[path]
     }
-    return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? `${TMP}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv[0] === 'mktemp' ? `${TMP}\n` : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
   })
   return { written, removed, checked, env }
 }
 
 /** The text of a tool result, or "DENY <reason>". */
 export const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
-  r.deny !== undefined ? `DENY ${r.deny}` : typeof r.result === 'string' ? r.result : (r.text ?? JSON.stringify(r.result))
+  r.deny !== undefined
+    ? `DENY ${r.deny}`
+    : typeof r.result === 'string'
+      ? r.result
+      : (r.text ?? JSON.stringify(r.result))

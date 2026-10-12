@@ -62,7 +62,12 @@ const fakeServer = (on: On, verdicts: Record<string, Verdict> = {}) => {
   on('mcp.call', ($, e) => {
     paths.push('mcp.call')
     if (e.tool === 'fail') return { value: { content: [{ type: 'text', text: 'server error' }], isError: true } }
-    return { value: { content: [{ type: 'text', text: JSON.stringify({ echoed: e.args, server: e.server }) }], isError: false } }
+    return {
+      value: {
+        content: [{ type: 'text', text: JSON.stringify({ echoed: e.args, server: e.server }) }],
+        isError: false,
+      },
+    }
   })
   return { paths }
 }
@@ -102,14 +107,23 @@ describe('protocol', () => {
 
   test('splitToolName splits at the first double underscore', () => {
     expect(splitToolName('mcp__claude_ai_Jira__get_issue')).toEqual({ server: 'claude_ai_Jira', name: 'get_issue' })
-    expect(splitToolName('mcp__fcef2cd1-7ad6__atlassianUserInfo')).toEqual({ server: 'fcef2cd1-7ad6', name: 'atlassianUserInfo' })
+    expect(splitToolName('mcp__fcef2cd1-7ad6__atlassianUserInfo')).toEqual({
+      server: 'fcef2cd1-7ad6',
+      name: 'atlassianUserInfo',
+    })
     expect(splitToolName('Bash')).toBe(undefined)
     expect(splitToolName('mcp__server__')).toBe(undefined)
   })
 
   test('mcpReply joins text blocks and parses JSON', () => {
-    expect(mcpReply({ content: [{ type: 'text', text: '{"a":1}' }], isError: false })).toEqual({ ok: true, value: { a: 1 } })
-    expect(mcpReply({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } })).toEqual({ ok: true, value: { b: 2 } })
+    expect(mcpReply({ content: [{ type: 'text', text: '{"a":1}' }], isError: false })).toEqual({
+      ok: true,
+      value: { a: 1 },
+    })
+    expect(mcpReply({ content: [{ type: 'text', text: 'x' }], isError: false, structuredContent: { b: 2 } })).toEqual({
+      ok: true,
+      value: { b: 2 },
+    })
     expect(mcpReply({ content: [{ type: 'text', text: 'bad' }], isError: true })).toEqual({ ok: false, error: 'bad' })
   })
 
@@ -117,14 +131,20 @@ describe('protocol', () => {
     const S = 's-1'
     const mcp = (format: string, tail = '') =>
       `Error: result (60,000 characters) exceeds maximum allowed tokens. Output has been saved to /h/${S}/tool-results/mcp-fake-big-1.txt.\nFormat: ${format}\nUse jq …${tail}`
-    expect(savedResultOf(mcp('Plain text'), S)).toEqual({ path: `/h/${S}/tool-results/mcp-fake-big-1.txt`, format: 'text', isCut: false })
+    expect(savedResultOf(mcp('Plain text'), S)).toEqual({
+      path: `/h/${S}/tool-results/mcp-fake-big-1.txt`,
+      format: 'text',
+      isCut: false,
+    })
     expect(savedResultOf(mcp('JSON with schema: {}'), S)?.format).toBe('json')
     expect(savedResultOf(mcp('JSON array'), S)?.format).toBe('blocks')
     expect(savedResultOf(mcp('JSON', '\nNote: the output exceeded the persist byte limit; …'), S)?.isCut).toBe(true)
     const output = `<persisted-output>\nOutput too large (61.2KB). Full output saved to: /h/${S}/tool-results/b.txt\n\nPreview`
     expect(savedResultOf(output, S)).toEqual({ path: `/h/${S}/tool-results/b.txt`, format: 'text', isCut: false })
     // A path with a space works in the known wordings.
-    expect(savedResultOf(mcp('Plain text').replace('/h/', '/h a/'), S)?.path).toBe(`/h a/${S}/tool-results/mcp-fake-big-1.txt`)
+    expect(savedResultOf(mcp('Plain text').replace('/h/', '/h a/'), S)?.path).toBe(
+      `/h a/${S}/tool-results/mcp-fake-big-1.txt`,
+    )
   })
 
   test('savedResultOf finds a note in another wording by its path', () => {
@@ -135,7 +155,9 @@ describe('protocol', () => {
       isCut: false,
     })
     // The same path twice is one file; two files, another session or a long result are not a note.
-    expect(savedResultOf(`See /h/${S}/tool-results/r.json, then jq '/h/${S}/tool-results/r.json'`, S)?.path).toBe(`/h/${S}/tool-results/r.json`)
+    expect(savedResultOf(`See /h/${S}/tool-results/r.json, then jq '/h/${S}/tool-results/r.json'`, S)?.path).toBe(
+      `/h/${S}/tool-results/r.json`,
+    )
     expect(savedResultOf(`/h/${S}/tool-results/a.txt and /h/${S}/tool-results/b.txt`, S)).toBe(undefined)
     expect(savedResultOf('stored at /h/s-2/tool-results/r.json', S)).toBe(undefined)
     expect(savedResultOf(`stored at /h/${S}/tool-results/r.json ${'x'.repeat(9000)}`, S)).toBe(undefined)
@@ -143,7 +165,7 @@ describe('protocol', () => {
     expect(savedResultOf('{"a":1}', S)).toBe(undefined)
   })
 
-  test('isSessionResult accepts only this session\'s tool-results files', () => {
+  test("isSessionResult accepts only this session's tool-results files", () => {
     expect(isSessionResult('/h/.claude/projects/p/s-1/tool-results/a.txt', 's-1')).toBe(true)
     expect(isSessionResult('/h/.claude/projects/p/s-2/tool-results/a.txt', 's-1')).toBe(false)
     expect(isSessionResult('/h/.ssh/id_rsa', 's-1')).toBe(false)
@@ -156,7 +178,15 @@ describe('protocol', () => {
     expect(savedReply('text', '[1,2]')).toEqual(value([1, 2]))
     expect(savedReply('text', 'plain')).toEqual(value('plain'))
     expect(savedReply('json', '{"a":1}')).toEqual(value({ a: 1 }))
-    expect(savedReply('blocks', JSON.stringify([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]))).toEqual(value('one\ntwo'))
+    expect(
+      savedReply(
+        'blocks',
+        JSON.stringify([
+          { type: 'text', text: 'one' },
+          { type: 'text', text: 'two' },
+        ]),
+      ),
+    ).toEqual(value('one\ntwo'))
     expect(savedReply('unknown', JSON.stringify([{ type: 'text', text: '[3]' }]))).toEqual(value([3]))
     expect(savedReply('unknown', '[INFO] plain text')).toEqual(value('[INFO] plain text'))
     // Data with a `type` field of its own is not content blocks.
@@ -177,12 +207,21 @@ describe('protocol', () => {
   })
 
   test('shapeOf shows keys, array lengths and nesting, not values', () => {
-    const value = { messages: [{ ts: '1', text: 'secret', user: 'u' }, { ts: '2', reactions: [{ name: 'x' }] }], next: 'c', total: 2 }
+    const value = {
+      messages: [
+        { ts: '1', text: 'secret', user: 'u' },
+        { ts: '2', reactions: [{ name: 'x' }] },
+      ],
+      next: 'c',
+      total: 2,
+    }
     expect(shapeOf(value)).toBe('{messages: [2 × {ts, text, user, reactions: [1]}], next, total}')
     expect(shapeOf(value)).not.toContain('secret')
     expect(shapeOf([])).toBe('[]')
     expect(shapeOf('a\nb')).toBe('text, 2 lines')
-    expect(shapeOf(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i % 2 ? i : String(i)])))).toBe('{k0, k1, k2, k3, k4, k5, k6, k7, …+2}')
+    expect(shapeOf(Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i % 2 ? i : String(i)])))).toBe(
+      '{k0, k1, k2, k3, k4, k5, k6, k7, …+2}',
+    )
   })
 
   test('shapeOf hides keys that are data', () => {
@@ -191,14 +230,23 @@ describe('protocol', () => {
     expect(shapeOf({ U0001: { name: 'a' }, U0002: { name: 'b' } })).toBe('{2 keys}')
     expect(shapeOf({ checkout: 1140, search: 1500, payments: 1940 })).toBe('{3 keys}')
     expect(shapeOf({ bySvc: { checkout: 1, search: 2, payments: 3 }, total: 6 })).toBe('{bySvc: {3 keys}, total}')
-    expect(shapeOf([{ id: '1', name: 'x', email: 'y' }, { id: '2', name: 'z', email: 'w' }])).toBe('[2 × {id, name, email}]')
+    expect(
+      shapeOf([
+        { id: '1', name: 'x', email: 'y' },
+        { id: '2', name: 'z', email: 'w' },
+      ]),
+    ).toBe('[2 × {id, name, email}]')
     expect(shapeOf({ id: '1', name: 'x', email: 'y' })).toBe('{3 keys}')
     expect(shapeOf({ ok: true, total: 2, items: [] })).toBe('{ok, total, items: []}')
   })
 
   test('learnedShape has no counts, and nothing for an empty result', () => {
-    expect(learnedShape({ issues: [{ key: 'A-1', fields: { a: 1 } }, { key: 'A-2' }], total: 2 })).toBe('{issues: [{key, fields: {…}}], total}')
-    expect(learnedShape({ byUser: { 'ann@example.com': 1, 'bob@example.com': 2, 'cy@example.com': 3 } })).toBe('{byUser: {…}}')
+    expect(learnedShape({ issues: [{ key: 'A-1', fields: { a: 1 } }, { key: 'A-2' }], total: 2 })).toBe(
+      '{issues: [{key, fields: {…}}], total}',
+    )
+    expect(learnedShape({ byUser: { 'ann@example.com': 1, 'bob@example.com': 2, 'cy@example.com': 3 } })).toBe(
+      '{byUser: {…}}',
+    )
     expect(learnedShape(['a', 'b'])).toBe('[string]')
     expect(learnedShape('line 1\nline 2')).toBe('text')
     for (const empty of [[], {}, null]) expect(learnedShape(empty)).toBe(undefined)
@@ -222,7 +270,10 @@ describe('protocol', () => {
     expect(mergeShapes(current, new Map([['mcp__x__a', '{items: [{id}]}']]))).toBe(undefined)
     expect(mergeShapes(current, new Map([['mcp__x__a', '{items: []}']]))).toBe(undefined)
     expect(mergeShapes({}, new Map([['mcp__x__a', '{items: []}']]))).toEqual({ mcp__x__a: '{items: []}' })
-    expect(Object.keys(mergeShapes(current, new Map([['mcp__x__a', '{items: [{id, name}]}']]))!)).toEqual(['mcp__x__b', 'mcp__x__a'])
+    expect(Object.keys(mergeShapes(current, new Map([['mcp__x__a', '{items: [{id, name}]}']]))!)).toEqual([
+      'mcp__x__b',
+      'mcp__x__a',
+    ])
     const many = new Map(Array.from({ length: 501 }, (_, i) => [`mcp__x__t${i}`, '{n}'] as [string, string]))
     const merged = mergeShapes({}, many)!
     expect(Object.keys(merged).length).toBe(500)
@@ -233,7 +284,9 @@ describe('protocol', () => {
     const limit = limiter(2)
     const started: number[] = []
     const gates: (() => void)[] = []
-    const done = [0, 1, 2, 3].map(i => limit(() => new Promise<number>(resolve => (started.push(i), gates.push(() => resolve(i))))))
+    const done = [0, 1, 2, 3].map(i =>
+      limit(() => new Promise<number>(resolve => (started.push(i), gates.push(() => resolve(i))))),
+    )
     await Promise.resolve()
     expect(started).toEqual([0, 1])
     gates[1]!()
@@ -250,13 +303,24 @@ describe('protocol', () => {
 
   test('fileNameError accepts a file name, not a folder', () => {
     for (const ok of ['issues.csv', 'a_b-1.json', 'x']) expect(fileNameError(ok)).toBe(undefined)
-    for (const bad of ['../x', 'a/b.csv', '.hidden', '', 'a..b', 'x'.repeat(101)]) expect(fileNameError(bad)).toContain('not a file name')
+    for (const bad of ['../x', 'a/b.csv', '.hidden', '', 'a..b', 'x'.repeat(101)])
+      expect(fileNameError(bad)).toContain('not a file name')
   })
 
   test('fileText writes text, CSV, JSON lines or JSON', () => {
     expect(fileText('a.csv', 'raw,text')).toBe('raw,text')
-    expect(fileText('a.csv', [{ k: 'A-1', t: 'say "hi", ok' }, { k: 'A-2', n: 2 }])).toBe('k,t,n\nA-1,"say ""hi"", ok",\nA-2,,2\n')
-    expect(fileText('a.csv', [['a', 1], ['b', null]])).toBe('a,1\nb,\n')
+    expect(
+      fileText('a.csv', [
+        { k: 'A-1', t: 'say "hi", ok' },
+        { k: 'A-2', n: 2 },
+      ]),
+    ).toBe('k,t,n\nA-1,"say ""hi"", ok",\nA-2,,2\n')
+    expect(
+      fileText('a.csv', [
+        ['a', 1],
+        ['b', null],
+      ]),
+    ).toBe('a,1\nb,\n')
     expect(fileText('a.jsonl', [{ a: 1 }, 2])).toBe('{"a":1}\n2\n')
     expect(fileText('a.json', { a: [1] })).toBe('{\n  "a": [\n    1\n  ]\n}\n')
     expect(fileText('a.csv', { not: 'an array' })).toBe('{\n  "not": "an array"\n}\n')
@@ -307,9 +371,16 @@ describe('protocol', () => {
   })
 
   test('declarationKeys reads names, required names and index signatures', () => {
-    expect(declarationKeys('{\n  /** Who, gets: it */\n  to: string\n  cc?: string[]; "x-id"?: number\n  opts?: {\n    deep: boolean\n  }\n  kind:\n    | "a"\n    | "b"\n}'))
-      .toEqual({ names: ['to', 'cc', 'x-id', 'opts', 'kind'], required: ['to', 'kind'], isOpen: false })
-    expect(declarationKeys('{ a: string; [key: string]: unknown }')).toEqual({ names: ['a'], required: ['a'], isOpen: true })
+    expect(
+      declarationKeys(
+        '{\n  /** Who, gets: it */\n  to: string\n  cc?: string[]; "x-id"?: number\n  opts?: {\n    deep: boolean\n  }\n  kind:\n    | "a"\n    | "b"\n}',
+      ),
+    ).toEqual({ names: ['to', 'cc', 'x-id', 'opts', 'kind'], required: ['to', 'kind'], isOpen: false })
+    expect(declarationKeys('{ a: string; [key: string]: unknown }')).toEqual({
+      names: ['a'],
+      required: ['a'],
+      isOpen: true,
+    })
     expect(declarationKeys('{}')).toEqual({ names: [], required: [], isOpen: true })
   })
 
@@ -322,15 +393,21 @@ describe('protocol', () => {
   test('checkCalls finds wrong tools, unknown and missing arguments, and typos', () => {
     expect(editDistance('maxResult', 'maxResults')).toBe(1)
     const tools = new Set(['mcp__j__search', 'mcp__j__get', 'mcp__j__open'])
-    const spec = (tool: string) => (tool === 'mcp__j__get' ? { names: ['issueKey', 'fields'], required: ['issueKey'], isOpen: false } : undefined)
+    const spec = (tool: string) =>
+      tool === 'mcp__j__get' ? { names: ['issueKey', 'fields'], required: ['issueKey'], isOpen: false } : undefined
     const learned = { mcp__j__search: ['jql', 'maxResults', 'id'], mcp__j__open: ['ids'] }
-    const problems = checkCalls([
-      { tool: 'mcp__j__serch', line: 1, keys: [] },
-      { tool: 'mcp__j__get', line: 2, keys: ['issuekey', 'expand'] },
-      { tool: 'mcp__j__search', line: 3, keys: ['jql', 'maxResult', 'ids', 'startAt'] },
-      { tool: 'mcp__j__search', line: 4, keys: undefined },
-      { tool: 'mcp__j__open', line: 5, keys: ['id', 'idz'] },
-    ], tools, spec, learned)
+    const problems = checkCalls(
+      [
+        { tool: 'mcp__j__serch', line: 1, keys: [] },
+        { tool: 'mcp__j__get', line: 2, keys: ['issuekey', 'expand'] },
+        { tool: 'mcp__j__search', line: 3, keys: ['jql', 'maxResult', 'ids', 'startAt'] },
+        { tool: 'mcp__j__search', line: 4, keys: undefined },
+        { tool: 'mcp__j__open', line: 5, keys: ['id', 'idz'] },
+      ],
+      tools,
+      spec,
+      learned,
+    )
     expect(problems.map(p => `${p.line} ${p.text} ${p.isGuess}`)).toEqual([
       '1 no tool "mcp__j__serch" on the connected server "j" (did you mean "mcp__j__search"?); if the name is right, a deny rule hides it false',
       '2 mcp__j__get: unknown argument "issuekey" (did you mean "issueKey"?) false',
@@ -341,7 +418,9 @@ describe('protocol', () => {
     expect(problemReport(problems)).toContain('pass the arguments as a variable')
     expect(problemReport(problems.slice(0, 1))).not.toContain('as a variable')
     expect(checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {})).toEqual([])
-    expect(checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}).map(p => p.text)).toEqual(['no MCP tool "mcp__k__x" is connected'])
+    expect(checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}).map(p => p.text)).toEqual([
+      'no MCP tool "mcp__k__x" is connected',
+    ])
   })
 
   test('callKey ignores the order of keys', () => {
@@ -376,7 +455,9 @@ describe('protocol', () => {
       '  }',
       '}',
     ].join('\n')
-    expect(extractDeclaration(dts, 'mcp__x__send')).toBe('{\n  /** Who gets it */\n  to: string\n  opts?: { cc?: string[] }\n}')
+    expect(extractDeclaration(dts, 'mcp__x__send')).toBe(
+      '{\n  /** Who gets it */\n  to: string\n  opts?: { cc?: string[] }\n}',
+    )
     expect(extractDeclaration(dts, 'mcp__x__other')).toBe('{ a: number }')
     expect(extractDeclaration(dts, 'mcp__x__missing')).toBe(undefined)
   })
@@ -400,7 +481,15 @@ const fakeHost = (on: On) => {
   on('process.run', ($, e) => {
     ran.push([...e.argv])
     if (e.argv[0] === 'rm') removed.push(String(e.argv[2]))
-    return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? `${XDIR}\n` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv[0] === 'mktemp' ? `${XDIR}\n` : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
   })
   const written: Record<string, string> = {}
   on('fs.write', ($, e) => {
@@ -414,12 +503,17 @@ const fakeHost = (on: On) => {
     const { calls, returns, timeout } = JSON.parse(code) as { calls: Step[]; returns?: unknown; timeout?: number }
     const replies = calls.map((_, i) => new Promise<string>(resolve => waiters.set(`${XDIR}/r${i + 1}.json`, resolve)))
     const message = (c: Step, id: number) =>
-      'recall' in c ? { t: 'recall', id, ref: c.recall }
-      : 'save' in c ? { t: 'save', id, name: c.save, data: c.data }
-      : 'read' in c ? { t: 'read', id, path: c.read }
-      : 'resources' in c ? { t: 'resources', id, ...(c.resources === '' ? {} : { server: c.resources }) }
-      : 'resource' in c ? { t: 'resource', id, server: c.resource[0], uri: c.resource[1] }
-      : { t: 'call', id, tool: c.tool, args: c.args }
+      'recall' in c
+        ? { t: 'recall', id, ref: c.recall }
+        : 'save' in c
+          ? { t: 'save', id, name: c.save, data: c.data }
+          : 'read' in c
+            ? { t: 'read', id, path: c.read }
+            : 'resources' in c
+              ? { t: 'resources', id, ...(c.resources === '' ? {} : { server: c.resources }) }
+              : 'resource' in c
+                ? { t: 'resource', id, server: c.resource[0], uri: c.resource[1] }
+                : { t: 'call', id, tool: c.tool, args: c.args }
     const lines = calls.map((c, i) => `${MARK}${JSON.stringify(message(c, i + 1))}\n`)
     // Split the output mid-line to check the plugin's line buffering.
     const out = `log line from node\n${lines.join('')}`
@@ -428,12 +522,18 @@ const fakeHost = (on: On) => {
     yield { stream: 'stdout', text: out.slice(cut) }
     if (timeout !== undefined) {
       await Promise.all(replies.slice(0, timeout))
-      yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'timeout after 2000 ms', logs: [] })}\n` }
+      yield {
+        stream: 'stdout',
+        text: `${MARK}${JSON.stringify({ t: 'error', message: 'timeout after 2000 ms', logs: [] })}\n`,
+      }
       return { value: { code: 0, signal: null } }
     }
     const got = (await Promise.all(replies)).map(t => JSON.parse(t))
     const value = returns === undefined ? got : returns
-    yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
+    yield {
+      stream: 'stdout',
+      text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n`,
+    }
     return { value: { code: 0, signal: null } }
   })
   return { removed, spawned, ran, written, clock }
@@ -458,7 +558,10 @@ describe('run_code', () => {
   test('routes sandbox calls to MCP tools and returns the value', async ($, on) => {
     fakeServer(on)
     const host = fakeHost(on)
-    const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__echo', args: { n: 2 } }) })
+    const r = await $.tool.call({
+      tool: RUN,
+      code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__echo', args: { n: 2 } }),
+    })
     const text = textOf(r)
     expect(text).toContain('"ok": true')
     expect(text).toContain('"n": 1')
@@ -471,7 +574,9 @@ describe('run_code', () => {
   test('the sandbox starts the runner by its real path', async ($, on) => {
     fakeServer(on)
     const host = fakeHost(on)
-    on('fs.stat', ($, e) => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: true, realPath: `/real${e.path}` } }))
+    on('fs.stat', ($, e) => ({
+      value: { kind: 'file', size: 1, mtimeMs: 0, isLink: true, realPath: `/real${e.path}` },
+    }))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
     const runner = host.spawned[0]!.find(a => a.endsWith('/runtime/runner.mjs'))
     expect(runner?.startsWith('/real/')).toBe(true)
@@ -532,7 +637,12 @@ describe('files', () => {
     const files = fakeHost(on).written
     on('env.get', HOME)
     on('session.id', () => ({ value: 'sess-f' }))
-    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ save: 'rows.csv', data: [{ a: 1 }] }, { save: '../x', data: 'no' }) }))
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: scenario({ save: 'rows.csv', data: [{ a: 1 }] }, { save: '../x', data: 'no' }),
+      }),
+    )
     expect(files['/home/u/.claude/code-mode/files/sess-f/rows.csv']).toBe('a\n1\n')
     expect(text).toContain('"value": "/home/u/.claude/code-mode/files/sess-f/rows.csv"')
     expect(text).toContain('is not a file name')
@@ -544,18 +654,31 @@ describe('files', () => {
     on('env.get', HOME)
     on('session.id', () => ({ value: 'sess-f' }))
     on('session.cwd', () => ({ value: '/repo' }))
-    on('fs.stat', ($, e) => ({ value: { kind: e.path.endsWith('/files/sess-f') ? 'dir' : 'file', size: 5, mtimeMs: 0, isLink: false, realPath: e.path } }))
+    on('fs.stat', ($, e) => ({
+      value: {
+        kind: e.path.endsWith('/files/sess-f') ? 'dir' : 'file',
+        size: 5,
+        mtimeMs: 0,
+        isLink: false,
+        realPath: e.path,
+      },
+    }))
     on('fs.read', ($, e) => ({ value: `text of ${e.path}` }))
     const checked: string[] = []
     on('tool.check', ($, e) => {
       checked.push(String((e.input as { file_path?: string }).file_path))
       return { decision: e.tool === 'Read' && checked.at(-1) === '/repo/ids.txt' ? 'allow' : 'ask' }
     })
-    const text = textOf(await $.tool.call({ tool: RUN, code: scenario(
-      { read: 'ids.txt' },
-      { read: '~/.ssh/id_rsa' },
-      { read: '/home/u/.claude/code-mode/files/sess-f/rows.csv' },
-    ) }))
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: scenario(
+          { read: 'ids.txt' },
+          { read: '~/.ssh/id_rsa' },
+          { read: '/home/u/.claude/code-mode/files/sess-f/rows.csv' },
+        ),
+      }),
+    )
     expect(text).toContain('"value": "text of /repo/ids.txt"')
     expect(text).toContain('readFile: no permission to read ~/.ssh/id_rsa')
     expect(text).not.toContain('text of /home/u/.ssh/id_rsa')
@@ -575,13 +698,24 @@ describe('MCP resources', () => {
     on('tool.call', { tool: 'ReadMcpResourceTool' }, ($, e) => {
       asked.push(e)
       const { uri } = e as unknown as { uri: string }
-      return { result: JSON.stringify(uri === 'file:///a.md' ? { contents: [{ uri, mimeType: 'text/markdown', text: '# A' }] } : { contents: [], error: `Resource not found: ${uri}` }) }
+      return {
+        result: JSON.stringify(
+          uri === 'file:///a.md'
+            ? { contents: [{ uri, mimeType: 'text/markdown', text: '# A' }] }
+            : { contents: [], error: `Resource not found: ${uri}` },
+        ),
+      }
     })
-    const text = textOf(await $.tool.call({ tool: RUN, code: scenario(
-      { resources: 'docs' },
-      { resource: ['docs', 'file:///a.md'] },
-      { resource: ['docs', 'file:///gone.md'] },
-    ) }))
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: scenario(
+          { resources: 'docs' },
+          { resource: ['docs', 'file:///a.md'] },
+          { resource: ['docs', 'file:///gone.md'] },
+        ),
+      }),
+    )
     expect(text).toContain('"server": "docs"')
     expect(text).toContain('"text": "# A"')
     expect(text).toContain('Resource not found: file:///gone.md')
@@ -598,15 +732,25 @@ describe('MCP resources', () => {
 })
 
 describe('the check before a run', () => {
-  const TOOLS = [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }, { name: 'mcp__fake__search', description: 'Search', mcp: true }]
+  const TOOLS = [
+    { name: 'mcp__fake__echo', description: 'Echo', mcp: true },
+    { name: 'mcp__fake__search', description: 'Search', mcp: true },
+  ]
 
   test('a wrong tool name stops the program before it starts', async ($, on) => {
     fakeServer(on)
     const host = fakeHost(on)
     on('tool.list', () => ({ value: TOOLS }))
-    const text = textOf(await $.tool.call({ tool: RUN, code: 'await call("mcp__fake__create", { a: 1 })\nreturn await call("mcp__fake__serch", { q: 1 })' }))
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: 'await call("mcp__fake__create", { a: 1 })\nreturn await call("mcp__fake__serch", { q: 1 })',
+      }),
+    )
     expect(text).toContain('Error: the program did not run')
-    expect(text).toContain('- line 2: no tool "mcp__fake__serch" on the connected server "fake" (did you mean "mcp__fake__search"?)')
+    expect(text).toContain(
+      '- line 2: no tool "mcp__fake__serch" on the connected server "fake" (did you mean "mcp__fake__search"?)',
+    )
     expect(host.spawned).toEqual([])
   })
 
@@ -616,8 +760,15 @@ describe('the check before a run', () => {
     fakeServer(on)
     const host = fakeHost(on)
     on('tool.list', () => ({ value: TOOLS }))
-    const text = textOf(await $.tool.call({ tool: RUN, code: 'await call("mcp__fake__echo", { a: 1 })\nreturn await call("mcp__fake__delete", { id: 1 })' }))
-    expect(text).toContain('- line 2: no tool "mcp__fake__delete" on the connected server "fake"; if the name is right, a deny rule hides it')
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: 'await call("mcp__fake__echo", { a: 1 })\nreturn await call("mcp__fake__delete", { id: 1 })',
+      }),
+    )
+    expect(text).toContain(
+      '- line 2: no tool "mcp__fake__delete" on the connected server "fake"; if the name is right, a deny rule hides it',
+    )
     expect(host.spawned).toEqual([])
   })
 
@@ -627,11 +778,21 @@ describe('the check before a run', () => {
     on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
     on('fs.read', ($, e) => (e.path in host.written ? { value: host.written[e.path]! } : { deny: 'no file' }))
     on('tool.list', () => ({ value: TOOLS }))
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { query: 'x', maxResults: 5 } }, { tool: 'mcp__fake__fail', args: { nope: 1 } }) })
-    expect(JSON.parse(host.written['/home/u/.claude/code-mode/args.json']!)).toEqual({ mcp__fake__echo: ['query', 'maxResults'] })
+    await $.tool.call({
+      tool: RUN,
+      code: scenario(
+        { tool: 'mcp__fake__echo', args: { query: 'x', maxResults: 5 } },
+        { tool: 'mcp__fake__fail', args: { nope: 1 } },
+      ),
+    })
+    expect(JSON.parse(host.written['/home/u/.claude/code-mode/args.json']!)).toEqual({
+      mcp__fake__echo: ['query', 'maxResults'],
+    })
     const found = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))
     expect(found).toContain('names from earlier calls: {query, maxResults}')
-    const text = textOf(await $.tool.call({ tool: RUN, code: 'return await call("mcp__fake__echo", { query: "y", maxResult: 5 })' }))
+    const text = textOf(
+      await $.tool.call({ tool: RUN, code: 'return await call("mcp__fake__echo", { query: "y", maxResult: 5 })' }),
+    )
     expect(text).toContain('argument "maxResult" is not a name that earlier calls used (did you mean "maxResults"?)')
     expect(text).toContain('pass the arguments as a variable')
     expect(host.spawned.length).toBe(1)
@@ -640,12 +801,14 @@ describe('the check before a run', () => {
 
 describe('search_tools', () => {
   test('ranks MCP tools and adds their argument types', async ($, on) => {
-    on('tool.list', () => ({ value: [
-      { name: 'mcp__mail__send', description: 'Send an email\nMore text', mcp: true },
-      { name: 'mcp__mail__list', description: 'List emails', mcp: true },
-      { name: RUN, description: 'own tool', mcp: true },
-      { name: 'Bash', description: 'send commands', mcp: false },
-    ] }))
+    on('tool.list', () => ({
+      value: [
+        { name: 'mcp__mail__send', description: 'Send an email\nMore text', mcp: true },
+        { name: 'mcp__mail__list', description: 'List emails', mcp: true },
+        { name: RUN, description: 'own tool', mcp: true },
+        { name: 'Bash', description: 'send commands', mcp: false },
+      ],
+    }))
     const dts = 'interface McpToolInputs {\n  "mcp__mail__send": { to: string }\n}'
     on('fs.stat', () => ({ value: { kind: 'file', size: dts.length, mtimeMs: 1, isLink: false } }))
     on('fs.read', () => ({ value: dts }))
@@ -680,7 +843,9 @@ describe('the debug log', () => {
     on('tool.list', () => ({ deny: 'no tool list' }))
     const r = await $.tool.call({ tool: TOOL.search_tools, query: 'send' })
     expect(textOf(r)).toContain('search_tools failed; see the debug log')
-    expect(logs.some(l => l.startsWith('debug: code-mode: search_tools failed (throw): ') && l.includes('no tool list'))).toBe(true)
+    expect(
+      logs.some(l => l.startsWith('debug: code-mode: search_tools failed (throw): ') && l.includes('no tool list')),
+    ).toBe(true)
   })
 })
 
@@ -755,7 +920,12 @@ describe('output projection', () => {
   test('the footer gives each result a number, its size and its shape', ON, async ($, on) => {
     fakeServer(on)
     fakeHost(on)
-    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }) }))
+    const text = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }),
+      }),
+    )
     expect(text).toContain('--- 2 MCP calls: ')
     expect(text).toMatch(/#1 mcp__fake__echo \d+ \{echoed: \{n\}\}/)
     expect(text).toContain('- mcp__fake__fail failed')
@@ -766,7 +936,13 @@ describe('output projection', () => {
     fakeServer(on)
     const host = fakeHost(on)
     on('tool.call', { tool: 'mcp__fake__hang' }, () => new Promise<never>(() => undefined))
-    const code = JSON.stringify({ calls: [{ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__hang', args: {} }], timeout: 1 })
+    const code = JSON.stringify({
+      calls: [
+        { tool: 'mcp__fake__echo', args: { n: 1 } },
+        { tool: 'mcp__fake__hang', args: {} },
+      ],
+      timeout: 1,
+    })
     const run = $.tool.call({ tool: RUN, code })
     // run_code waits one second for the call that never answers.
     await host.clock.settle()
@@ -787,7 +963,10 @@ describe('output projection', () => {
       await new Promise(r => setTimeout(r, 50))
       return { result: '{"ok":1}' }
     })
-    const calls = [...Array.from({ length: 8 }, () => ({ tool: 'mcp__fake__slow', args: {} })), { tool: 'mcp__fake__echo', args: {} }]
+    const calls = [
+      ...Array.from({ length: 8 }, () => ({ tool: 'mcp__fake__slow', args: {} })),
+      { tool: 'mcp__fake__echo', args: {} },
+    ]
     const text = textOf(await $.tool.call({ tool: RUN, code: JSON.stringify({ calls, timeout: 0 }) }))
     // The test kit's clock does not wait, so the slow calls end after the run: then a free slot would start the queued call.
     await new Promise(r => setTimeout(r, 100))
@@ -798,11 +977,17 @@ describe('output projection', () => {
 
   test('many calls: the group line counts the calls that did not finish', () => {
     const calls: CallRecord[] = [
-      ...Array.from({ length: 8 }, (_, i): CallRecord => ({ ref: i + 1, tool: 'mcp__x__get', status: 'ok', chars: 10 })),
+      ...Array.from(
+        { length: 8 },
+        (_, i): CallRecord => ({ ref: i + 1, tool: 'mcp__x__get', status: 'ok', chars: 10 }),
+      ),
       { tool: 'mcp__x__get', status: 'failed', chars: 0 },
       { tool: 'mcp__x__get', status: 'unfinished', chars: 0 },
     ]
-    const text = projectionFooter({ calls, recalls: 0, recalled: [] }, { t: 'error', message: 'timeout after 2000 ms', logs: [] })
+    const text = projectionFooter(
+      { calls, recalls: 0, recalled: [] },
+      { t: 'error', message: 'timeout after 2000 ms', logs: [] },
+    )
     expect(text).toContain('--- 10 MCP calls: ')
     expect(text).toContain('#1…#8 mcp__x__get ×10, 1 failed, 1 did not finish 80')
   })
@@ -860,7 +1045,9 @@ describe('output projection', () => {
     fakeServer(on)
     fakeHost(on)
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { a: 1, b: 2 } }) })
-    const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { b: 2, a: 1 } }) }))
+    const text = textOf(
+      await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { b: 2, a: 1 } }) }),
+    )
     expect(text).toContain('#2 mcp__fake__echo')
     expect(text).toContain('the same call as #1')
   })
@@ -868,7 +1055,9 @@ describe('output projection', () => {
   test('an empty result after calls that returned data says so', ON, async ($, on) => {
     fakeServer(on)
     fakeHost(on)
-    const text = textOf(await $.tool.call({ tool: RUN, code: returning([], { tool: 'mcp__fake__echo', args: { n: 1 } }) }))
+    const text = textOf(
+      await $.tool.call({ tool: RUN, code: returning([], { tool: 'mcp__fake__echo', args: { n: 1 } }) }),
+    )
     expect(text).toContain('The result is empty, but the calls returned data')
   })
 
@@ -879,7 +1068,12 @@ describe('output projection', () => {
     const big = Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `item ${i}` }))
     const cut = textOf(await $.tool.call({ tool: RUN, code: returning(big, { tool: 'mcp__fake__echo' }) }))
     expect(cut).toContain('more characters cut; await recall(2) returns the whole result')
-    const again = textOf(await $.tool.call({ tool: RUN, code: returning({ last: 'see replies' }, { tool: 'mcp__fake__echo', args: { x: 1 } }) }))
+    const again = textOf(
+      await $.tool.call({
+        tool: RUN,
+        code: returning({ last: 'see replies' }, { tool: 'mcp__fake__echo', args: { x: 1 } }),
+      }),
+    )
     expect(again).toContain('#3 mcp__fake__echo')
   })
 
@@ -889,7 +1083,10 @@ describe('output projection', () => {
     on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
     on('fs.read', ($, e) => (e.path in files ? { value: files[e.path]! } : { deny: 'no file' }))
     on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }] }))
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }) })
+    await $.tool.call({
+      tool: RUN,
+      code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__fail' }),
+    })
     expect(JSON.parse(files['/home/u/.claude/code-mode/shapes.json']!)).toEqual({ mcp__fake__echo: '{echoed: {n}}' })
     const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))
     expect(text).toContain('returns (earlier call): {echoed: {n}}')
@@ -906,33 +1103,57 @@ describe('output projection', () => {
     expect(textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'echo' }))).not.toContain('returns')
   })
 
-  test('metrics: one line per run with counts and sizes, no data', { options: { projection: true, metrics: true } }, async ($, on) => {
-    fakeServer(on)
-    const { written: files, clock } = fakeHost(on)
-    on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-    on('session.id', () => ({ value: 'sess-m' }))
-    await clock.set(Date.UTC(2026, 0, 2))
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }) })
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }, { recall: 1 }) })
-    const text = files['/home/u/.claude/code-mode/metrics/sess-m.jsonl']!
-    const lines = text.trim().split('\n').map(l => JSON.parse(l))
-    expect(lines.length).toBe(2)
-    expect(lines[0].ts).toBe('2026-01-02T00:00:00.000Z')
-    expect(lines[1]).toMatchObject({ projection: true, ok: true, calls: 1, repeats: 1, recalls: 1, recallMisses: 0, cut: false })
-    expect(text).not.toContain('s3')
-  })
+  test(
+    'metrics: one line per run with counts and sizes, no data',
+    { options: { projection: true, metrics: true } },
+    async ($, on) => {
+      fakeServer(on)
+      const { written: files, clock } = fakeHost(on)
+      on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+      on('session.id', () => ({ value: 'sess-m' }))
+      await clock.set(Date.UTC(2026, 0, 2))
+      await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }) })
+      await $.tool.call({
+        tool: RUN,
+        code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }, { recall: 1 }),
+      })
+      const text = files['/home/u/.claude/code-mode/metrics/sess-m.jsonl']!
+      const lines = text
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l))
+      expect(lines.length).toBe(2)
+      expect(lines[0].ts).toBe('2026-01-02T00:00:00.000Z')
+      expect(lines[1]).toMatchObject({
+        projection: true,
+        ok: true,
+        calls: 1,
+        repeats: 1,
+        recalls: 1,
+        recallMisses: 0,
+        cut: false,
+      })
+      expect(text).not.toContain('s3')
+    },
+  )
 
-  test('metrics count repeats with projection off too', { options: { metrics: true, projection: false } }, async ($, on) => {
-    fakeServer(on)
-    const files = fakeHost(on).written
-    on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-    on('session.id', () => ({ value: 'sess-o' }))
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
-    const lines = files['/home/u/.claude/code-mode/metrics/sess-o.jsonl']!.trim().split('\n').map(l => JSON.parse(l))
-    expect(lines.map(l => l.repeats)).toEqual([0, 1])
-    expect(lines[1].projection).toBe(false)
-  })
+  test(
+    'metrics count repeats with projection off too',
+    { options: { metrics: true, projection: false } },
+    async ($, on) => {
+      fakeServer(on)
+      const files = fakeHost(on).written
+      on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+      on('session.id', () => ({ value: 'sess-o' }))
+      await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
+      await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 1 } }) })
+      const lines = files['/home/u/.claude/code-mode/metrics/sess-o.jsonl']!.trim()
+        .split('\n')
+        .map(l => JSON.parse(l))
+      expect(lines.map(l => l.repeats)).toEqual([0, 1])
+      expect(lines[1].projection).toBe(false)
+    },
+  )
 })
 
 describe('approval', () => {
@@ -970,12 +1191,16 @@ describe('approval', () => {
     expect(textOf(r)).toContain('"error": "server error"')
   })
 
-  test('per-call: a call no rule decides keeps the normal tool call', { options: { approval: 'per-call' } }, async ($, on) => {
-    const server = fakeServer(on, { mcp__fake__echo: ASK })
-    fakeHost(on)
-    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
-    expect(server.paths).toEqual(['tool.call'])
-  })
+  test(
+    'per-call: a call no rule decides keeps the normal tool call',
+    { options: { approval: 'per-call' } },
+    async ($, on) => {
+      const server = fakeServer(on, { mcp__fake__echo: ASK })
+      fakeHost(on)
+      await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
+      expect(server.paths).toEqual(['tool.call'])
+    },
+  )
 })
 
 describe('blockDirectMcp', () => {
@@ -1060,8 +1285,12 @@ describe('hint nudge', () => {
     const dir = '/home/fake/.claude/code-mode/hints'
     on('env.get', ($, e, next) => (e.name === 'HOME' ? { value: '/home/fake' } : next(e)))
     on('fs.exists', ($, e) => ({ value: e.path === dir }))
-    on('fs.list', ($, e) => ({ value: e.path === dir ? [{ name: 'fake.md', kind: 'file', size: 1, mtimeMs: 0, isLink: false }] : [] }))
-    on('fs.read', ($, e, next) => (e.path === `${dir}/fake.md` ? { value: '---\nservers: [fake]\n---\n- Echo returns its arguments.\n' } : next(e)))
+    on('fs.list', ($, e) => ({
+      value: e.path === dir ? [{ name: 'fake.md', kind: 'file', size: 1, mtimeMs: 0, isLink: false }] : [],
+    }))
+    on('fs.read', ($, e, next) =>
+      e.path === `${dir}/fake.md` ? { value: '---\nservers: [fake]\n---\n- Echo returns its arguments.\n' } : next(e),
+    )
     await run($, { tool: 'mcp__fake__echo' })
     expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
   })
@@ -1093,7 +1322,9 @@ describe('function nudge', () => {
     fakeServer(on)
     fakeHost(on)
     on('tool.call', { tool: 'mcp__fake__other' }, () => ({ result: '"other"' }))
-    expect(await run($, [...calls(4), ...calls(1, 'mcp__fake__other')])).toContain('This program made 5 calls to echo, other.')
+    expect(await run($, [...calls(4), ...calls(1, 'mcp__fake__other')])).toContain(
+      'This program made 5 calls to echo, other.',
+    )
   })
 })
 
@@ -1101,9 +1332,16 @@ describe('the tool table', () => {
   const inFront = TOOL_NAMES.filter(n => !registration(n).isDeferred)
 
   test('parseInput gives each value the type of its schema', () => {
-    expect(parseInput('add_hint', { server: ' s ', text: 1, tools: ['a', 2, 'b'], scope: 'project' })).toEqual({ server: ' s ', text: '', why: '', tools: ['a', 'b'], scope: 'project' })
+    expect(parseInput('add_hint', { server: ' s ', text: 1, tools: ['a', 2, 'b'], scope: 'project' })).toEqual({
+      server: ' s ',
+      text: '',
+      why: '',
+      tools: ['a', 'b'],
+      scope: 'project',
+    })
     expect(parseInput('search_tools', { query: 'q', limit: '5' }).limit).toBe(5)
-    for (const limit of [undefined, '', 'many', null]) expect(parseInput('search_tools', { query: 'q', limit }).limit).toBeUndefined()
+    for (const limit of [undefined, '', 'many', null])
+      expect(parseInput('search_tools', { query: 'q', limit }).limit).toBeUndefined()
   })
 
   test('each schema requires only its own properties, and only run_code and search_tools are in front', () => {
@@ -1117,7 +1355,10 @@ describe('the tool table', () => {
   // A deferred tool is behind ToolSearch, so the model finds it only by a name
   // in text it sees without a search: a tool in front, or the hint preamble.
   test('the text in front names each deferred tool', () => {
-    const seen = [...inFront.map(n => registration(n).description), formatHints([parseHint('- x', '/h.md', 'user')])].join('\n')
+    const seen = [
+      ...inFront.map(n => registration(n).description),
+      formatHints([parseHint('- x', '/h.md', 'user')]),
+    ].join('\n')
     for (const name of TOOL_NAMES.filter(n => !inFront.includes(n))) expect(seen).toContain(name)
   })
 

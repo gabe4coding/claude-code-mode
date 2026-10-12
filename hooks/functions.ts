@@ -17,7 +17,8 @@ const MAX_DESCRIPTION_CHARS = 200
 /** Why a proposal cannot be saved, or undefined. */
 export const functionError = (name: string, description: string, code: string): string | undefined => {
   if (!NAME.test(name)) return 'name must be a JavaScript name of 40 characters at most, such as "searchAllIssues"'
-  if (description === '' || description.length > MAX_DESCRIPTION_CHARS) return `description is one sentence (${MAX_DESCRIPTION_CHARS} characters at most)`
+  if (description === '' || description.length > MAX_DESCRIPTION_CHARS)
+    return `description is one sentence (${MAX_DESCRIPTION_CHARS} characters at most)`
   if (code.length > MAX_CODE_CHARS) return `code is ${code.length} characters, more than ${MAX_CODE_CHARS}`
   if (!/^async\b/.test(code)) return 'code must be an async function expression, such as async ({ jql }) => { ... }'
   if (code.includes('```')) return 'code must not contain ```'
@@ -56,10 +57,12 @@ export const functionTransfer = (f: Omit<SavedFunction, 'path'>): string =>
 export const parseFunction = (text: string, path: string): SavedFunction | undefined => {
   const front = /^---\n([\s\S]*?)\n---\n/.exec(text)
   if (front === null) return undefined
-  const fields = new Map(front[1]!.split('\n').flatMap(line => {
-    const at = line.indexOf(':')
-    return at < 0 ? [] : [[line.slice(0, at).trim(), line.slice(at + 1).trim()] as const]
-  }))
+  const fields = new Map(
+    front[1]!.split('\n').flatMap(line => {
+      const at = line.indexOf(':')
+      return at < 0 ? [] : [[line.slice(0, at).trim(), line.slice(at + 1).trim()] as const]
+    }),
+  )
   const code = /```js\n([\s\S]*?)\n```/.exec(text.slice(front[0].length))?.[1]?.trim()
   const name = fields.get('name') ?? ''
   const description = fields.get('description') ?? ''
@@ -97,12 +100,21 @@ export const signatureOf = (code: string): string => {
  * the found tools, and those whose name or description holds a word of the
  * query. An empty query gives all of them.
  */
-export const functionsFor = (functions: readonly SavedFunction[], tools: readonly string[], query: string): SavedFunction[] => {
-  const wanted = query.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1)
-  return functions.filter(f =>
-    wanted.length === 0 ||
-    tools.some(t => f.code.includes(t)) ||
-    wanted.some(w => f.name.toLowerCase().includes(w) || f.description.toLowerCase().includes(w)))
+export const functionsFor = (
+  functions: readonly SavedFunction[],
+  tools: readonly string[],
+  query: string,
+): SavedFunction[] => {
+  const wanted = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(w => w.length > 1)
+  return functions.filter(
+    f =>
+      wanted.length === 0 ||
+      tools.some(t => f.code.includes(t)) ||
+      wanted.some(w => f.name.toLowerCase().includes(w) || f.description.toLowerCase().includes(w)),
+  )
 }
 
 // Above this many line pairs between the equal first and last lines, codeDiff
@@ -156,16 +168,20 @@ export const failedFunctions = (message: string, names: readonly string[]): stri
 
 /** The note after a run that failed in a saved function. */
 export const functionFixNudge = (names: readonly string[]): string =>
-  names.length === 0 ? '' : `## A saved function failed\n\nThe error comes from ${names.map(n => `lib.${n}`).join(', ')}. If its code is wrong now (a tool or its result changed), read it with return lib.<name>.toString(), fix it, and propose the fix with save_function under the same name.`
+  names.length === 0
+    ? ''
+    : `## A saved function failed\n\nThe error comes from ${names.map(n => `lib.${n}`).join(', ')}. If its code is wrong now (a tool or its result changed), read it with return lib.<name>.toString(), fix it, and propose the fix with save_function under the same name.`
 
 /** The functions section of a search_tools result. */
 export const formatFunctions = (functions: readonly SavedFunction[]): string =>
-  functions.length === 0 ? '' : [
-    '## Saved functions',
-    '',
-    'Call them in run_code as await lib.<name>(args). The person approved each one.',
-    ...functions.map(f => `- lib.${f.name}${signatureOf(f.code)}: ${f.description}`),
-  ].join('\n')
+  functions.length === 0
+    ? ''
+    : [
+        '## Saved functions',
+        '',
+        'Call them in run_code as await lib.<name>(args). The person approved each one.',
+        ...functions.map(f => `- lib.${f.name}${signatureOf(f.code)}: ${f.description}`),
+      ].join('\n')
 
 export const SAVE_FUNCTION_DESCRIPTION = `Propose a program part as a saved function, for a task that comes back. Programs in later sessions then call it as await lib.<name>(args), and search_tools lists it. The function has no effect until the person reads the code and approves it.
 

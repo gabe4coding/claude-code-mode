@@ -26,6 +26,28 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `scripts/` | `projection-report.mjs`: compares your runs with output projection on and off, from the metrics files. |
 | `docs/` | The user docs. |
 
+## Format
+
+Prettier formats the code, JSON and YAML files. The settings are in `.prettierrc.json`. Prettier does not format
+Markdown and MDX files. `scripts/format.sh` runs the pinned Prettier version with your arguments.
+
+To format the staged files before each commit, turn on the pre-commit hook one time in your clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- The hook formats the staged files and stages the result.
+- If a staged file also has unstaged changes, the hook stops the commit. Stage or stash the changes, then commit
+  again.
+- CI does a check of the format, so a commit that is not formatted fails CI.
+
+To format all files, run this command:
+
+```bash
+sh scripts/format.sh --write .
+```
+
 ## Tests
 
 Run all the checks before each commit:
@@ -50,12 +72,17 @@ node tests/code.check.mjs
 npx -p typescript tsc -p tsconfig.pure.json
 ```
 
+```bash
+sh scripts/format.sh --check .
+```
+
 - `claude plugin test .` tests the hooks with a fake host. The test kit cannot start processes.
 - `tests/runner.integration.mjs` tests the real sandbox with Node.
 - `tests/docs.check.mjs` checks the rules for the docs.
 - `tests/code.check.mjs` checks the code rules that the types and the tests cannot see.
 - `tsconfig.pure.json` checks the types of the pure helpers (`hooks/*.ts`) without the Claude Code types. An import
   of `claude-code`, of `hooks/register.tsx` or of a Node module fails.
+- `scripts/format.sh --check .` checks that Prettier has formatted all files. See [Format](#format).
 
 If you develop with Claude Code, put the checks in this loop before each commit:
 

@@ -4,3 +4,6 @@
 
 .DS_Store
 node_modules/
+# The worktrees of Claude Code sessions. Without this line, a format of the
+# main checkout changes them too.
+.claude/worktrees/

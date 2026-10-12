@@ -20,13 +20,23 @@ import {
 } from '../hooks/functions'
 
 const DIR = `${HOME}/.claude/code-mode/functions`
-const CODE = 'async ({ cloudId, jql }) => {\n  const r = await call("mcp__jira__search", { cloudId, jql })\n  return r.issues\n}'
+const CODE =
+  'async ({ cloudId, jql }) => {\n  const r = await call("mcp__jira__search", { cloudId, jql })\n  return r.issues\n}'
 const SAVE = TOOL.save_function
 
-const fn = (name: string, code: string, description = `Does ${name}.`): SavedFunction => ({ name, description, code, path: `${DIR}/${name}.md` })
+const fn = (name: string, code: string, description = `Does ${name}.`): SavedFunction => ({
+  name,
+  description,
+  code,
+  path: `${DIR}/${name}.md`,
+})
 
-const TOOLS = [{ name: 'mcp__jira__search', description: 'Search issues' }, { name: 'mcp__mail__send', description: 'Send mail' }]
-const fakeHome = (on: On, files: Record<string, string>) => fakeHomeIn(on, files, {}, { sessionId: 'sess-1', tools: TOOLS })
+const TOOLS = [
+  { name: 'mcp__jira__search', description: 'Search issues' },
+  { name: 'mcp__mail__send', description: 'Send mail' },
+]
+const fakeHome = (on: On, files: Record<string, string>) =>
+  fakeHomeIn(on, files, {}, { sessionId: 'sess-1', tools: TOOLS })
 
 describe('function files', () => {
   test('functionError accepts an async function expression with a name and a description', () => {
@@ -40,8 +50,16 @@ describe('function files', () => {
 
   test('formatFunction and parseFunction give the same function back', () => {
     const text = formatFunction({ name: 'searchAll', description: 'Every\nissue.', code: CODE, why: 'Weekly report.' })
-    expect(text).toBe(`---\nname: searchAll\ndescription: Every issue.\nwhy: Weekly report.\n---\n\n\`\`\`js\n${CODE}\n\`\`\`\n`)
-    expect(parseFunction(text, '/f.md')).toEqual({ name: 'searchAll', description: 'Every issue.', code: CODE, path: '/f.md', why: 'Weekly report.' })
+    expect(text).toBe(
+      `---\nname: searchAll\ndescription: Every issue.\nwhy: Weekly report.\n---\n\n\`\`\`js\n${CODE}\n\`\`\`\n`,
+    )
+    expect(parseFunction(text, '/f.md')).toEqual({
+      name: 'searchAll',
+      description: 'Every issue.',
+      code: CODE,
+      path: '/f.md',
+      why: 'Weekly report.',
+    })
     expect(parseFunction('---\nname: x\n---\nno code', '/f.md')).toBe(undefined)
     expect(parseFunction(text.replace('searchAll', 'bad name'), '/f.md')).toBe(undefined)
   })
@@ -64,7 +82,10 @@ describe('function files', () => {
   })
 
   test('functionsFor finds a function by a tool it calls or by a query word', () => {
-    const all = [fn('searchAll', CODE, 'Every issue for a query.'), fn('mailDigest', 'async () => 1', 'A digest of mail.')]
+    const all = [
+      fn('searchAll', CODE, 'Every issue for a query.'),
+      fn('mailDigest', 'async () => 1', 'A digest of mail.'),
+    ]
     expect(functionsFor(all, ['mcp__jira__search'], 'jira').map(f => f.name)).toEqual(['searchAll'])
     expect(functionsFor(all, [], 'digest').map(f => f.name)).toEqual(['mailDigest'])
     expect(functionsFor(all, [], '').map(f => f.name)).toEqual(['searchAll', 'mailDigest'])
@@ -80,7 +101,9 @@ describe('function files', () => {
     // Too large for the table of common lines: all old lines, then all new ones,
     // between the equal first and last lines.
     const lines = (p: string) => Array.from({ length: 600 }, (_, i) => `${p}${i}`)
-    const diff = codeDiff(['top', ...lines('a'), 'end'].join('\n'), ['top', ...lines('b'), 'end'].join('\n')).split('\n')
+    const diff = codeDiff(['top', ...lines('a'), 'end'].join('\n'), ['top', ...lines('b'), 'end'].join('\n')).split(
+      '\n',
+    )
     expect(diff.slice(0, 3)).toEqual(['@@ -1,602 +1,602 @@', ' top', '-a0'])
     expect(diff.slice(601, 604)).toEqual(['-a599', '+b0', '+b1'])
     expect(diff.at(-1)).toBe(' end')
@@ -89,7 +112,9 @@ describe('function files', () => {
   test('failedFunctions finds the saved functions an error came from', () => {
     const stack = 'Error: boom\n    at eval (lib/page.js:3:11)\n    at async code.js:1:14'
     expect(failedFunctions(stack, ['page', 'searchAll'])).toEqual(['page'])
-    expect(failedFunctions('SyntaxError: lib.searchAll does not compile: x', ['page', 'searchAll'])).toEqual(['searchAll'])
+    expect(failedFunctions('SyntaxError: lib.searchAll does not compile: x', ['page', 'searchAll'])).toEqual([
+      'searchAll',
+    ])
     expect(functionFixNudge([])).toBe('')
     expect(functionFixNudge(['page'])).toContain('The error comes from lib.page.')
   })
@@ -100,30 +125,65 @@ describe('save_function', () => {
   const OUTPUT = `Proposed the function lib.searchAll. It has no effect until the person reads it and approves it in the band above the prompt. Tell the person.\npending: ${PENDING}`
   const PROPOSAL = formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' })
   const row = {
-    plugin: 'code-mode', surface: 'terminal' as const, component: 'ToolResult' as const, requestId: 'toolu_1',
+    plugin: 'code-mode',
+    surface: 'terminal' as const,
+    component: 'ToolResult' as const,
+    requestId: 'toolu_1',
     props: { tool_use_id: 'toolu_1', tool: SAVE, output: OUTPUT, isErrored: false },
   }
   const band = {
-    plugin: 'code-mode', surface: 'terminal' as const, component: 'AbovePrompt' as const,
+    plugin: 'code-mode',
+    surface: 'terminal' as const,
+    component: 'AbovePrompt' as const,
     props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 90 } as never,
   }
 
   test('writes a proposal, and nothing that loads', async ($, on) => {
     const fs = fakeHome(on, {})
-    const r = await $.tool.call({ tool: SAVE, tool_use_id: 'toolu_1', name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' } as never)
+    const r = await $.tool.call({
+      tool: SAVE,
+      tool_use_id: 'toolu_1',
+      name: 'searchAll',
+      description: 'Every issue.',
+      code: CODE,
+      why: 'Weekly report.',
+    } as never)
     expect(textOf(r)).toBe(OUTPUT)
     expect(fs.written[PENDING]).toBe(PROPOSAL)
     expect(Object.keys(fs.written)).toEqual([PENDING])
-    const bad = await $.tool.call({ tool: SAVE, tool_use_id: 'toolu_2', name: 'x', description: 'X.', code: 'return 1', why: 'W.' } as never)
+    const bad = await $.tool.call({
+      tool: SAVE,
+      tool_use_id: 'toolu_2',
+      name: 'x',
+      description: 'X.',
+      code: 'return 1',
+      why: 'W.',
+    } as never)
     expect(textOf(bad)).toContain('Error: code must be an async function expression')
   })
 
   test('in Cowork, writes the proposal and gives the code in a block to paste elsewhere', async ($, on) => {
     const fs = fakeHome(on, {})
     fs.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
-    const r = textOf(await $.tool.call({ tool: SAVE, tool_use_id: 'toolu_1', name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' } as never))
-    const block = functionTransfer({ name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' })
-    expect(block).toBe(`\`\`\`\`text\nPropose this code-mode function with save_function. Keep the code as it is.\nname: searchAll\ndescription: Every issue.\nwhy: Weekly report.\ncode:\n\`\`\`js\n${CODE}\n\`\`\`\n\`\`\`\``)
+    const r = textOf(
+      await $.tool.call({
+        tool: SAVE,
+        tool_use_id: 'toolu_1',
+        name: 'searchAll',
+        description: 'Every issue.',
+        code: CODE,
+        why: 'Weekly report.',
+      } as never),
+    )
+    const block = functionTransfer({
+      name: 'searchAll',
+      description: 'Every issue.',
+      code: CODE,
+      why: 'Weekly report.',
+    })
+    expect(block).toBe(
+      `\`\`\`\`text\nPropose this code-mode function with save_function. Keep the code as it is.\nname: searchAll\ndescription: Every issue.\nwhy: Weekly report.\ncode:\n\`\`\`js\n${CODE}\n\`\`\`\n\`\`\`\``,
+    )
     expect(r).toBe(`Proposed the function lib.searchAll. ${TRANSFER_TEXT}\n\n${block}\npending: ${PENDING}`)
     expect(pendingPathOf(r)).toBe(PENDING)
     expect(fs.written[PENDING]).toBe(PROPOSAL)
@@ -137,7 +197,9 @@ describe('save_function', () => {
     expect(drawn).toContain('`lib.searchAll({ cloudId, jql })`')
     expect(drawn).toContain('return r.issues')
     await ui.press({ key: 'approve' })
-    expect(fs.written[`${DIR}/searchAll.md`]).toBe(formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }))
+    expect(fs.written[`${DIR}/searchAll.md`]).toBe(
+      formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }),
+    )
     expect(fs.removed).toEqual([PENDING])
     expect(JSON.stringify(await ui.drawn())).toContain('Function saved')
   })
@@ -157,14 +219,19 @@ describe('save_function', () => {
   test('a proposal with the name of a saved function shows the change from its code', async ($, on) => {
     mock.store(on)
     const old = CODE.replace('return r.issues', 'return r')
-    const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${DIR}/searchAll.md`]: formatFunction({ name: 'searchAll', description: 'Old.', code: old }) })
+    const fs = fakeHome(on, {
+      [PENDING]: PROPOSAL,
+      [`${DIR}/searchAll.md`]: formatFunction({ name: 'searchAll', description: 'Old.', code: old }),
+    })
     const ui = await $.ui.mount(row)
     const drawn = JSON.stringify(await ui.drawn())
     expect(drawn).toContain('**Change of a saved function**')
     expect(drawn).toContain('Now: Old.')
     expect(drawn).toContain(JSON.stringify(codeDiff(old, CODE)).slice(1, -1))
     await ui.press({ key: 'approve' })
-    expect(fs.written[`${DIR}/searchAll.md`]).toBe(formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }))
+    expect(fs.written[`${DIR}/searchAll.md`]).toBe(
+      formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }),
+    )
   })
 
   test('the band lists function proposals with the hint proposals', async ($, on) => {
@@ -181,7 +248,11 @@ describe('save_function', () => {
 
 describe('saved functions in programs', () => {
   const files = {
-    [`${DIR}/searchAll.md`]: formatFunction({ name: 'searchAll', description: 'Every issue.', code: 'async a => lib.page(a)' }),
+    [`${DIR}/searchAll.md`]: formatFunction({
+      name: 'searchAll',
+      description: 'Every issue.',
+      code: 'async a => lib.page(a)',
+    }),
     [`${DIR}/page.md`]: formatFunction({ name: 'page', description: 'One page.', code: CODE }),
     [`${DIR}/other.md`]: formatFunction({ name: 'other', description: 'Something else.', code: 'async () => 1' }),
   }
@@ -202,10 +273,14 @@ describe('saved functions in programs', () => {
   test('a run that fails in a saved function asks for a fix, once per function in a session', async ($, on) => {
     fakeHome(on, { ...files })
     on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
-      yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'TypeError: x is undefined\n    at eval (lib/page.js:2:9)', logs: [] })}\n` }
+      yield {
+        stream: 'stdout',
+        text: `${MARK}${JSON.stringify({ t: 'error', message: 'TypeError: x is undefined\n    at eval (lib/page.js:2:9)', logs: [] })}\n`,
+      }
       return { value: { code: 0, signal: null } }
     })
-    const run = async () => textOf(await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' }))
+    const run = async () =>
+      textOf(await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' }))
     expect(await run()).toContain('## A saved function failed\n\nThe error comes from lib.page.')
     expect(await run()).not.toContain('A saved function failed')
   })

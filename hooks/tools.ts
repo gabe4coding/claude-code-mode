@@ -49,10 +49,16 @@ export const TOOLS = {
     description: ADD_HINT_DESCRIPTION,
     isDeferred: true,
     properties: {
-      server: str('The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.'),
+      server: str(
+        'The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.',
+      ),
       text: str('The hint: one short, factual sentence.'),
       why: str('What failed before and what worked, in one sentence.'),
-      tools: { type: 'array', items: { type: 'string' }, description: 'Optional: tool names on that server (globs allowed) when the hint is for some tools only.' },
+      tools: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional: tool names on that server (globs allowed) when the hint is for some tools only.',
+      },
       scope: { type: 'string', enum: ['user', 'project'], description: 'Default "user".' },
     },
     required: ['server', 'text', 'why'],
@@ -80,7 +86,9 @@ export const TOOLS = {
     properties: {
       name: str('A JavaScript name: programs call it as lib.<name>(args).'),
       description: str('What it returns, in one sentence.'),
-      code: str('An async function expression with one argument, such as async ({ cloudId, jql }) => { ... }. It can use call, sleep and the other run_code functions.'),
+      code: str(
+        'An async function expression with one argument, such as async ({ cloudId, jql }) => { ... }. It can use call, sleep and the other run_code functions.',
+      ),
       why: str('Which task it did and why the task comes back, in one sentence.'),
     },
     required: ['name', 'description', 'code', 'why'],
@@ -106,7 +114,9 @@ export const registration = (name: ToolName) => {
 type ValueOf<P> = P extends { type: 'number' } ? number | undefined : P extends { type: 'array' } ? string[] : string
 
 /** The input of one tool, each value of the type its schema gives. */
-export type InputOf<N extends ToolName> = { -readonly [K in keyof (typeof TOOLS)[N]['properties']]: ValueOf<(typeof TOOLS)[N]['properties'][K]> }
+export type InputOf<N extends ToolName> = {
+  -readonly [K in keyof (typeof TOOLS)[N]['properties']]: ValueOf<(typeof TOOLS)[N]['properties'][K]>
+}
 
 /**
  * The model's input to tool `name`. The schema is advice to the model, not a
@@ -123,7 +133,8 @@ export const parseInput = <N extends ToolName>(name: N, e: object): InputOf<N> =
     if (property.type === 'number') {
       const n = typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN
       input[key] = Number.isFinite(n) ? n : undefined
-    } else if (property.type === 'array') input[key] = Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
+    } else if (property.type === 'array')
+      input[key] = Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
     else input[key] = typeof v === 'string' ? v : ''
   }
   return input as InputOf<N>
