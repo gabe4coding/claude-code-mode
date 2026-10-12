@@ -294,9 +294,9 @@ export const pendingFileName = (fileName: string, id: string): string =>
 export const activePathOf = (pendingPath: string): string =>
   pendingPath.replace('/pending/', '/').replace(/--[a-z0-9_]+\.md$/, '.md')
 
-/** The pending file named in an add_hint result. */
+/** The pending file named in the last line of a proposal result (a code block above it can hold any line). */
 export const pendingPathOf = (output: string): string | undefined =>
-  output.match(/^pending: (.+\.md)$/m)?.[1]
+  [...output.matchAll(/^pending: (.+\.md)$/gm)].at(-1)?.[1]
 
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
 export const resolvePath = (path: string, home: string, cwd: string): string => {
@@ -397,6 +397,51 @@ export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): string =>
 export const removalProposal = (hint: Hint, item: string, review: Review): string =>
   withReview(appendHint(undefined, hint.servers, hint.identify, hint.tools, hintKey(item)), review)
     .replace(/^---\n/, `---\nremove: ${JSON.stringify(hintRef(hint))}\n`)
+
+/**
+ * Hosts that draw no plugin UI, so nobody can press Approve: Cowork, on the
+ * desktop and in the cloud, and cloud sessions in the web and mobile apps.
+ * There a proposal also goes back as a block that the person pastes into a
+ * session that can show it: the model there proposes it again.
+ */
+const NO_APPROVAL_ENTRYPOINTS = new Set(['local-agent', 'local_agent', 'remote_cowork', 'remote_cowork_trigger'])
+
+export const canApprove = (entrypoint: string | undefined, remote: string | undefined): boolean =>
+  !NO_APPROVAL_ENTRYPOINTS.has(entrypoint ?? '') && !/^(1|true|yes|on)$/i.test((remote ?? '').trim())
+
+export const TRANSFER_TEXT =
+  'This app cannot show the Approve button, so the proposal changes no hint or function file yet. Show the person the block below as it is. Tell them to paste it into Claude Code in a terminal or in the desktop app (not Cowork), and to approve it there.'
+
+/** A fence longer than each run of backticks in the text. */
+const fenceFor = (text: string): string =>
+  '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map(m => m[0].length + 1)))
+
+/** Lines for the model of another session, in one fenced block to copy. */
+export const transferBlock = (lines: readonly string[]): string => {
+  const body = lines.join('\n')
+  const fence = fenceFor(body)
+  return `${fence}text\n${body}\n${fence}`
+}
+
+const oneLine = (text: string): string => text.replace(/\s*\n\s*/g, ' ').trim()
+
+export const hintTransfer = (p: { server: string; tools: readonly string[]; scope: string; text: string; why: string }): string =>
+  transferBlock([
+    'Propose this code-mode hint with add_hint. Keep the text as it is.',
+    `server: ${p.server}`,
+    ...(p.tools.length > 0 ? [`tools: ${p.tools.join(', ')}`] : []),
+    `scope: ${p.scope}`,
+    `text: ${oneLine(p.text)}`,
+    `why: ${oneLine(p.why)}`,
+  ])
+
+export const removalTransfer = (p: { server: string; text: string; why: string }): string =>
+  transferBlock([
+    'Find this code-mode hint with search_tools, then propose its removal with remove_hint.',
+    `server: ${p.server}`,
+    `text: ${oneLine(p.text)}`,
+    `why: ${oneLine(p.why)}`,
+  ])
 
 /**
  * Bundled hints the person removed: the plugin folder is replaced on each

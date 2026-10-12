@@ -1,10 +1,12 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { MARK } from '../hooks/protocol'
+import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
   formatFunction,
   formatFunctions,
   functionError,
+  functionTransfer,
   functionsFor,
   parseFunction,
   signatureOf,
@@ -23,8 +25,9 @@ const fn = (name: string, code: string, description = `Does ${name}.`): SavedFun
 const fakeHome = (on: On, files: Record<string, string>) => {
   const written: Record<string, string> = {}
   const removed: string[] = []
+  const env: Record<string, string> = {}
   const all = () => ({ ...files, ...written })
-  on('env.get', () => ({ value: HOME }))
+  on('env.get', ($, e) => ({ value: env[e.name] ?? HOME }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('fs.exists', ($, e) => ({ value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
   on('fs.list', ($, e) => {
@@ -44,7 +47,7 @@ const fakeHome = (on: On, files: Record<string, string>) => {
     return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? '/tmp/cm-test\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('tool.list', () => ({ value: [{ name: 'mcp__jira__search', description: 'Search issues', mcp: true }, { name: 'mcp__mail__send', description: 'Send mail', mcp: true }] }))
-  return { written, removed }
+  return { written, removed, env }
 }
 
 const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
@@ -118,6 +121,17 @@ describe('save_function', () => {
     expect(Object.keys(fs.written)).toEqual([PENDING])
     const bad = await $.tool.call({ tool: SAVE, tool_use_id: 'toolu_2', name: 'x', description: 'X.', code: 'return 1', why: 'W.' } as never)
     expect(textOf(bad)).toContain('Error: code must be an async function expression')
+  })
+
+  test('in Cowork, writes the proposal and gives the code in a block to paste elsewhere', async ($, on) => {
+    const fs = fakeHome(on, {})
+    fs.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
+    const r = textOf(await $.tool.call({ tool: SAVE, tool_use_id: 'toolu_1', name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' } as never))
+    const block = functionTransfer({ name: 'searchAll', description: 'Every issue.', code: CODE, why: 'Weekly report.' })
+    expect(block).toBe(`\`\`\`\`text\nPropose this code-mode function with save_function. Keep the code as it is.\nname: searchAll\ndescription: Every issue.\nwhy: Weekly report.\ncode:\n\`\`\`js\n${CODE}\n\`\`\`\n\`\`\`\``)
+    expect(r).toBe(`Proposed the function lib.searchAll. ${TRANSFER_TEXT}\n\n${block}\npending: ${PENDING}`)
+    expect(pendingPathOf(r)).toBe(PENDING)
+    expect(fs.written[PENDING]).toBe(PROPOSAL)
   })
 
   test('the row shows the code, and Approve saves the function without its reason', async ($, on) => {

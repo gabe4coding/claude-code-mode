@@ -5,15 +5,18 @@ import {
   HINT_KINDS,
   OTHER_INSTRUCTION,
   REMOVE_HINT_DESCRIPTION,
+  TRANSFER_TEXT,
   activePathOf,
   appendHint,
   asCode,
+  canApprove,
   codeNames,
   displayName,
   findItem,
   formatHints,
   hintFileName,
   hintItems,
+  hintTransfer,
   hintKey,
   hintRef,
   hintsFor,
@@ -26,6 +29,7 @@ import {
   pendingPathOf,
   parseRemoved,
   removalProposal,
+  removalTransfer,
   removeFromFile,
   resolvePath,
   reviewFields,
@@ -88,6 +92,7 @@ import {
   formatFunction,
   formatFunctions,
   functionError,
+  functionTransfer,
   functionsFor,
   parseFunction,
   signatureOf,
@@ -199,6 +204,15 @@ function debugLog($: EngineInterface, text: string): void {
   } catch {
     // no log in this frame
   }
+}
+
+// Whether this host draws the plugin's Approve buttons (see canApprove).
+async function approvalShown($: EngineInterface): Promise<boolean> {
+  const [entrypoint, remote] = await Promise.all([
+    $.env.get('CLAUDE_CODE_ENTRYPOINT').catch(() => undefined),
+    $.env.get('CLAUDE_CODE_REMOTE').catch(() => undefined),
+  ])
+  return canApprove(entrypoint, remote)
 }
 
 // Per session, because one hooks module serves each session of the host (the
@@ -812,6 +826,9 @@ export const register: Register = (on, options) => {
     await $.fs.write(path, formatFunction({ name, description, code, why }))
     $.ui.invalidate('ui.render')
     const replaces = (await loadFunctions($)).some(f => f.name === name) ? ` It replaces the saved function ${name}.` : ''
+    if (!(await approvalShown($))) {
+      return { result: `Proposed the function lib.${name}.${replaces} ${TRANSFER_TEXT}\n\n${functionTransfer({ name, description, code, why })}\npending: ${path}` }
+    }
     return {
       result: `Proposed the function lib.${name}.${replaces} It has no effect until the person reads it and approves it in the band above the prompt. Tell the person.\npending: ${path}`,
     }
@@ -888,6 +905,9 @@ export const register: Register = (on, options) => {
     }
     await $.fs.write(path, withReview(appendHint(undefined, servers, identify ? [identify] : [], tools, text), review))
     $.ui.invalidate('ui.render') // the band above the prompt counts the proposal
+    if (!(await approvalShown($))) {
+      return { result: `Proposed a ${scope} hint for ${servers[0]}. ${TRANSFER_TEXT}\n\n${hintTransfer({ server: isUuid && identify ? `the server with the tool ${identify}` : servers[0]!, tools, scope, text, why })}\npending: ${path}` }
+    }
     return {
       result: `Proposed a ${scope} hint for ${servers[0]}. It has no effect until the person approves it in the band above the prompt (Review, then Approve or Discard). Tell the person.\npending: ${path}`,
     }
@@ -929,6 +949,10 @@ export const register: Register = (on, options) => {
     await $.fs.write(pending, removalProposal(hint, found.item, review))
     ;(await sessionOf($)).hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
     $.ui.invalidate('ui.render')
+    if (!(await approvalShown($))) {
+      const server = serverLabel(hint)
+      return { result: `Hid the hint in this session and proposed to remove it from ${path}. ${TRANSFER_TEXT}\n\n${removalTransfer({ server, text: hintKey(found.item), why })}\npending: ${pending}` }
+    }
     return {
       result: `Hid the hint in this session and proposed to remove it from ${path}. The file changes only after the person approves the removal in the band above the prompt. Tell the person.\npending: ${pending}`,
     }
