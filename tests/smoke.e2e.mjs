@@ -21,6 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ISSUES } from '../bench/data.mjs'
+import { forgetRuns } from '../bench/forget.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const arg = (name, fallback) => {
@@ -45,6 +46,11 @@ const log = path.join(out, 'calls.jsonl')
 const mcp = path.join(out, 'mcp.json')
 fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { [server]: { command: 'node', args: [path.join(ROOT, 'bench', 'fake-server.mjs')], env: { BENCH_LOG: log } } } }))
 
+// The low MAX_MCP_OUTPUT_TOKENS makes Claude Code save the list_issues result
+// (all of ISSUES) to a file and give a note with its path. The plugin
+// finds the note by its wording, so a new Claude Code release can break it.
+const MAX_MCP_OUTPUT_TOKENS = '5000'
+
 // list_issues has an allow rule. create_ticket has no rule: claude -p cannot
 // ask, so the call must be refused. get_deploys has a deny rule, which takes
 // it out of the session: the check before the run must stop the second
@@ -53,7 +59,7 @@ const PROGRAM = `const issues = await call("${tool('list_issues')}", { project: 
 const denied = await call("${tool('create_ticket')}", { title: "smoke" }).then(() => "ran", e => e.message)
 const saved = await saveFile("smoke.json", { total: issues.total })
 const back = JSON.parse(await readFile(saved))
-return { total: issues.total, back: back.total, denied, process: typeof process, require: typeof require }`
+return { total: issues.total, count: issues.issues.length, back: back.total, denied, process: typeof process, require: typeof require }`
 const DENIED_PROGRAM = `return await call("${tool('get_deploys')}", { date: "2026-10-09" })`
 const PROMPT = `Do these three steps, in this order. Do not change the program.
 1. Call ${RUN} with exactly this code:
@@ -79,7 +85,7 @@ const argv = [
 
 console.log(`claude -p with ${model}, into ${out}`)
 const exit = await new Promise(resolve => {
-  const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MAX_MCP_OUTPUT_TOKENS } })
   const timer = setTimeout(() => child.kill(), TIMEOUT_MS)
   child.stdout.on('data', d => fs.appendFileSync(path.join(out, 'out.json'), d))
   child.stderr.on('data', d => fs.appendFileSync(path.join(out, 'stderr.txt'), d))
@@ -143,6 +149,14 @@ const cases = {
     assert.deepEqual(calls.filter(c => c.tool === 'create_ticket'), [])
   },
 
+  'a result that Claude Code saved to a file reaches the program whole': () => {
+    // A large hook output of another plugin is saved there too, as hook-*.
+    const saved = path.join(projectDir, sessionId, 'tool-results')
+    const results = fs.existsSync(saved) ? fs.readdirSync(saved).filter(f => !f.startsWith('hook-')) : []
+    assert.ok(results.length > 0, `Claude Code saved no MCP result to a file: lower MAX_MCP_OUTPUT_TOKENS (${MAX_MCP_OUTPUT_TOKENS})`)
+    assert.match(resultText(RUN), new RegExp(`"count": ${ISSUES.length}\\b`))
+  },
+
   'readFile reads the file from saveFile': () => {
     assert.match(resultText(RUN), new RegExp(`"back": ${ISSUES.length}\\b`))
   },
@@ -180,12 +194,7 @@ for (const [name, fn] of Object.entries(cases)) {
 }
 
 // Remove what the run saved outside its folder.
-for (const file of ['shapes.json', 'args.json'].map(f => path.join(HOME, 'code-mode', f)).filter(f => fs.existsSync(f))) {
-  const learned = JSON.parse(fs.readFileSync(file, 'utf8'))
-  fs.writeFileSync(file, `${JSON.stringify(Object.fromEntries(Object.entries(learned).filter(([t]) => !t.startsWith(`mcp__${server}__`))), null, 2)}\n`)
-}
-fs.rmSync(metricsFile, { force: true })
-fs.rmSync(path.join(HOME, 'code-mode', 'files', sessionId), { recursive: true, force: true })
+forgetRuns(tool => tool.startsWith(`mcp__${server}__`), [sessionId])
 if (failed === 0 && !keep) {
   fs.rmSync(projectDir, { recursive: true, force: true })
   fs.rmSync(out, { recursive: true, force: true })

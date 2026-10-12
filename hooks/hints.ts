@@ -298,6 +298,17 @@ export const activePathOf = (pendingPath: string): string =>
 export const pendingPathOf = (output: string): string | undefined =>
   [...output.matchAll(/^pending: (.+\.md)$/gm)].at(-1)?.[1]
 
+// $.store refuses a key over 256 characters, and a pending file in a deep
+// project has a longer path. Its file name is unique on its own: it ends in
+// the id of the tool call that wrote it.
+const MAX_STORE_KEY = 256
+
+/** The $.store key that keeps the decision on a pending file. */
+export const decisionKey = (path: string): string => {
+  const key = `decision:${path}`
+  return key.length <= MAX_STORE_KEY ? key : `decision:${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
+}
+
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
 export const resolvePath = (path: string, home: string, cwd: string): string => {
   const full = path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
