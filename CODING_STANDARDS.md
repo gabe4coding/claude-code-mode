@@ -25,7 +25,15 @@ enforces; the others rely on discipline.
   refuse them, because they change what auto mode approves.
 
 ## Tests and commits
-- Before every commit, run all three checks. `[test: CI runs all three]`
+- Before every commit, do the verification loop in this order. If a step changes code, start again at step 1.
+  1. `/simplify`: the built-in Claude Code skill. It cleans up the diff and applies the fixes. Run it first, so
+     the checks test its edits too.
+  2. The three checks below.
+  3. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. Run it
+     after a change to `hooks/`, `runtime/` or `hints/`. Skip it when the diff touches only tests or docs: there is
+     nothing to drive. It reads the project recipe in `.claude/skills/verify/SKILL.md`: real `claude -p` with the
+     plugin and the bench's fake server. If a command in the recipe fails or a step is missing, fix the recipe.
+- The three checks. `[test: CI runs all three]`
   - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.

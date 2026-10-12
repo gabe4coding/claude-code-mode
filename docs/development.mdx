@@ -44,6 +44,14 @@ node tests/docs.check.mjs
 - `tests/runner.integration.mjs` tests the real sandbox with Node.
 - `tests/docs.check.mjs` checks the rules for the docs.
 
+If you develop with Claude Code, put the three checks in this loop before each commit:
+
+1. Run `/simplify`. This built-in skill cleans up the diff and applies the fixes.
+2. Run the three checks.
+3. Run `/verify` after a change to `hooks/`, `runtime/` or `hints/`. This built-in skill drives the change end to
+   end. It has nothing to drive in a change to tests or docs only.
+4. If a step changes code, start again at step 1.
+
 CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` and each pull request:
 
 - It runs the sandbox test on Linux and on macOS, with the network block: `sandbox-exec` on macOS and
