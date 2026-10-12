@@ -2,6 +2,7 @@ import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { TOOL, TOOL_NAMES, parseInput, registration } from '../hooks/tools'
 import { textOf } from './fakes'
+import { formatHints, parseHint } from '../hooks/hints'
 import {
   MARK,
   argNamesOf,
@@ -1097,6 +1098,8 @@ describe('function nudge', () => {
 })
 
 describe('the tool table', () => {
+  const inFront = TOOL_NAMES.filter(n => !registration(n).isDeferred)
+
   test('parseInput gives each value the type of its schema', () => {
     expect(parseInput('add_hint', { server: ' s ', text: 1, tools: ['a', 2, 'b'], scope: 'project' })).toEqual({ server: ' s ', text: '', why: '', tools: ['a', 'b'], scope: 'project' })
     expect(parseInput('search_tools', { query: 'q', limit: '5' }).limit).toBe(5)
@@ -1108,6 +1111,20 @@ describe('the tool table', () => {
       const { inputSchema } = registration(name)
       expect(inputSchema.required.every(k => k in inputSchema.properties)).toBe(true)
     }
-    expect(TOOL_NAMES.filter(n => !registration(n).isDeferred)).toEqual(['run_code', 'search_tools'])
+    expect(inFront).toEqual(['run_code', 'search_tools'])
+  })
+
+  // A deferred tool is behind ToolSearch, so the model finds it only by a name
+  // in text it sees without a search: a tool in front, or the hint preamble.
+  test('the text in front names each deferred tool', () => {
+    const seen = [...inFront.map(n => registration(n).description), formatHints([parseHint('- x', '/h.md', 'user')])].join('\n')
+    for (const name of TOOL_NAMES.filter(n => !inFront.includes(n))) expect(seen).toContain(name)
+  })
+
+  // The tools in front load in every session, so each word costs tokens in
+  // every session. Raise the limit only for text that changes what the model does.
+  test('the tools in front do not grow', () => {
+    const size = inFront.reduce((sum, n) => sum + JSON.stringify(registration(n)).length, 0)
+    expect(size).toBeLessThanOrEqual(2568)
   })
 })
