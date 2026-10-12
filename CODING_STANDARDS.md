@@ -5,7 +5,7 @@ enforces; the others rely on discipline.
 
 ## Code
 - `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`,
-  `hooks/hints.ts` and `hooks/functions.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
+  `hooks/hints.ts`, `hooks/functions.ts` and `hooks/paths.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
   `[test: tsconfig.pure.json fails when a pure helper imports claude-code, register.tsx or a Node module]`
@@ -14,6 +14,9 @@ enforces; the others rely on discipline.
   runs. A set option reaches the script as `CLAUDE_PLUGIN_OPTION_<KEY>`.
 - Read the time with `await $.clock.now()`, never `Date.now()` or `new Date()`: a test sets the time with
   `mock.clock`. `[test: code.check.mjs]`
+- Make each path into `.claude/code-mode` with a helper from `hooks/paths.ts`: `hintsFolder`, `functionsFolder` or
+  `codeModePath`. The guard reads `guardedDirs` there, so the guard and the loaders name the same folders.
+  `[test: code.check.mjs]` `[test: hints.test.ts guards each folder of guardedDirs]`
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because

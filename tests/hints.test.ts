@@ -1,6 +1,7 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { guardedDirs } from '../hooks/paths'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -1011,6 +1012,24 @@ describe('the hint-file guard', () => {
       session(on)
       const r = await $.tool.call({ tool, ...input } as never)
       expect(textOf(r)).toContain('hint files and saved functions steer the model')
+    })
+  }
+
+  test('guardedDirs skips an empty root', () => {
+    expect(guardedDirs('', '/repo')).toEqual(['/repo/.claude/code-mode/hints'])
+    expect(guardedDirs(HOME, '')).toHaveLength(2)
+  })
+
+  // A folder added to guardedDirs is guarded for each file tool and for Bash.
+  for (const dir of guardedDirs(HOME, '/repo')) {
+    test(`guards ${dir}`, async ($, on) => {
+      session(on)
+      const calls = [
+        { tool: 'Write', file_path: `${dir}/a.md`, content: 'x' },
+        { tool: 'Edit', file_path: `${dir}/pending/a.md`, old_string: 'a', new_string: 'b' },
+        { tool: 'Bash', command: `cat ${dir}/a.md` },
+      ]
+      for (const call of calls) expect(textOf(await $.tool.call(call as never))).toContain('hint files and saved functions steer the model')
     })
   }
 

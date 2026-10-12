@@ -112,6 +112,7 @@ import {
   usedFunctions,
   type SavedFunction,
 } from './functions'
+import { codeModePath, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
 
 const MAX_RESULT_CHARS = 20_000
 const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
@@ -170,14 +171,19 @@ const reviewOpen = atom({ plugin: 'code-mode', key: 'isReviewOpen' } as const, f
 const reviewIndex = atom({ plugin: 'code-mode', key: 'reviewIndex' } as const, 0)
 const reviewResult = atom({ plugin: 'code-mode', key: 'reviewResult' } as const, null)
 
+// The person's HOME, or '' when it is not set.
+async function homeOf($: EngineInterface): Promise<string> {
+  return (await $.env.get('HOME').catch(() => undefined)) ?? ''
+}
+
 // Hint folders. Bundled and user hints always load; project hints come from
 // the repository, so anyone who can commit there could steer the model: they
 // load only when the person turns `projectHints` on.
 async function hintDirs($: EngineInterface, projectHints: boolean): Promise<{ scope: HintScope; dir: string }[]> {
-  const home = await $.env.get('HOME').catch(() => undefined)
+  const home = await homeOf($)
   const dirs: { scope: HintScope; dir: string }[] = [{ scope: 'bundled', dir: `${$.plugin.root}/hints` }]
-  if (home) dirs.push({ scope: 'user', dir: `${home}/.claude/code-mode/hints` })
-  if (projectHints) dirs.push({ scope: 'project', dir: `${await $.session.root()}/.claude/code-mode/hints` })
+  if (home) dirs.push({ scope: 'user', dir: hintsFolder(home) })
+  if (projectHints) dirs.push({ scope: 'project', dir: hintsFolder(await $.session.root()) })
   return dirs
 }
 
@@ -296,10 +302,10 @@ function keep(kept: Kept, json: string, at: number): number | undefined {
 // One line per run in ~/.claude/code-mode/metrics/<session>.jsonl, for the
 // output projection experiment: sizes and counts only, no data and no arguments.
 async function writeMetrics($: EngineInterface, state: SessionState, line: Record<string, unknown>): Promise<void> {
-  const [home, id, now] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => ''), $.clock.now()])
+  const [home, id, now] = await Promise.all([homeOf($), $.session.id().catch(() => ''), $.clock.now()])
   if (!home || id === '') return
   state.metrics.push(JSON.stringify({ ts: new Date(now).toISOString(), ...line }))
-  await $.fs.write(`${home}/.claude/code-mode/metrics/${id}.jsonl`, `${state.metrics.join('\n')}\n`)
+  await $.fs.write(codeModePath(home, 'metrics', `${id}.jsonl`), `${state.metrics.join('\n')}\n`)
 }
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
@@ -329,8 +335,8 @@ const SHAPES: Learned<Shapes, ReadonlyMap<string, string>> = { file: 'shapes.jso
 const ARG_NAMES: Learned<ArgNames, ReadonlyMap<string, readonly string[]>> = { file: 'args.json', parse: parseArgNames, merge: mergeArgNames }
 
 async function learnedPath($: EngineInterface, file: string): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/${file}` : undefined
+  const home = await homeOf($)
+  return home ? codeModePath(home, file) : undefined
 }
 
 async function readLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineInterface, store: Learned<T, L>): Promise<T> {
@@ -350,15 +356,15 @@ async function saveLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineI
 // where the person's Write rules apply. A move into the project goes through
 // Bash and its permission check.
 async function filesDir($: EngineInterface): Promise<string | undefined> {
-  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
-  return home ? `${home}/.claude/code-mode/files/${id || 'no-session'}` : undefined
+  const [home, id] = await Promise.all([homeOf($), $.session.id().catch(() => '')])
+  return home ? codeModePath(home, 'files', id || 'no-session') : undefined
 }
 
 // The text of a file for readFile: a file from saveFile, or a file that the
 // person's Read rules let Claude Code read with no prompt. A program can send
 // what it reads to an MCP tool, so a path that needs a prompt is refused.
 async function readForProgram($: EngineInterface, path: string): Promise<Reply> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+  const home = await homeOf($)
   const full = resolvePath(path, home, await $.session.cwd())
   const stat = await $.fs.stat(full, { resolve: true }).catch(() => undefined)
   if (stat?.kind !== 'file') return { ok: false, error: `readFile: no file at ${path}` }
@@ -555,15 +561,10 @@ function decidePending($: EngineInterface, path: string, action: Action, project
   })
 }
 
-// The folders whose files steer the model: the person's and the project's
-// hints (the project's even while projectHints is off, so none can be
-// planted to load later) and the person's saved functions, each as written
-// and as its real path.
-async function guardedHintDirs($: EngineInterface): Promise<string[]> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
-  const root = await $.session.root()
-  const dirs = [`${home}/.claude/code-mode/hints`, `${root}/.claude/code-mode/hints`, `${home}/.claude/code-mode/functions`]
-    .filter(d => !d.startsWith('/.claude'))
+// The folders whose files steer the model (guardedDirs in paths.ts), each as
+// written and as its real path.
+async function guardedHintDirs($: EngineInterface, home: string): Promise<string[]> {
+  const dirs = guardedDirs(home, await $.session.root())
   const real = await Promise.all(dirs.map(d => $.fs.stat(d, { resolve: true }).then(s => s.realPath, () => undefined)))
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
@@ -571,15 +572,15 @@ async function guardedHintDirs($: EngineInterface): Promise<string[]> {
 // True when a file tool's path lands in a hint folder: the path as written,
 // its real path, or its parent's real path (a new file is not there yet).
 async function touchesHints($: EngineInterface, filePath: string): Promise<boolean> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+  const home = await homeOf($)
   const full = resolvePath(filePath, home, await $.session.cwd())
   const parent = full.slice(0, full.lastIndexOf('/')) || '/'
-  const [self, dir] = await Promise.all([
+  const [self, dir, dirs] = await Promise.all([
     $.fs.stat(full, { resolve: true }).then(s => s.realPath, () => undefined),
     $.fs.stat(parent, { resolve: true }).then(s => s.realPath, () => undefined),
+    guardedHintDirs($, home),
   ])
   const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
-  const dirs = await guardedHintDirs($)
   return candidates.some(c => typeof c === 'string' && dirs.some(d => isUnder(c, d)))
 }
 
@@ -700,8 +701,8 @@ function guardFailed($: EngineInterface, tool: string, error: { kind: string; me
 // Saved functions: the person's only, never the project's, because a
 // function's code runs in programs. pending/ holds the proposals.
 async function functionsDir($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/functions` : undefined
+  const home = await homeOf($)
+  return home ? functionsFolder(home) : undefined
 }
 
 async function readFunctionFiles($: EngineInterface, dir: string): Promise<SavedFunction[]> {
@@ -1523,7 +1524,7 @@ export const register: Register = (on, options) => {
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'NotebookEdit', next.error)))
   on('tool.call', { tool: 'Bash' }, ($, e, next) =>
-    /code-mode\/+(hints|functions)/i.test(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
+    namesGuardedDir(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Bash', next.error)))
 
   // Optional: push the model to run_code by refusing its direct MCP calls.
