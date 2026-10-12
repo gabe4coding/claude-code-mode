@@ -1,10 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { Caught, Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
-  ADD_HINT_DESCRIPTION,
-  EDIT_HINT_DESCRIPTION,
   HINT_KINDS,
-  REMOVE_HINT_DESCRIPTION,
   PROPOSAL_TEXT,
   TRANSFER_TEXT,
   activePathOf,
@@ -20,10 +17,18 @@ import {
   hintItems,
   hintTransfer,
   hintKey,
+  bundledRef,
+  hiddenKey,
   hintRef,
+  refTarget,
+  parseDecision,
+  type Decision,
+  type HiddenKey,
+  type HintEdit,
   hintsFor,
   hintApplies,
   isUnder,
+  isUuidLike,
   kindQuestion,
   newHintFlags,
   normalize,
@@ -51,13 +56,10 @@ import {
   withoutReview,
   type Hint,
   type HintScope,
-  type ProposalKind,
   type Review,
   type ReviewFields,
 } from './hints'
 import {
-  RUN_DESCRIPTION,
-  SEARCH_DESCRIPTION,
   argNamesOf,
   callKey,
   checkCalls,
@@ -97,7 +99,6 @@ import {
   type Shapes,
 } from './protocol'
 import {
-  SAVE_FUNCTION_DESCRIPTION,
   codeDiff,
   failedFunctions,
   formatFunction,
@@ -111,10 +112,11 @@ import {
   usedFunctions,
   type SavedFunction,
 } from './functions'
+import { codeModePath, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
+import { SEARCH_LIMIT, TOOL, TOOL_NAMES, parseInput, registration } from './tools'
 
 const MAX_RESULT_CHARS = 20_000
 const MAX_SAVED_BYTES = 4 * 1024 * 1024 // what one $.fs.read returns
-const SEARCH_LIMIT = 15
 // Nested calls of one run that wait for a reply at one time: a program that
 // maps over hundreds of ids must not hit a server's rate limit at once.
 const MAX_PARALLEL_CALLS = 8
@@ -152,12 +154,6 @@ type Options = {
   metrics?: boolean
 }
 
-const ADD_HINT = 'mcp__code-mode__add_hint'
-const REMOVE_HINT = 'mcp__code-mode__remove_hint'
-const EDIT_HINT = 'mcp__code-mode__edit_hint'
-const SAVE_FUNCTION = 'mcp__code-mode__save_function'
-// The names a card shows as inline code when the model's reason names them.
-const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'edit_hint', 'save_function']
 // A program that did this many calls that worked, or this many to more than
 // one tool, is worth a saved function.
 const FUNCTION_CALLS = 10
@@ -169,14 +165,19 @@ const reviewOpen = atom({ plugin: 'code-mode', key: 'isReviewOpen' } as const, f
 const reviewIndex = atom({ plugin: 'code-mode', key: 'reviewIndex' } as const, 0)
 const reviewResult = atom({ plugin: 'code-mode', key: 'reviewResult' } as const, null)
 
+// The person's HOME, or '' when it is not set.
+async function homeOf($: EngineInterface): Promise<string> {
+  return (await $.env.get('HOME').catch(() => undefined)) ?? ''
+}
+
 // Hint folders. Bundled and user hints always load; project hints come from
 // the repository, so anyone who can commit there could steer the model: they
 // load only when the person turns `projectHints` on.
 async function hintDirs($: EngineInterface, projectHints: boolean): Promise<{ scope: HintScope; dir: string }[]> {
-  const home = await $.env.get('HOME').catch(() => undefined)
+  const home = await homeOf($)
   const dirs: { scope: HintScope; dir: string }[] = [{ scope: 'bundled', dir: `${$.plugin.root}/hints` }]
-  if (home) dirs.push({ scope: 'user', dir: `${home}/.claude/code-mode/hints` })
-  if (projectHints) dirs.push({ scope: 'project', dir: `${await $.session.root()}/.claude/code-mode/hints` })
+  if (home) dirs.push({ scope: 'user', dir: hintsFolder(home) })
+  if (projectHints) dirs.push({ scope: 'project', dir: hintsFolder(await $.session.root()) })
   return dirs
 }
 
@@ -201,7 +202,7 @@ async function readHintFiles($: EngineInterface, dir: string, scope: HintScope):
   )
   return files.map((f, i) => {
     const hint = parseHint(String(texts[i]), `${dir}/${f.name}`, scope)
-    if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.remove === undefined) {
+    if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.edit === undefined) {
       debugLog($, `${hint.path} names no servers, identify or tools in its frontmatter, so it applies to no server`)
     }
     return hint
@@ -233,9 +234,9 @@ async function approvalShown($: EngineInterface): Promise<boolean> {
 }
 
 // Per session, because one hooks module serves each session of the host (the
-// desktop app runs many). `hidden`: the hints remove_hint hid (`hintRef` +
-// newline + `hintKey`); they stay hidden in that session whatever the person
-// decides, unless the person discards the removal. `tries`: servers whose
+// desktop app runs many). `hidden`: the hints remove_hint hid (`hiddenKey`);
+// they stay hidden in that session whatever the person decides, unless the
+// person discards the removal. `tries`: servers whose
 // calls failed and have not worked since, and search_tools queries that found
 // nothing; a run that works after them is the moment to propose a hint
 // (hintNudge). `failedTries` counts the runs with a failed try per server,
@@ -249,7 +250,7 @@ async function approvalShown($: EngineInterface): Promise<boolean> {
 // JSON line per run, when on.
 type Tries = { failedServers: Set<string>; missedSearches: string[]; failedTries: Map<string, number>; usedTools: Set<string>; nudged: Set<string> }
 type Kept = { next: number; results: Map<number, { json: string; at: number }>; chars: number; seen: Map<string, number> }
-type SessionState = { hidden: Set<string>; tries: Tries; kept: Kept; metrics: string[] }
+type SessionState = { hidden: Set<HiddenKey>; tries: Tries; kept: Kept; metrics: string[] }
 const bySession = new Map<string, SessionState>()
 
 async function sessionOf($: EngineInterface): Promise<SessionState> {
@@ -276,12 +277,12 @@ const MAX_KEPT = 50
 const MAX_KEPT_CHARS = 8_000_000
 const MAX_SEEN = 2000
 
-// Keeps a result and returns its number; the oldest results go first. A
-// result larger than the whole limit is not kept.
-function keep(kept: Kept, json: string): number | undefined {
+// Keeps a result from time `at` and returns its number; the oldest results go
+// first. A result larger than the whole limit is not kept.
+function keep(kept: Kept, json: string, at: number): number | undefined {
   if (json.length > MAX_KEPT_CHARS) return undefined
   const ref = kept.next++
-  kept.results.set(ref, { json, at: Date.now() })
+  kept.results.set(ref, { json, at })
   kept.chars += json.length
   for (const [old, r] of kept.results) {
     if (kept.results.size <= MAX_KEPT && kept.chars <= MAX_KEPT_CHARS) break
@@ -295,10 +296,10 @@ function keep(kept: Kept, json: string): number | undefined {
 // One line per run in ~/.claude/code-mode/metrics/<session>.jsonl, for the
 // output projection experiment: sizes and counts only, no data and no arguments.
 async function writeMetrics($: EngineInterface, state: SessionState, line: Record<string, unknown>): Promise<void> {
-  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
+  const [home, id, now] = await Promise.all([homeOf($), $.session.id().catch(() => ''), $.clock.now()])
   if (!home || id === '') return
-  state.metrics.push(JSON.stringify(line))
-  await $.fs.write(`${home}/.claude/code-mode/metrics/${id}.jsonl`, `${state.metrics.join('\n')}\n`)
+  state.metrics.push(JSON.stringify({ ts: new Date(now).toISOString(), ...line }))
+  await $.fs.write(codeModePath(home, 'metrics', `${id}.jsonl`), `${state.metrics.join('\n')}\n`)
 }
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
@@ -309,43 +310,39 @@ async function readIfExists($: EngineInterface, path: string): Promise<string | 
   return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
 }
 
-// The result shape of each MCP tool from its last call that worked, in any
-// session: search_tools shows it, so a first program need not guess it.
-async function shapesPath($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/shapes.json` : undefined
+// What runs learn about each MCP tool, in a JSON file in ~/.claude/code-mode
+// that every session shares. `parse` drops what the plugin cannot have
+// written; `merge` gives undefined when a run learned nothing new.
+type Learned<T, L extends ReadonlyMap<string, unknown>> = {
+  file: string
+  parse: (text: string) => T
+  merge: (current: T, learned: L) => T | undefined
 }
 
-async function readShapes($: EngineInterface): Promise<Shapes> {
-  const path = await shapesPath($)
-  return path === undefined ? {} : parseShapes(String(await $.fs.read(path).catch(() => '')))
+// The result shape of each MCP tool from its last call that worked:
+// search_tools shows it, so a first program need not guess it.
+const SHAPES: Learned<Shapes, ReadonlyMap<string, string>> = { file: 'shapes.json', parse: parseShapes, merge: mergeShapes }
+
+// The argument names of each MCP tool from its calls that worked:
+// search_tools shows them when no types file declares the tool, and the
+// check before a run finds a name close to one of them.
+const ARG_NAMES: Learned<ArgNames, ReadonlyMap<string, readonly string[]>> = { file: 'args.json', parse: parseArgNames, merge: mergeArgNames }
+
+async function learnedPath($: EngineInterface, file: string): Promise<string | undefined> {
+  const home = await homeOf($)
+  return home ? codeModePath(home, file) : undefined
 }
 
-// Writes only when a shape changed, so most runs write nothing.
-async function saveShapes($: EngineInterface, learned: ReadonlyMap<string, string>): Promise<void> {
-  const path = await shapesPath($)
+async function readLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineInterface, store: Learned<T, L>): Promise<T> {
+  const path = await learnedPath($, store.file)
+  return store.parse(path === undefined ? '' : String(await $.fs.read(path).catch(() => '')))
+}
+
+// Writes only when something changed, so most runs write nothing.
+async function saveLearned<T, L extends ReadonlyMap<string, unknown>>($: EngineInterface, store: Learned<T, L>, learned: L): Promise<void> {
+  const path = await learnedPath($, store.file)
   if (path === undefined || learned.size === 0) return
-  const next = mergeShapes(await readShapes($), learned)
-  if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
-}
-
-// The argument names of each MCP tool from its calls that worked, in any
-// session: search_tools shows them when no types file declares the tool, and
-// the check before a run finds a name close to one of them.
-async function argNamesPath($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/args.json` : undefined
-}
-
-async function readArgNames($: EngineInterface): Promise<ArgNames> {
-  const path = await argNamesPath($)
-  return path === undefined ? {} : parseArgNames(String(await $.fs.read(path).catch(() => '')))
-}
-
-async function saveArgNames($: EngineInterface, learned: ReadonlyMap<string, readonly string[]>): Promise<void> {
-  const path = await argNamesPath($)
-  if (path === undefined || learned.size === 0) return
-  const next = mergeArgNames(await readArgNames($), learned)
+  const next = store.merge(await readLearned($, store), learned)
   if (next !== undefined) await $.fs.write(path, `${JSON.stringify(next, null, 2)}\n`)
 }
 
@@ -353,15 +350,15 @@ async function saveArgNames($: EngineInterface, learned: ReadonlyMap<string, rea
 // where the person's Write rules apply. A move into the project goes through
 // Bash and its permission check.
 async function filesDir($: EngineInterface): Promise<string | undefined> {
-  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
-  return home ? `${home}/.claude/code-mode/files/${id || 'no-session'}` : undefined
+  const [home, id] = await Promise.all([homeOf($), $.session.id().catch(() => '')])
+  return home ? codeModePath(home, 'files', id || 'no-session') : undefined
 }
 
 // The text of a file for readFile: a file from saveFile, or a file that the
 // person's Read rules let Claude Code read with no prompt. A program can send
 // what it reads to an MCP tool, so a path that needs a prompt is refused.
 async function readForProgram($: EngineInterface, path: string): Promise<Reply> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+  const home = await homeOf($)
   const full = resolvePath(path, home, await $.session.cwd())
   const stat = await $.fs.stat(full, { resolve: true }).catch(() => undefined)
   if (stat?.kind !== 'file') return { ok: false, error: `readFile: no file at ${path}` }
@@ -381,7 +378,7 @@ async function readForProgram($: EngineInterface, path: string): Promise<Reply> 
 async function checkProgram($: EngineInterface, code: string): Promise<string> {
   const calls = literalCalls(code).filter(c => isCallable(c.tool, $.plugin.name))
   if (calls.length === 0) return ''
-  const [list, dts, learned] = await Promise.all([$.tool.list(), mcpTypes($), readArgNames($)])
+  const [list, dts, learned] = await Promise.all([$.tool.list(), mcpTypes($), readLearned($, ARG_NAMES)])
   const tools = new Set(list.filter(t => t.mcp && isCallable(t.name, $.plugin.name)).map(t => t.name))
   const specOf = (tool: string) => {
     const declaration = dts === '' ? undefined : extractDeclaration(dts, tool)
@@ -397,10 +394,13 @@ async function loadHints($: EngineInterface, projectHints: boolean): Promise<Hin
   const [hints, { hidden }, dirs] = await Promise.all([loadHintFiles($, projectHints), sessionOf($), hintDirs($, projectHints)])
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   const removedText = userDir === undefined ? '' : await $.fs.read(removedFile(userDir)).catch(() => '')
-  const removed = new Set(parseRemoved(String(removedText)).map(r => `bundled:${r.file}\n${r.hint}`))
+  const removed = new Set(parseRemoved(String(removedText)).map(r => hiddenKey(bundledRef(r.file), r.hint)))
   return hints.flatMap(h => {
     const ref = hintRef(h)
-    const drop = (key: string) => hidden.has(`${ref}\n${key}`) || removed.has(`${ref}\n${key}`)
+    const drop = (key: string) => {
+      const k = hiddenKey(ref, key)
+      return hidden.has(k) || removed.has(k)
+    }
     if (!hintItems(h.body).some(i => drop(hintKey(i)))) return [h]
     const body = withoutItems(h.body, drop)
     return body === '' ? [] : [{ ...h, body }]
@@ -444,22 +444,22 @@ async function bundledChangeName($: EngineInterface, file: string, hint: Hint): 
 // the new hint in its place: in the same file, or, for a bundled hint, in the
 // user file that bundledChangeFile gives. The file must be directly in a hint folder: a
 // pending file names it, and a pending file is only as safe as the folder it is in.
-async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
-  const ref = hint.remove!
+async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, projectHints: boolean): Promise<string> {
+  const target = refTarget(edit.ref)
   const key = hintKey(hint.body)
   const dirs = await hintDirs($, projectHints)
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   // The new hint at the end of a file, with the old hint's frontmatter when the file is new or empty.
-  const withNew = (text: string | undefined) => appendHint(text, hint.servers, hint.identify, hint.tools, hint.replace!)
-  if (ref.startsWith('bundled:')) {
-    const file = ref.slice('bundled:'.length)
-    if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
+  const withNew = (text: string | undefined, newText: string) => appendHint(text, hint.servers, hint.identify, hint.tools, newText)
+  if (target.bundled) {
+    const { file } = target
+    if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${edit.ref}`)
     // The new hint first: if a write fails, the old hint still shows.
     const path = removedFile(userDir)
     let dest = path
-    if (hint.replace !== undefined) {
+    if (edit.kind === 'change') {
       const own = await bundledChangeFile($, userDir, file, hint)
-      await $.fs.write(own.path, withNew(own.text))
+      await $.fs.write(own.path, withNew(own.text, edit.text))
       dest = own.path
     }
     const removed = parseRemoved(String(await $.fs.read(path).catch(() => '')))
@@ -467,18 +467,19 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
     await $.fs.write(path, `${JSON.stringify(removed, null, 2)}\n`)
     return dest
   }
-  const dir = dirs.find(d => d.scope !== 'bundled' && ref.startsWith(`${d.dir}/`) && !ref.slice(d.dir.length + 1).includes('/'))
-  if (dir === undefined || !ref.endsWith('.md')) throw new Error(`not a hint file: ${ref}`)
-  const text = await readIfExists($, ref)
-  if (hint.replace !== undefined) {
-    await $.fs.write(ref, (text === undefined ? undefined : replaceInFile(text, key, hint.replace)) ?? withNew(text))
-    return ref
+  const { path } = target
+  const dir = dirs.find(d => d.scope !== 'bundled' && path.startsWith(`${d.dir}/`) && !path.slice(d.dir.length + 1).includes('/'))
+  if (dir === undefined || !path.endsWith('.md')) throw new Error(`not a hint file: ${path}`)
+  const text = await readIfExists($, path)
+  if (edit.kind === 'change') {
+    await $.fs.write(path, (text === undefined ? undefined : replaceInFile(text, key, edit.text)) ?? withNew(text, edit.text))
+    return path
   }
-  if (text === undefined) return ref
+  if (text === undefined) return path
   const rest = removeFromFile(text, key)
-  if (rest === undefined) await $.process.run(['rm', '-f', ref])
-  else await $.fs.write(ref, rest)
-  return ref
+  if (rest === undefined) await $.process.run(['rm', '-f', path])
+  else await $.fs.write(path, rest)
+  return path
 }
 
 // Approve: merge the proposal's bullets into the active file beside pending/
@@ -487,8 +488,8 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
 async function approvePending($: EngineInterface, path: string, projectHints: boolean): Promise<string> {
   const proposal = String(await $.fs.read(path))
   const hint = parseHint(proposal, path, 'user')
-  if (hint.remove !== undefined) {
-    const dest = await approveRemoval($, hint, projectHints)
+  if (hint.edit !== undefined) {
+    const dest = await approveRemoval($, hint, hint.edit, projectHints)
     await $.process.run(['rm', '-f', path])
     return dest
   }
@@ -504,23 +505,19 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
 // again in the session that hid it.
 async function discardPending($: EngineInterface, path: string): Promise<void> {
   const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
-  if (hint.remove !== undefined) for (const { hidden } of bySession.values()) hidden.delete(`${hint.remove}\n${hintKey(hint.body)}`)
+  if (hint.edit !== undefined) for (const { hidden } of bySession.values()) hidden.delete(hiddenKey(hint.edit.ref, hintKey(hint.body)))
   await $.process.run(['rm', '-f', path])
 }
 
-type Action = 'approved' | 'discarded'
-
-// A decision as $.store keeps it for its row. One from before 0.12 has
-// isRemoval in place of kind.
-type Decision = { action: Action; dest?: string; kind?: ProposalKind; isRemoval?: boolean; isFunction?: boolean }
+type Action = Decision['action']
 
 // The line a decided proposal shows, in its row and in the band: green when
 // approved, dim otherwise (no color).
 type Shown = { text: string; color?: 'green' | 'red' }
 function decisionShown(d: Decision): Shown {
   const color = d.action === 'approved' ? { color: 'green' as const } : {}
-  if (d.isFunction) return { text: d.action === 'approved' ? `✓ Function saved: ${d.dest}` : 'Function discarded.', ...color }
-  const words = PROPOSAL_TEXT[d.kind ?? (d.isRemoval ? 'removal' : 'add')]
+  if (d.kind === 'function') return { text: d.action === 'approved' ? `✓ Function saved: ${d.dest}` : 'Function discarded.', ...color }
+  const words = PROPOSAL_TEXT[d.kind]
   return { text: d.action === 'approved' ? `${words.approved}: ${d.dest}` : words.discarded, ...color }
 }
 
@@ -558,15 +555,10 @@ function decidePending($: EngineInterface, path: string, action: Action, project
   })
 }
 
-// The folders whose files steer the model: the person's and the project's
-// hints (the project's even while projectHints is off, so none can be
-// planted to load later) and the person's saved functions, each as written
-// and as its real path.
-async function guardedHintDirs($: EngineInterface): Promise<string[]> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
-  const root = await $.session.root()
-  const dirs = [`${home}/.claude/code-mode/hints`, `${root}/.claude/code-mode/hints`, `${home}/.claude/code-mode/functions`]
-    .filter(d => !d.startsWith('/.claude'))
+// The folders whose files steer the model (guardedDirs in paths.ts), each as
+// written and as its real path.
+async function guardedHintDirs($: EngineInterface, home: string): Promise<string[]> {
+  const dirs = guardedDirs(home, await $.session.root())
   const real = await Promise.all(dirs.map(d => $.fs.stat(d, { resolve: true }).then(s => s.realPath, () => undefined)))
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
@@ -574,15 +566,15 @@ async function guardedHintDirs($: EngineInterface): Promise<string[]> {
 // True when a file tool's path lands in a hint folder: the path as written,
 // its real path, or its parent's real path (a new file is not there yet).
 async function touchesHints($: EngineInterface, filePath: string): Promise<boolean> {
-  const home = (await $.env.get('HOME').catch(() => undefined)) ?? ''
+  const home = await homeOf($)
   const full = resolvePath(filePath, home, await $.session.cwd())
   const parent = full.slice(0, full.lastIndexOf('/')) || '/'
-  const [self, dir] = await Promise.all([
+  const [self, dir, dirs] = await Promise.all([
     $.fs.stat(full, { resolve: true }).then(s => s.realPath, () => undefined),
     $.fs.stat(parent, { resolve: true }).then(s => s.realPath, () => undefined),
+    guardedHintDirs($, home),
   ])
   const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
-  const dirs = await guardedHintDirs($)
   return candidates.some(c => typeof c === 'string' && dirs.some(d => isUnder(c, d)))
 }
 
@@ -591,26 +583,28 @@ async function touchesHints($: EngineInterface, filePath: string): Promise<boole
 const seenText = (failures: number): string =>
   failures === 0 ? 'No failed call to this server in this session.' : `${failures} run${failures === 1 ? '' : 's'} with a failed call to this server in this session.`
 
+// How many hints the file at path has now, or undefined when it cannot be read.
+async function hintCount($: EngineInterface, path: string, scope: HintScope): Promise<number | undefined> {
+  const text = await $.fs.read(path).catch(() => undefined)
+  return text === undefined ? undefined : hintItems(parseHint(String(text), path, scope).body).length
+}
+
 // The review fields of a proposal's card, with the active file it goes to
 // (or, for a removal, comes out of) and how many hints that file has now.
 async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields> {
-  if (hint.remove !== undefined) {
-    const bundled = hint.remove.startsWith('bundled:')
-    const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
-    const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
+  if (hint.edit !== undefined) {
+    const target = refTarget(hint.edit.ref)
+    const path = target.bundled ? `${$.plugin.root}/hints/${target.file}` : target.path
     // A change of a bundled hint names the user file that Approve writes.
-    const [text, ownFile] = await Promise.all([
-      $.fs.read(path).catch(() => undefined),
-      bundled && hint.replace !== undefined ? bundledChangeName($, name, hint) : undefined,
+    const [hints, ownFile] = await Promise.all([
+      hintCount($, path, hint.scope),
+      target.bundled && hint.edit.kind === 'change' ? bundledChangeName($, target.file, hint) : undefined,
     ])
-    const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
-    return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled, ownFile })
+    return reviewFields(hint, { file: target.file, hints, kind: proposalKind(hint), isBundled: target.bundled, ownFile })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
-  const current = (await $.fs.exists(dest).catch(() => false)) ? String(await $.fs.read(dest).catch(() => '')) : undefined
-  const hints = current === undefined ? undefined : parseHint(current, dest, hint.scope).body.split('\n').filter(l => /^\s*[-*]\s/.test(l)).length
-  return reviewFields(hint, { file, hints })
+  return reviewFields(hint, { file, hints: await hintCount($, dest, hint.scope) })
 }
 
 type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markdown'>
@@ -646,13 +640,13 @@ function cardButtons(ui: Ui, keys: { approve: string; discard: string }, decide:
 function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, buttons: RenderChildren, note?: string) {
   const { Box, Markdown, Text } = ui
   const reach = hint.scope === 'project' ? 'this project' : 'all projects'
-  const names = [...hint.tools, ...hint.identify, ...OWN_TOOLS]
+  const names = [...hint.tools, ...hint.identify, ...TOOL_NAMES]
   const words = PROPOSAL_TEXT[proposalKind(hint)]
   return (
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
       <Markdown text={`**${words.title}** · ${serverLabel(hint)} · ${reach}`} />
       {cardField(ui, words.label, <Markdown text={hint.body} />)}
-      {hint.replace === undefined ? null : cardField(ui, 'New hint', <Markdown text={`- ${hint.replace}`} />)}
+      {hint.edit?.kind === 'change' ? cardField(ui, 'New hint', <Markdown text={`- ${hint.edit.text}`} />) : null}
       {hint.tools.length > 0 ? cardField(ui, 'Only for tools', <Markdown text={hint.tools.map(asCode).join(', ')} />) : null}
       {fields.reason === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(fields.reason, names)} />)}
       {fields.warnings.length + (fields.seen === undefined ? 0 : 1) === 0 ? null : cardField(ui, 'Checks', (
@@ -678,7 +672,7 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
       <Markdown text={`**${current === undefined ? 'Saved function' : 'Change of a saved function'}** · ${asCode(`lib.${f.name}${signatureOf(f.code)}`)}`} />
       {cardField(ui, 'What it returns', <Box flexDirection="column"><Text>{f.description}</Text>{before}</Box>)}
-      {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, OWN_TOOLS)} />)}
+      {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, TOOL_NAMES)} />)}
       {current === undefined
         ? cardField(ui, 'Code', <Code source={f.code} language="javascript" />)
         : cardField(ui, 'Code changes', <Code source={codeDiff(current.code, f.code)} language="javascript" format="diff" />)}
@@ -691,17 +685,27 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
 const HINT_GUARD_DENY =
   'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint, a change of one with edit_hint, or a new or changed function with save_function instead.'
 
-// What a hint-file guard that failed answers: it denies, and logs why.
-function guardFailed($: EngineInterface, tool: string, error: { kind: string; message?: string }): { deny: string } {
-  debugLog($, `the hint-file guard on ${tool} failed (${error.kind}): ${error.message ?? 'no message'}`)
-  return { deny: 'code-mode: the hint-file guard failed; try again.' }
+// The .catch of each tool.call hook here: it fails closed. A hook that passed
+// the call on before it failed (next.called) keeps that answer. Any other
+// failure denies the call, and the debug log says why. A tool that is not one
+// of this plugin's is a file tool, and its hook is the hint-file guard. The
+// engine takes only a function literal or a function name as a .catch handler.
+function failClosed<E extends { tool: string }, R>(
+  $: EngineInterface,
+  e: E,
+  next: ((e: E) => R) & Caught,
+): R | { deny: string } {
+  if (next.called) return next(e)
+  const own = TOOL_NAMES.find(n => TOOL[n] === e.tool)
+  debugLog($, `${own ?? `the hint-file guard on ${e.tool}`} failed (${next.error.kind}): ${next.error.message ?? 'no message'}`)
+  return { deny: own === undefined ? 'code-mode: the hint-file guard failed; try again.' : `code-mode: ${own} failed; see the debug log.` }
 }
 
 // Saved functions: the person's only, never the project's, because a
 // function's code runs in programs. pending/ holds the proposals.
 async function functionsDir($: EngineInterface): Promise<string | undefined> {
-  const home = await $.env.get('HOME').catch(() => undefined)
-  return home ? `${home}/.claude/code-mode/functions` : undefined
+  const home = await homeOf($)
+  return home ? functionsFolder(home) : undefined
 }
 
 async function readFunctionFiles($: EngineInterface, dir: string): Promise<SavedFunction[]> {
@@ -748,7 +752,7 @@ function decideFunction($: EngineInterface, path: string, action: Action): Promi
   return decideOnce($, path, async () => {
     const dest = action === 'approved' ? await saveFunction($, path) : undefined
     await $.process.run(['rm', '-f', path])
-    return { action, dest, isFunction: true }
+    return { action, dest, kind: 'function' }
   })
 }
 
@@ -822,7 +826,7 @@ async function probedTools($: EngineInterface, tries: Tries, worked: Set<string>
 // A finished program with many calls that worked, or a join of tools, and no
 // saved function asks for one; each set of tools once per session.
 async function functionNudgeAfter($: EngineInterface, records: readonly CallRecord[], usesLib: boolean): Promise<string> {
-  const ok = records.filter(r => r.ok)
+  const ok = records.filter(r => r.status === 'ok')
   const tools = [...new Set(ok.map(r => r.tool))].sort()
   if (usesLib || !(ok.length >= FUNCTION_CALLS || (tools.length > 1 && ok.length >= FUNCTION_JOIN_CALLS))) return ''
   const { tries } = await sessionOf($)
@@ -850,13 +854,14 @@ async function mcpTypes($: EngineInterface): Promise<string> {
 
 // remove_hint and edit_hint: hide the hint in this session and write the
 // proposal (see where they register).
-async function proposeRemoval($: EngineInterface, e: unknown, isEdit: boolean, projectHints: boolean): Promise<{ result: string }> {
-  const input = e as { path?: unknown; text?: unknown; new_text?: unknown; why?: unknown; tool_use_id: string }
-  const path = typeof input.path === 'string' ? input.path.trim() : ''
-  const text = typeof input.text === 'string' ? input.text.trim() : ''
+async function proposeRemoval($: EngineInterface, e: { tool_use_id: string }, isEdit: boolean, projectHints: boolean): Promise<{ result: string }> {
+  // remove_hint takes the input of edit_hint without new_text.
+  const input = parseInput('edit_hint', e)
+  const path = input.path.trim()
+  const text = input.text.trim()
   // The new text of a change; undefined for a removal.
-  const replacement = isEdit ? (typeof input.new_text === 'string' ? input.new_text.trim() : '') : undefined
-  const why = typeof input.why === 'string' ? oneLine(input.why) : ''
+  const replacement = isEdit ? input.new_text.trim() : undefined
+  const why = oneLine(input.why)
   if (path === '' || text === '' || why === '' || replacement === '') {
     return { result: `Error: path, text, ${isEdit ? 'new_text ' : ''}and why are required.` }
   }
@@ -891,9 +896,9 @@ async function proposeRemoval($: EngineInterface, e: unknown, isEdit: boolean, p
     flags: replacement === undefined ? [] : newHintFlags(kind, replacement, servers, servers.length > 0, mcpTools),
   }
   const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
-  const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, input.tool_use_id)}`
+  const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, e.tool_use_id)}`
   await $.fs.write(pending, removalProposal(hint, found.item, review, replacement))
-  state.hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
+  state.hidden.add(hiddenKey(hintRef(hint), hintKey(found.item)))
   $.ui.invalidate('ui.render')
   const done = `Hid the hint in this session and proposed to ${isEdit ? 'change it in' : 'remove it from'} ${path}.`
   if (!shown) {
@@ -923,103 +928,22 @@ export const register: Register = (on, options) => {
   // Claude Code skips a hooks module's classic.SessionStart.
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register({
-      name: 'run_code',
-      description: RUN_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'Body of an async JavaScript function.' },
-        },
-        required: ['code'],
-      },
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'search_tools',
-      description: SEARCH_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Keywords; empty lists every MCP tool.' },
-          limit: { type: 'number', description: `Most tools to return (default ${SEARCH_LIMIT}).` },
-        },
-        required: ['query'],
-      },
-      isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'add_hint',
-      description: ADD_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          server: { type: 'string', description: 'The MCP server: its name as /mcp lists it ("claude.ai Datadog") or the <server> part of mcp__<server>__<tool>.' },
-          text: { type: 'string', description: 'The hint: one short, factual sentence.' },
-          why: { type: 'string', description: 'What failed before and what worked, in one sentence.' },
-          tools: { type: 'array', items: { type: 'string' }, description: 'Optional: tool names on that server (globs allowed) when the hint is for some tools only.' },
-          scope: { type: 'string', enum: ['user', 'project'], description: 'Default "user".' },
-        },
-        required: ['server', 'text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'remove_hint',
-      description: REMOVE_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
-          text: { type: 'string', description: 'The hint to remove, as shown.' },
-          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
-        },
-        required: ['path', 'text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'edit_hint',
-      description: EDIT_HINT_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
-          text: { type: 'string', description: 'The hint to change, as shown.' },
-          new_text: { type: 'string', description: 'The corrected hint: one short, factual sentence.' },
-          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
-        },
-        required: ['path', 'text', 'new_text', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'save_function',
-      description: SAVE_FUNCTION_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'A JavaScript name: programs call it as lib.<name>(args).' },
-          description: { type: 'string', description: 'What it returns, in one sentence.' },
-          code: { type: 'string', description: 'An async function expression with one argument, such as async ({ cloudId, jql }) => { ... }. It can use call, sleep and the other run_code functions.' },
-          why: { type: 'string', description: 'Which task it did and why the task comes back, in one sentence.' },
-        },
-        required: ['name', 'description', 'code', 'why'],
-      },
-    })
+    for (const name of TOOL_NAMES) await $.tool.register(registration(name))
     return next(e)
   })
 
   // save_function never activates a function: it writes a proposal under
   // functions/pending/, which loads only after the person reads the code
   // and presses Approve. The model cannot press a button.
-  on('tool.call', { tool: SAVE_FUNCTION }, async ($, e) => {
-    const input = e as unknown as { name?: unknown; description?: unknown; code?: unknown; why?: unknown; tool_use_id: string }
-    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
-    const [name, description, code, why] = [text(input.name), oneLine(text(input.description)), text(input.code), oneLine(text(input.why))]
+  on('tool.call', { tool: TOOL.save_function }, async ($, e) => {
+    const input = parseInput('save_function', e)
+    const [name, description, code, why] = [input.name.trim(), oneLine(input.description), input.code.trim(), oneLine(input.why)]
     if (why === '' || why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
     const problem = functionError(name, description, code)
     if (problem !== undefined) return { result: `Error: ${problem}.` }
     const dir = await functionsDir($)
     if (dir === undefined) return { result: 'Error: the function folder is not known (HOME is not set).' }
-    const path = `${dir}/pending/${pendingFileName(`${name}.md`, input.tool_use_id)}`
+    const path = `${dir}/pending/${pendingFileName(`${name}.md`, e.tool_use_id)}`
     const [current, shown] = await Promise.all([
       readFunction($, `${dir}/${name}.md`),
       approvalShown($),
@@ -1032,16 +956,16 @@ export const register: Register = (on, options) => {
     return {
       result: `Proposed the function lib.${name}.${replaces} It has no effect until the person reads it and approves it in the band above the prompt. Tell the person.\npending: ${path}`,
     }
-  }).catch(($, e, next) => (debugLog($, `save_function failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: save_function failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // The save_function row: the code to read, with Approve and Discard.
-  on('ui.render', { component: 'ToolResult', props: { tool: SAVE_FUNCTION } }, async ($, e, next) => {
+  on('ui.render', { component: 'ToolResult', props: { tool: TOOL.save_function } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    const decision = parseDecision(await $.store.get(decisionKey(path)))
     if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
@@ -1055,12 +979,9 @@ export const register: Register = (on, options) => {
   // The proposal also carries a review for that person (Review): the model's
   // reason, a classifier's guess of the kind, and what code-mode saw. All of
   // it is advice: none of it approves or refuses a proposal.
-  on('tool.call', { tool: ADD_HINT }, async ($, e) => {
-    const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown; tool_use_id: string }
-    const server = typeof input.server === 'string' ? input.server.trim() : ''
-    const text = typeof input.text === 'string' ? input.text.trim() : ''
-    const why = typeof input.why === 'string' ? oneLine(input.why) : ''
-    const tools = Array.isArray(input.tools) ? input.tools.filter((t): t is string => typeof t === 'string') : []
+  on('tool.call', { tool: TOOL.add_hint }, async ($, e) => {
+    const input = parseInput('add_hint', e)
+    const [server, text, why, tools] = [input.server.trim(), input.text.trim(), oneLine(input.why), input.tools]
     const scope = input.scope === 'project' ? 'project' : 'user'
     if (server === '' || text === '' || why === '') return { result: 'Error: server, text and why are required.' }
     if (text.length > 500) return { result: 'Error: a hint is one short sentence (500 characters at most).' }
@@ -1088,9 +1009,9 @@ export const register: Register = (on, options) => {
     const longest = [...offered].sort((a, b) => b.length - a.length)[0]
     const identify = named ?? longest
     // A UUID key makes an unreadable file name: name the file by the tool instead.
-    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(servers[0]!)
+    const isUuid = isUuidLike(servers[0]!)
     const fileName = hintFileName(isUuid && identify ? identify : servers[0]!, tools)
-    const path = `${target.dir}/pending/${pendingFileName(fileName, input.tool_use_id)}`
+    const path = `${target.dir}/pending/${pendingFileName(fileName, e.tool_use_id)}`
     const failures = (await sessionOf($)).tries.failedTries.get(key) ?? 0
     const review: Review = {
       why,
@@ -1106,7 +1027,7 @@ export const register: Register = (on, options) => {
     return {
       result: `Proposed a ${scope} hint for ${servers[0]}. It has no effect until the person approves it in the band above the prompt (Review, then Approve or Discard). Tell the person.\npending: ${path}`,
     }
-  }).catch(($, e, next) => (debugLog($, `add_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: add_hint failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // remove_hint hides the hint in this session at once (a wrong hint misleads
   // each later call) and proposes its removal. The file changes only after
@@ -1114,23 +1035,23 @@ export const register: Register = (on, options) => {
   // most, a removed one costs every session. edit_hint is a removal that
   // puts a new hint in the old one's place; its new text gets the checks of
   // add_hint, so a change cannot carry what a new hint would be warned about.
-  on('tool.call', { tool: REMOVE_HINT }, ($, e) => proposeRemoval($, e, false, projectHints))
-    .catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
-  on('tool.call', { tool: EDIT_HINT }, ($, e) => proposeRemoval($, e, true, projectHints))
-    .catch(($, e, next) => (debugLog($, `edit_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: edit_hint failed; see the debug log.' }))
+  on('tool.call', { tool: TOOL.remove_hint }, ($, e) => proposeRemoval($, e, false, projectHints))
+    .catch(failClosed)
+  on('tool.call', { tool: TOOL.edit_hint }, ($, e) => proposeRemoval($, e, true, projectHints))
+    .catch(failClosed)
 
   // The add_hint, remove_hint and edit_hint rows show the proposal with Approve and
   // Discard, where the surface asks plugins to draw tool results (the desktop
   // app does not; the band above the prompt covers it). A press is the
   // person's own act; $.store keeps the decision so the row still shows it
   // after a reload.
-  for (const tool of [ADD_HINT, REMOVE_HINT, EDIT_HINT]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
+  for (const tool of [TOOL.add_hint, TOOL.remove_hint, TOOL.edit_hint]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    const decision = parseDecision(await $.store.get(decisionKey(path)))
     if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
@@ -1241,10 +1162,9 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on('tool.call', { tool: 'mcp__code-mode__search_tools' }, async ($, e) => {
-    const input = e as unknown as { query?: unknown; limit?: unknown }
-    const query = typeof input.query === 'string' ? input.query : ''
-    const limit = Math.min(100, Math.max(1, Number(input.limit) || SEARCH_LIMIT))
+  on('tool.call', { tool: TOOL.search_tools }, async ($, e) => {
+    const { query, limit: asked } = parseInput('search_tools', e)
+    const limit = Math.min(100, Math.max(1, asked || SEARCH_LIMIT))
     const all = (await $.tool.list()).filter(t => t.mcp && isCallable(t.name, $.plugin.name))
     const found = rankTools(all, query, limit)
     if (found.length === 0) {
@@ -1252,7 +1172,7 @@ export const register: Register = (on, options) => {
       return { result: `No MCP tool matches "${query}". ${all.length} MCP tools are connected.` }
     }
 
-    const [dts, shapes, argNames] = await Promise.all([mcpTypes($), projection ? readShapes($) : ({} as Shapes), readArgNames($)])
+    const [dts, shapes, argNames] = await Promise.all([mcpTypes($), projection ? readLearned($, SHAPES) : ({} as Shapes), readLearned($, ARG_NAMES)])
     const blocks = found.map(t => {
       const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
       const names = argNames[t.name] === undefined ? '' : `names from earlier calls: {${argNames[t.name]!.join(', ')}}; `
@@ -1267,10 +1187,10 @@ export const register: Register = (on, options) => {
     const functionText = formatFunctions(functionsFor(await loadFunctions($), found.map(t => t.name), query))
     const tail = [functionText, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     return { result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}` }
-  }).catch(($, e, next) => (debugLog($, `search_tools failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: search_tools failed; see the debug log.' }))
+  }).catch(failClosed)
 
-  on('tool.call', { tool: 'mcp__code-mode__run_code' }, async ($, e) => {
-    const code = String((e as unknown as { code?: unknown }).code ?? '')
+  on('tool.call', { tool: TOOL.run_code }, async ($, e) => {
+    const { code } = parseInput('run_code', e)
     if (code.trim() === '') return { result: 'Error: code is empty.' }
     const problems = await checkProgram($, code).catch(err => (debugLog($, `cannot check the program: ${errorText(err)}`), ''))
     if (problems !== '') return { result: problems }
@@ -1350,12 +1270,12 @@ export const register: Register = (on, options) => {
       const repeatOf = kept.seen.get(key)
       const json = reply.ok ? (JSON.stringify(reply.value) ?? 'null') : ''
       const chars = json.length
-      const ref = reply.ok && projection ? keep(kept, json) : undefined
+      const ref = reply.ok && projection ? keep(kept, json, await $.clock.now()) : undefined
       const learned = reply.ok && projection ? learnedShape(reply.value) : undefined
       if (learned !== undefined) shapes.set(tool, learned)
       if (reply.ok) argNames.set(tool, [...new Set([...(argNames.get(tool) ?? []), ...argNamesOf(args)])])
       if (reply.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
-      records.set(id, { ref, tool, ok: reply.ok, chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
+      records.set(id, { ref, tool, status: reply.ok ? 'ok' : 'failed', chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
     }
 
     // recall(n): a result this session kept, with no new call and no new check:
@@ -1363,8 +1283,6 @@ export const register: Register = (on, options) => {
     const answerRecall = async (id: number, ref: number): Promise<void> => {
       recalls++
       const found = projection ? kept.results.get(ref) : undefined
-      if (found === undefined) recallMisses++
-      else recalled.push({ ref, ageMs: Date.now() - found.at })
       const error =
         !projection ? 'recall() is off: call the tool again'
         : ref > 0 && ref < kept.next ? `result #${ref} is no longer kept: call the tool again`
@@ -1372,6 +1290,8 @@ export const register: Register = (on, options) => {
       // The kept JSON goes into the reply as it is: no parse and no copy of the value.
       const text = found !== undefined ? `{"ok":true,"value":${found.json}}` : JSON.stringify({ ok: false, error } satisfies Reply)
       await $.fs.write(`${xdir}/r${id}.json`, text)
+      if (found === undefined) recallMisses++
+      else recalled.push({ ref, ageMs: (await $.clock.now()) - found.at })
     }
 
     // saveFile, readFile and the resources: the sandbox cannot do them, so the plugin does.
@@ -1425,16 +1345,34 @@ export const register: Register = (on, options) => {
         const taken = takeMessages(buffer + piece.text)
         buffer = taken.rest
         for (const m of taken.messages) {
-          if (m.t === 'call') {
-            calls++
-            started.set(m.id, m.tool)
-            answers.push(limit(() => answer(m.id, m.tool, m.args)))
-          } else if (m.t === 'recall') answers.push(answerRecall(m.id, m.ref))
-          else if (m.t === 'save') answers.push(answerLocal(m.id, () => save(m.name, m.data)))
-          else if (m.t === 'read') answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
-          else if (m.t === 'resources') answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
-          else if (m.t === 'resource') answers.push(answerLocal(m.id, () => readResource(m.server, m.uri)))
-          else outcome = m
+          switch (m.t) {
+            case 'call':
+              calls++
+              started.set(m.id, m.tool)
+              answers.push(limit(() => answer(m.id, m.tool, m.args)))
+              break
+            case 'recall':
+              answers.push(answerRecall(m.id, m.ref))
+              break
+            case 'save':
+              answers.push(answerLocal(m.id, () => save(m.name, m.data)))
+              break
+            case 'read':
+              answers.push(answerLocal(m.id, () => readForProgram($, m.path)))
+              break
+            case 'resources':
+              answers.push(answerLocal(m.id, () => resourceTool({ tool: 'ListMcpResourcesTool', ...(m.server === undefined ? {} : { server: m.server }) })))
+              break
+            case 'resource':
+              answers.push(answerLocal(m.id, () => readResource(m.server, m.uri)))
+              break
+            case 'done':
+            case 'error':
+              outcome = m
+              break
+            default:
+              m satisfies never // a new kind needs a case here
+          }
         }
       }
       ended = true
@@ -1451,12 +1389,14 @@ export const register: Register = (on, options) => {
 
     for (const [id, tool] of started) {
       if (records.has(id)) continue
-      records.set(id, { tool, ok: false, chars: 0, unfinished: true })
+      records.set(id, { tool, status: 'unfinished', chars: 0 })
       if (isCallable(tool, $.plugin.name)) failed.add(tool)
     }
 
-    await saveShapes($, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`))
-    await saveArgNames($, argNames).catch(err => debugLog($, `cannot write the argument names: ${errorText(err)}`))
+    await Promise.all([
+      saveLearned($, SHAPES, shapes).catch(err => debugLog($, `cannot write the result shapes: ${errorText(err)}`)),
+      saveLearned($, ARG_NAMES, argNames).catch(err => debugLog($, `cannot write the argument names: ${errorText(err)}`)),
+    ])
 
     // Hints for the servers whose calls failed: the likely fix is often there.
     // A hint that cannot be read never costs the run its result.
@@ -1484,15 +1424,14 @@ export const register: Register = (on, options) => {
     const returned = outcome?.t === 'done' ? outcome.value : undefined
     const outChars = returned?.length ?? 0
     const isCut = outChars > MAX_RESULT_CHARS
-    const wholeRef = projection && isCut && returned !== undefined ? keep(kept, returned) : undefined
+    const wholeRef = projection && isCut && returned !== undefined ? keep(kept, returned, await $.clock.now()) : undefined
     const report: Projection | undefined = projection ? { calls: callRecords, recalls, recalled, wholeRef } : undefined
     if (opts.metrics === true) {
       await writeMetrics($, state, {
-        ts: new Date().toISOString(),
         projection,
         ok: isDone,
         calls,
-        failedCalls: callRecords.filter(r => !r.ok).length,
+        failedCalls: callRecords.filter(r => r.status !== 'ok').length,
         repeats: callRecords.filter(r => r.repeatOf !== undefined).length,
         recalls,
         recallMisses,
@@ -1503,7 +1442,7 @@ export const register: Register = (on, options) => {
       }).catch(err => debugLog($, `cannot write the metrics: ${errorText(err)}`))
     }
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS, report)}${tail}` }
-  }).catch(($, e, next) => (debugLog($, `run_code failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: run_code failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // Guard: an active hint or a saved function is just a file, so the model
   // must not write one with its own tools, or the approval step means nothing. File tools
@@ -1514,16 +1453,16 @@ export const register: Register = (on, options) => {
   // Each tool has its own registration, so `claude plugin validate` lists it.
   on('tool.call', { tool: 'Write' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Write', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'Edit' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Edit', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) =>
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'NotebookEdit', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'Bash' }, ($, e, next) =>
-    /code-mode\/+(hints|functions)/i.test(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Bash', next.error)))
+    namesGuardedDir(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
+  ).catch(failClosed)
 
   // Optional: push the model to run_code by refusing its direct MCP calls.
   // Calls this plugin makes (from run_code) pass.

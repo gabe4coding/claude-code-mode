@@ -17,6 +17,8 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `hooks/protocol.ts` | Pure helpers: the protocol of the sandbox, the result text, the tool search, the tool descriptions. |
 | `hooks/hints.ts` | Pure helpers for hint files: read, match, format and write. |
 | `hooks/functions.ts` | Pure helpers for saved functions: the file format, the checks and the search. |
+| `hooks/paths.ts` | Pure helpers for the folders in `.claude/code-mode`, and the list of folders that the guard protects. |
+| `hooks/tools.ts` | The table of the plugin's tools: the description, the input schema and the place of each one, the full ids, and the typed input of a call. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
 | `hints/` | The bundled hints. |
 | `tests/` | The tests of the hooks, the sandbox and the docs, and a smoke test with real Claude Code. |
@@ -26,7 +28,7 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 
 ## Tests
 
-Run all three checks before each commit:
+Run all the checks before each commit:
 
 ```bash
 claude plugin test .
@@ -40,21 +42,32 @@ node tests/runner.integration.mjs
 node tests/docs.check.mjs
 ```
 
+```bash
+node tests/code.check.mjs
+```
+
+```bash
+npx -p typescript tsc -p tsconfig.pure.json
+```
+
 - `claude plugin test .` tests the hooks with a fake host. The test kit cannot start processes.
 - `tests/runner.integration.mjs` tests the real sandbox with Node.
 - `tests/docs.check.mjs` checks the rules for the docs.
+- `tests/code.check.mjs` checks the code rules that the types and the tests cannot see.
+- `tsconfig.pure.json` checks the types of the pure helpers (`hooks/*.ts`) without the Claude Code types. An import
+  of `claude-code`, of `hooks/register.tsx` or of a Node module fails.
 
-If you develop with Claude Code, put the three checks in this loop before each commit:
+If you develop with Claude Code, put the checks in this loop before each commit:
 
 1. Run `/simplify`. This built-in skill cleans up the diff and applies the fixes.
 2. Run `/code-review`. This built-in skill finds correctness bugs in the diff. Check each finding against the code,
    and fix the real ones.
-3. Run the three checks. After a change to `hooks/` or `tests/`, also run the type check.
+3. Run the checks. After a change to `hooks/` or `tests/`, also run the type check.
 4. Run `/verify` after a change to `hooks/`, `runtime/` or `hints/`. This built-in skill drives the change end to
    end. It has nothing to drive in a change to tests or docs only.
 5. If a step changes code, start again at step 1.
 
-CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` and each pull request:
+CI (`.github/workflows/test.yml`) runs the checks for each push to `main` and each pull request:
 
 - It runs the sandbox test on Linux and on macOS, with the network block: `sandbox-exec` on macOS and
   `unshare -rn` on Linux. On Linux, it first allows user namespaces, because Ubuntu 24.04 does not allow them by
@@ -98,8 +111,8 @@ npx -p typescript tsc -p tsconfig.json
 `tsconfig.json` does not load the types of your connected MCP tools. The plugin does not use them, and many MCP
 tools make the type check fail.
 
-CI does not run the type check. Claude Code writes the types only in a session that is logged in, and CI has no
-login.
+CI does not run this type check. Claude Code writes the types only in a session that is logged in, and CI has no
+login. CI runs the type check of the pure helpers (`tsconfig.pure.json`), which needs no Claude Code types.
 
 ## Output projection bench
 
@@ -130,7 +143,7 @@ calls. To compare two copies of the plugin, run the bench two times into one `--
 1. Increase `version` in `.claude-plugin/plugin.json`. Claude Code caches a plugin by its version, so without a new
    version, users do not get the change.
 2. Run `claude plugin validate .`.
-3. Run the three checks.
+3. Run the checks.
 4. Optional: run `node tests/version.check.mjs` to do the version check of CI before you push.
 
 ## More

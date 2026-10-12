@@ -126,12 +126,13 @@ const HAS_UNSHARE = (() => {
 })()
 const HAS_NETWORK_BLOCK = HAS_SANDBOX_EXEC || HAS_UNSHARE
 
+/** A file of the repo, as text. */
+const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
 const value = r => (r.outcome?.t === 'done' ? JSON.parse(r.outcome.value) : undefined)
 const failure = r => (r.outcome?.t === 'error' ? r.outcome.message : undefined)
 
 const cases = {
   'the copies match the plugin': () => {
-    const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
     const src = read('hooks/register.tsx')
     const block = src.match(/const LAUNCH = \[\n([\s\S]*?)\n\]\.join\('\\n'\)/)
     assert.ok(block, 'LAUNCH not found in hooks/register.tsx')
@@ -140,6 +141,15 @@ const cases = {
     assert.ok(src.includes(`const MKTEMP = ${JSON.stringify(MKTEMP).replaceAll('"', "'").replaceAll(',', ', ')}`), 'MKTEMP differs')
     assert.equal(MARK, '\u0001cm ')
     for (const file of ['runtime/runner.mjs', 'hooks/protocol.ts']) assert.match(read(file), /const MARK = '\\u0001cm '/, `MARK differs in ${file}`)
+  },
+
+  // The host reads only the kinds in RUNNER_FIELDS (hooks/protocol.ts) and drops any other.
+  'the runner sends the kinds the host reads': () => {
+    const table = read('hooks/protocol.ts').match(/const RUNNER_FIELDS = \{\n([\s\S]*?)\n\}/)
+    assert.ok(table, 'RUNNER_FIELDS not found in hooks/protocol.ts')
+    const known = table[1].split('\n').map(l => l.match(/^\s+(\w+):/)?.[1])
+    const sent = [...read('runtime/runner.mjs').matchAll(/\bt: '(\w+)'/g)].map(m => m[1])
+    assert.deepEqual([...new Set(sent)].sort(), [...known].sort())
   },
 
   // Claude Code skips a hooks module's classic.SessionStart, so the context is a command hook.

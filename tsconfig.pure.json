@@ -1,0 +1,16 @@
+{
+  // The pure helpers (hooks/*.ts) without the Claude Code types. An import of
+  // claude-code, of hooks/register.tsx or of a Node module fails here, so a
+  // pure helper cannot use the engine. It needs no login, so CI runs it.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["hooks/*.ts"]
+}

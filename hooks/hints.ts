@@ -1,6 +1,6 @@
 // Usage hints per MCP server: markdown files with a small frontmatter that
 // says which servers (and optionally which tools) they apply to. Pure
-// helpers here; hint-files.ts reads and writes the files.
+// helpers here; register.tsx reads and writes the files.
 //
 //   ---
 //   servers: [Datadog]
@@ -25,11 +25,15 @@ export type Hint = {
   tools: string[]
   body: string
   review?: Review
-  /** In a removal proposal: the hint file (`hintRef`) that the hint goes out of. */
-  remove?: string
-  /** In a change proposal: the new text of the hint that `remove` names. */
-  replace?: string
+  /** In a removal or change proposal: what it does to the hint in its body. */
+  edit?: HintEdit
 }
+
+/**
+ * A removal takes the hint out of the file `ref` (a `hintRef`). A change puts
+ * `text` in its place. The file holds them as `remove` and `replace`.
+ */
+export type HintEdit = { kind: 'removal'; ref: HintRef } | { kind: 'change'; ref: HintRef; text: string }
 
 /**
  * What a proposal carries for the person who judges it, each part from a
@@ -73,12 +77,16 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
   if (!m) return hint
   hint.body = m[2]!.trim()
   let key: ListKey | undefined
+  let remove: string | undefined
+  let replace: string | undefined
   for (const line of m[1]!.split(/\r?\n/)) {
     const removes = line.match(REMOVE_FIELD)
     if (removes) {
       key = undefined
       const value = parseJson(removes[2]!)
-      if (typeof value === 'string') hint[removes[1] as 'remove' | 'replace'] = value
+      if (typeof value !== 'string') continue
+      if (removes[1] === 'remove') remove = value
+      else replace = value
       continue
     }
     const reviewed = line.match(REVIEW_FIELD)
@@ -99,6 +107,10 @@ export const parseHint = (text: string, path: string, scope: HintScope): Hint =>
     const item = line.match(/^\s*-\s+(.+)$/)
     if (item && key) hint[key].push(...parseList(item[1]!))
     else if (line.trim() !== '') key = undefined
+  }
+  if (remove !== undefined) {
+    const ref = remove as HintRef
+    hint.edit = replace === undefined ? { kind: 'removal', ref } : { kind: 'change', ref, text: replace }
   }
   return hint
 }
@@ -178,17 +190,35 @@ export const newHintFlags = (kind: string | undefined, text: string, serverKeys:
 export const sameReach = (a: Pick<Hint, ListKey>, b: Pick<Hint, ListKey>): boolean =>
   (['servers', 'identify', 'tools'] as const).every(k => JSON.stringify(a[k]) === JSON.stringify(b[k]))
 
-/** What a proposal does: add a hint, remove one, or change one (a removal with `replace`). */
-export type ProposalKind = 'add' | 'removal' | 'change'
+/** What a proposal does: add a hint, remove one, or change one. */
+export type ProposalKind = 'add' | HintEdit['kind']
 
-export const proposalKind = (hint: Pick<Hint, 'remove' | 'replace'>): ProposalKind =>
-  hint.remove === undefined ? 'add' : hint.replace === undefined ? 'removal' : 'change'
+export const proposalKind = (hint: Pick<Hint, 'edit'>): ProposalKind => hint.edit?.kind ?? 'add'
 
 /** The words a card and a decided row use for each kind of proposal. */
 export const PROPOSAL_TEXT: Record<ProposalKind, { title: string; label: string; approved: string; discarded: string }> = {
   add: { title: 'Usage hint', label: 'Hint', approved: '✓ Hint approved', discarded: 'Hint discarded.' },
   removal: { title: 'Removal of a usage hint', label: 'Hint to remove', approved: '✓ Hint removed', discarded: 'Removal discarded. The hint stays.' },
   change: { title: 'Change of a usage hint', label: 'Hint now', approved: '✓ Hint changed', discarded: 'Change discarded. The hint stays.' },
+}
+
+/** What the person decided on a proposal, as $.store keeps it for its row. `dest`: the file Approve wrote. */
+export type Decision = { action: 'approved' | 'discarded'; dest?: string; kind: ProposalKind | 'function' }
+
+/**
+ * A decision that $.store gives, or undefined when the value is not one. An
+ * older decision has `isFunction` or (before 0.12) `isRemoval` in place of `kind`.
+ */
+export const parseDecision = (value: unknown): Decision | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  if (v.action !== 'approved' && v.action !== 'discarded') return undefined
+  const kind: Decision['kind'] =
+    v.kind === 'function' || (typeof v.kind === 'string' && Object.hasOwn(PROPOSAL_TEXT, v.kind)) ? (v.kind as Decision['kind'])
+    : v.isFunction === true ? 'function'
+    : v.isRemoval === true ? 'removal'
+    : 'add'
+  return { action: v.action, ...(typeof v.dest === 'string' ? { dest: v.dest } : {}), kind }
 }
 
 /** A name as inline code in Markdown. */
@@ -381,7 +411,8 @@ export const resolvePath = (path: string, home: string, cwd: string): string => 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */
 export const isUnder = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir.replace(/\/$/, '')}/`)
 
-const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
+/** True for a server named by UUID, as the desktop app names claude.ai connectors: no name to read. */
+export const isUuidLike = (server: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(server)
 
 /**
  * A readable name for a hint's server, in Markdown: its /mcp name without
@@ -389,7 +420,7 @@ const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
  * connectors), the tool that identifies it.
  */
 export const serverLabel = (hint: Pick<Hint, 'servers' | 'identify'>): string => {
-  const named = hint.servers.find(s => !UUID_LIKE.test(s))
+  const named = hint.servers.find(s => !isUuidLike(s))
   if (named) return named.replace(/^claude\.ai\s+/i, '')
   if (hint.identify[0]) return `server with ${asCode(hint.identify[0])}`
   return hint.servers[0] ?? 'unknown server'
@@ -491,10 +522,30 @@ export const replaceInFile = (text: string, key: string, replacement: string): s
 
 /**
  * How a removal names a hint file: its path, or `bundled:<name>` for a
- * bundled one, whose folder changes with each plugin version.
+ * bundled one, whose folder changes with each plugin version. Make one with
+ * `hintRef` or `bundledRef`, and read one with `refTarget`.
  */
-export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): string =>
-  hint.scope === 'bundled' ? `bundled:${hint.path.slice(hint.path.lastIndexOf('/') + 1)}` : hint.path
+export type HintRef = string & { readonly __hintRef: never }
+
+/** One hint of one file, in the set of hidden or removed hints: `hiddenKey` makes it. */
+export type HiddenKey = string & { readonly __hiddenKey: never }
+
+const BUNDLED = 'bundled:'
+
+const fileName = (path: string): string => path.slice(path.lastIndexOf('/') + 1)
+
+export const hintRef = (hint: Pick<Hint, 'scope' | 'path'>): HintRef =>
+  hint.scope === 'bundled' ? bundledRef(fileName(hint.path)) : (hint.path as HintRef)
+
+/** The ref of a bundled hint file, by its file name. */
+export const bundledRef = (file: string): HintRef => `${BUNDLED}${file}` as HintRef
+
+/** The file a ref names: a bundled file by its name, or another file by its path. `file` is the name in both. */
+export const refTarget = (ref: HintRef): { bundled: true; file: string } | { bundled: false; file: string; path: string } =>
+  ref.startsWith(BUNDLED) ? { bundled: true, file: ref.slice(BUNDLED.length) } : { bundled: false, file: fileName(ref), path: ref }
+
+/** The key of the hint `key` (a `hintKey`) in the file `ref`. */
+export const hiddenKey = (ref: HintRef, key: string): HiddenKey => `${ref}\n${key}` as HiddenKey
 
 /**
  * A removal proposal: the hint's own frontmatter (for the card and for a new

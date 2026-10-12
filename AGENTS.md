@@ -7,7 +7,8 @@ value goes back into the context. The whole repo is the plugin (marketplace sour
 - Any change to code, tests, model-facing text or docs → `CODING_STANDARDS.md`.
 - The tools, their results and the permission path → `hooks/register.tsx`. Pure helpers: `hooks/protocol.ts`
   (runner protocol, results, search), `hooks/hints.ts` (hint files and matching), `hooks/functions.ts` (saved
-  functions).
+  functions), `hooks/paths.ts` (the folders in `.claude/code-mode` and the guarded ones), `hooks/tools.ts`
+  (the table of the plugin's tools: schemas, ids, typed input).
 - The sandbox → `runtime/runner.mjs`, then `docs/how-it-works.mdx`.
 - Hints, proposals, the band, the hint-file guard → `docs/hints.mdx`. Saved functions → `docs/functions.mdx`.
 - Permission modes, allow rules, the auto mode "no verdict" error → `docs/permissions.mdx`.
@@ -17,6 +18,6 @@ value goes back into the context. The whole repo is the plugin (marketplace sour
 ## Rules
 - The plugin guards the hint folders in `~/.claude` and in the project, and the function folder in `~/.claude`:
   Write, Edit, and Bash commands that name them are denied. To change code or tests that name these folders, use
-  the Edit tool: the guard checks its file path, while a Bash command that names a folder is denied. To test a hint, use the bundled `hints/` or the fake host in `tests/hints.test.ts`.
-- Before every commit, do the verification loop in `CODING_STANDARDS.md`: `/simplify`, `/code-review`, the three
+  the Edit tool: the guard checks its file path, while a Bash command that names a folder is denied. To test a hint, use the bundled `hints/` or the fake host `fakeHome` in `tests/fakes.ts`.
+- Before every commit, do the verification loop in `CODING_STANDARDS.md`: `/simplify`, `/code-review`, the
   checks, then `/verify`.
