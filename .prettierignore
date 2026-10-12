@@ -1,0 +1,4 @@
+# Prose follows the ASD-STE100 rules of CODING_STANDARDS.md, and
+# tests/docs.check.mjs checks it. Prettier would rewrite its tables and lists.
+*.md
+*.mdx

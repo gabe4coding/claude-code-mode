@@ -4,6 +4,9 @@ Rules for changing code, tests, model-facing text and docs in this repo. `[test:
 enforces; the others rely on discipline.
 
 ## Code
+- Prettier formats code, JSON and YAML, not Markdown or MDX. Run it only through `scripts/format.sh`: the script
+  holds the pinned version. Setup of the pre-commit hook: `docs/development.mdx`, Format.
+  `[test: code.check.mjs]`
 - `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`,
   `hooks/hints.ts`, `hooks/functions.ts`, `hooks/paths.ts` and `hooks/tools.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
@@ -60,6 +63,7 @@ enforces; the others rely on discipline.
   - `node tests/docs.check.mjs`: the doc rules below.
   - `node tests/code.check.mjs`: the code rules marked `[test: code.check.mjs]`.
   - `npx -p typescript tsc -p tsconfig.pure.json`: the types of the pure helpers, with no Claude Code types.
+  - `sh scripts/format.sh --check .`: the format of code, JSON and YAML.
 - `node tests/smoke.e2e.mjs`: real `claude -p` with the plugin and the bench's fake server. It needs a login and
   costs API usage, so it is not one of the checks and CI does not run it. Run it after a change to `hooks/` or
   `runtime/`, before a release, and after you raise the pinned Claude Code version. Its checks read the transcript,
