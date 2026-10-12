@@ -47,10 +47,12 @@ node tests/docs.check.mjs
 If you develop with Claude Code, put the three checks in this loop before each commit:
 
 1. Run `/simplify`. This built-in skill cleans up the diff and applies the fixes.
-2. Run the three checks. After a change to `hooks/` or `tests/`, also run the type check.
-3. Run `/verify` after a change to `hooks/`, `runtime/` or `hints/`. This built-in skill drives the change end to
+2. Run `/code-review`. This built-in skill finds correctness bugs in the diff. Check each finding against the code,
+   and fix the real ones.
+3. Run the three checks. After a change to `hooks/` or `tests/`, also run the type check.
+4. Run `/verify` after a change to `hooks/`, `runtime/` or `hints/`. This built-in skill drives the change end to
    end. It has nothing to drive in a change to tests or docs only.
-4. If a step changes code, start again at step 1.
+5. If a step changes code, start again at step 1.
 
 CI (`.github/workflows/test.yml`) runs the three checks for each push to `main` and each pull request:
 
