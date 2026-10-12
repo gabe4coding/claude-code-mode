@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
 
 const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
@@ -182,6 +182,9 @@ describe('hint files', () => {
     const first = appendHint(undefined, ['claude.ai Gmail'], ['search_threads'], [], 'Use search_threads first.')
     expect(first).toBe('---\nservers: ["claude.ai Gmail"]\nidentify: ["search_threads"]\n---\n- Use search_threads first.\n')
     expect(appendHint(first, ['claude.ai Gmail'], [], [], 'Second.')).toBe(`${first}- Second.\n`)
+    // a hint the file has already is not added again
+    expect(appendHint(first, ['claude.ai Gmail'], [], [], 'Use  search_threads first.')).toBe(first)
+    expect(appendItems(first, ['- Use search_threads first.', '- New.', '- New.'])).toBe(`${first}- New.\n`)
     expect(hintFileName('claude.ai Gmail', [])).toBe('gmail.md')
     expect(hintFileName('Datadog', ['analyze_*'])).toBe('datadog.analyze.md')
     expect(hintFileName('analyze_datadog_logs', ['analyze_datadog_logs'])).toBe('analyze_datadog_logs.md')
@@ -490,6 +493,25 @@ describe('add_hint and its approval row', () => {
     expect(await drawn(PENDING)).toContain('Hint approved')
   })
 
+  // An earlier Approve wrote the hint, then failed to remove the proposal.
+  test('Approve again does not add a hint that the file has already', async ($, on) => {
+    mock.store(on)
+    const done = '---\nservers: [Things]\n---\n- Older hint.\n- Pass ids as strings.\n'
+    const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${USER_DIR}/things.md`]: done })
+    const ui = await $.ui.mount(row('terminal'))
+    await ui.press({ key: 'approve' })
+    expect(fs.written[`${USER_DIR}/things.md`]).toBe(undefined)
+    expect(fs.removed).toEqual([PENDING])
+  })
+
+  test('Approve treats an empty active file as new and writes the frontmatter', async ($, on) => {
+    mock.store(on)
+    const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${USER_DIR}/things.md`]: '\n  \n' })
+    const ui = await $.ui.mount(row('terminal'))
+    await ui.press({ key: 'approve' })
+    expect(fs.written[`${USER_DIR}/things.md`]).toBe(PROPOSAL)
+  })
+
   test('Approve appends to an active file that exists', async ($, on) => {
     mock.store(on)
     const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${USER_DIR}/things.md`]: '---\nservers: [Things]\n---\n- Older hint.\n' })
@@ -784,6 +806,8 @@ describe('edit_hint', () => {
   test('replaceInFile puts the new hint in the old one\'s place', () => {
     expect(replaceInFile(FILE, 'Mail returns JSON.', 'Mail returns TSV.')).toBe('---\nservers: [Mail]\n---\n- Mail returns TSV.\n- Pass ids as strings.\n')
     expect(replaceInFile(FILE, 'Gone.', 'Mail returns TSV.')).toBe(undefined)
+    // the file has the new hint already: the old one only goes
+    expect(replaceInFile(FILE, 'Mail returns JSON.', 'Pass ids as strings.')).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
   })
 
   test('Approve after the file changed: the new hint goes at the end, or in a new file with the old frontmatter', async ($, on) => {

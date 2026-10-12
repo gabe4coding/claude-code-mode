@@ -170,6 +170,18 @@ describe('save_function', () => {
     expect(JSON.stringify(await ui.drawn())).toContain('Function saved')
   })
 
+  test('an Approve that cannot save the function fails and keeps the proposal', async ($, on) => {
+    mock.store(on)
+    const files: Record<string, string> = { [PENDING]: PROPOSAL }
+    const fs = fakeHome(on, files)
+    const ui = await $.ui.mount(row)
+    // the file changed after the drawing, and is no function now
+    files[PENDING] = 'not a function'
+    await ui.press({ key: 'approve' }).catch(() => undefined)
+    expect(fs.removed).toEqual([])
+    expect(fs.written).toEqual({})
+  })
+
   test('a proposal with the name of a saved function shows the change from its code', async ($, on) => {
     mock.store(on)
     const old = CODE.replace('return r.issues', 'return r')

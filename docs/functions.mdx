@@ -31,7 +31,7 @@ saved function.
 5. Select **Approve** or **Discard**. The band then shows the result. Select **Show next** to see the next proposal.
 
 If you approve, the plugin writes the function to `~/.claude/code-mode/functions/<name>.md`. A function with the
-same name is replaced.
+same name is replaced. If the plugin cannot write the function, the band shows the error and keeps the proposal.
 
 Approve only code that you have read and understand. A saved function runs in later programs,
 and your approval of `run_code` covers its MCP calls. You see `lib.searchAllIssues(...)` in the program, not the
