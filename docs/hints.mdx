@@ -80,8 +80,10 @@ While proposals wait, a band above the prompt shows "● 2 proposals for code mo
 **Review** button.
 
 1. Click **Review**. The band shows one proposal at a time. Click **Previous** and **Next** to see the others.
-2. Read the hint and the review. Approve only a hint that you can write yourself.
-3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal.
+2. Read the hint and the review. Approve only a hint that you can write yourself. If the proposal is taller than
+   the band, scroll the band to read all of it.
+3. Click **Approve** to add the hint to the hint file of the server, or **Discard** to delete the proposal. These
+   buttons are at the top of the band, above the proposal.
 
 The band shows the proposals of all sessions, closed and headless (`claude -p`) sessions too. Where Claude Code
 draws plugin tool results, the `add_hint` row also shows the proposal with the same buttons. The desktop app does
@@ -182,7 +184,8 @@ The plugin checks the new hint as it checks a new hint from `add_hint`. Thus the
 
 For a bundled hint, the plugin adds the old hint to `~/.claude/code-mode/hints/removed.json`. It writes the new
 hint to the file of the same name in `~/.claude/code-mode/hints/`, for example `jira.md`. If your file of that
-name is for other servers or tools, the plugin writes the new hint to `jira-changed.md`.
+name is for other servers or tools, the plugin writes the new hint to `jira-changed.md`. If that file is also for
+other servers or tools, it uses `jira-changed-2.md`, and so on. The card names the file.
 
 To change a hint by hand, edit its bullet in your editor.
 

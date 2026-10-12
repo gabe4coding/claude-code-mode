@@ -178,10 +178,13 @@ async function hintDirs($: EngineInterface, projectHints: boolean): Promise<{ sc
   return dirs
 }
 
+// The user hint folder, or undefined when HOME is not set.
+const userHintDir = async ($: EngineInterface): Promise<string | undefined> => (await hintDirs($, false)).find(d => d.scope === 'user')?.dir
+
 // The scope of a proposal: a pending file is in the user or the project hint
 // folder, and a project is often under HOME, so test the user folder itself.
 async function scopeOf($: EngineInterface, path: string): Promise<HintScope> {
-  const userDir = (await hintDirs($, false)).find(d => d.scope === 'user')?.dir
+  const userDir = await userHintDir($)
   return userDir !== undefined && isUnder(path, userDir) ? 'user' : 'project'
 }
 
@@ -413,10 +416,31 @@ async function serverNames($: EngineInterface): Promise<Map<string, string>> {
   }
 }
 
+// The user file that a change of a bundled hint writes the new hint to: the
+// file of the same name, or, when that file is for other servers or tools,
+// <name>-changed.md, then <name>-changed-2.md and so on, so the new hint keeps
+// the bundled reach. The card names the same file. Gives the file's text too.
+async function bundledChangeFile($: EngineInterface, userDir: string, file: string, hint: Hint): Promise<{ path: string; text: string | undefined }> {
+  const base = `${userDir}/${file.replace(/\.md$/, '')}`
+  for (let n = 0; ; n++) {
+    const path = n === 0 ? `${base}.md` : `${base}-changed${n === 1 ? '' : `-${n}`}.md`
+    const text = await readIfExists($, path)
+    if (text === undefined || text.trim() === '' || sameReach(parseHint(text, path, 'user'), hint)) return { path, text }
+  }
+}
+
+// The name of the user file for the card, or undefined when the user hint
+// folder cannot be read: then Approve fails too, and the card says so.
+async function bundledChangeName($: EngineInterface, file: string, hint: Hint): Promise<string | undefined> {
+  const userDir = await userHintDir($)
+  const own = userDir === undefined ? undefined : await bundledChangeFile($, userDir, file, hint).catch(() => undefined)
+  return own?.path.slice(own.path.lastIndexOf('/') + 1)
+}
+
 // Approve a removal: take the hint out of its file (and remove a file with no
 // hint left), or, for a bundled hint, add it to removed.json. A change puts
 // the new hint in its place: in the same file, or, for a bundled hint, in the
-// user file of the same name. The file must be directly in a hint folder: a
+// user file that bundledChangeFile gives. The file must be directly in a hint folder: a
 // pending file names it, and a pending file is only as safe as the folder it is in.
 async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
   const ref = hint.remove!
@@ -428,17 +452,13 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
   if (ref.startsWith('bundled:')) {
     const file = ref.slice('bundled:'.length)
     if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
-    // The new hint first: if a write fails, the old hint still shows. It goes
-    // to the user file of the same name, or, when that file is for other
-    // servers or tools, to <name>-changed.md, so it keeps the bundled reach.
+    // The new hint first: if a write fails, the old hint still shows.
     const path = removedFile(userDir)
     let dest = path
     if (hint.replace !== undefined) {
-      const same = `${userDir}/${file}`
-      const text = await readIfExists($, same)
-      const fits = text === undefined || text.trim() === '' || sameReach(parseHint(text, same, 'user'), hint)
-      dest = fits ? same : same.replace(/\.md$/, '-changed.md')
-      await $.fs.write(dest, withNew(fits ? text : await readIfExists($, dest)))
+      const own = await bundledChangeFile($, userDir, file, hint)
+      await $.fs.write(own.path, withNew(own.text))
+      dest = own.path
     }
     const removed = parseRemoved(String(await $.fs.read(path).catch(() => '')))
     if (!removed.some(r => r.file === file && r.hint === key)) removed.push({ file, hint: key })
@@ -541,9 +561,13 @@ async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields>
     const bundled = hint.remove.startsWith('bundled:')
     const name = hint.remove.slice(hint.remove.lastIndexOf(bundled ? ':' : '/') + 1)
     const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
-    const text = await $.fs.read(path).catch(() => undefined)
+    // A change of a bundled hint names the user file that Approve writes.
+    const [text, ownFile] = await Promise.all([
+      $.fs.read(path).catch(() => undefined),
+      bundled && hint.replace !== undefined ? bundledChangeName($, name, hint) : undefined,
+    ])
     const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
-    return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled })
+    return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled, ownFile })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
@@ -577,8 +601,9 @@ function cardButtons(ui: Ui, keys: { approve: string; discard: string }, decide:
 }
 
 // A hint proposal's card, the same in the chat row and in the band. Names
-// show as inline code; the hint and the reason are Markdown.
-function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, keys: { approve: string; discard: string }, decide: Decide, note?: string) {
+// show as inline code; the hint and the reason are Markdown. `buttons` go
+// at the end in the row; the band shows them in its top row instead.
+function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, buttons: RenderChildren, note?: string) {
   const { Box, Markdown, Text } = ui
   const reach = hint.scope === 'project' ? 'this project' : 'all projects'
   const names = [...hint.tools, ...hint.identify, ...OWN_TOOLS]
@@ -598,14 +623,15 @@ function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, keys: { approve: str
       ))}
       {cardField(ui, 'File', <Markdown text={fields.file} />)}
       {note === undefined ? null : <Text dimColor>{note}</Text>}
-      {cardButtons(ui, keys, decide)}
+      {buttons}
     </Box>
   )
 }
 
 // A function proposal's card: the code to read, highlighted. A proposal that
 // replaces a saved function (`current`) shows the code as a diff from it.
-function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefined, keys: { approve: string; discard: string }, decide: Decide) {
+// `buttons` as for hintCard.
+function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefined, buttons: RenderChildren) {
   const { Box, Code, Markdown, Text } = ui
   const before = current !== undefined && current.description !== f.description ? <Text dimColor>{`Now: ${current.description}`}</Text> : null
   return (
@@ -617,7 +643,7 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
         ? cardField(ui, 'Code', <Code source={f.code} language="javascript" />)
         : cardField(ui, 'Code changes', <Code source={codeDiff(current.code, f.code)} language="javascript" format="diff" />)}
       <Text dimColor>Programs can run this code in later sessions. Your approval of run_code covers its MCP calls. Approve only code you have read.</Text>
-      {cardButtons(ui, keys, decide)}
+      {buttons}
     </Box>
   )
 }
@@ -975,7 +1001,7 @@ export const register: Register = (on, options) => {
     if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
     const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
-    return functionCard(ui, proposal, current, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action))
+    return functionCard(ui, proposal, current, cardButtons(ui, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action)))
   })
 
   // add_hint never activates a hint: it writes a proposal under pending/,
@@ -1072,7 +1098,7 @@ export const register: Register = (on, options) => {
 
     const hint = parseHint(String(await $.fs.read(path)), path, await scopeOf($, path))
     const note = 'Claude sees approved hints in later sessions. Approve only what you would write yourself.'
-    return hintCard(ui, hint, await cardFields($, hint), { approve: 'approve', discard: 'discard' }, action => decidePending($, path, action, projectHints), note)
+    return hintCard(ui, hint, await cardFields($, hint), cardButtons(ui, { approve: 'approve', discard: 'discard' }, action => decidePending($, path, action, projectHints)), note)
   })
 
   // The band above the prompt: while proposals wait in pending/ (from any
@@ -1104,11 +1130,20 @@ export const register: Register = (on, options) => {
     // A decision shortens the list: the same index then shows the next one.
     const index = Math.min(await read($, reviewIndex), total - 1)
     const go = (step: number) => update($, reviewIndex, () => (index + step + total) % total)
-    const fi = index - pending.length
-    const proposal = functions[fi]
-    const card = proposal === undefined
-      ? hintCard(ui, pending[index]!, await cardFields($, pending[index]!), { approve: `approve-${index}`, discard: `discard-${index}` }, action => decidePending($, pending[index]!.path, action, projectHints))
-      : functionCard(ui, proposal, await readFunction($, activePathOf(proposal.path)), { approve: `approve-f-${fi}`, discard: `discard-f-${fi}` }, action => decideFunction($, proposal.path, action))
+    const hint = pending[index]
+    let decide: Decide
+    let card: RenderChildren
+    if (hint !== undefined) {
+      decide = action => decidePending($, hint.path, action, projectHints)
+      card = hintCard(ui, hint, await cardFields($, hint), null)
+    } else {
+      // index < total, so a proposal that is not a hint is a function.
+      const f = functions[index - pending.length]!
+      decide = action => decideFunction($, f.path, action)
+      card = functionCard(ui, f, await readFunction($, activePathOf(f.path)), null)
+    }
+    // Approve and Discard above the card: a card taller than the band
+    // scrolls, and buttons under it would start out of view.
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="column">
@@ -1121,6 +1156,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           <Text dimColor>Approve only what you would write yourself. Approved hints guide Claude in later sessions. Approved functions run in its programs.</Text>
+          {cardButtons(ui, { approve: `approve-${index}`, discard: `discard-${index}` }, decide)}
         </Box>
         {card}
       </Box>
