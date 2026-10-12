@@ -21,6 +21,39 @@ export type RunnerMessage =
   | RunnerDone
   | RunnerError
 
+// Each kind of message, with the fields the host reads and their types. The
+// `satisfies` makes the table list every kind of RunnerMessage and no other.
+// runner.integration.mjs checks that the runner sends these kinds.
+const RUNNER_FIELDS = {
+  call: { id: 'number', tool: 'string' },
+  recall: { id: 'number', ref: 'number' },
+  save: { id: 'number', name: 'string' },
+  read: { id: 'number', path: 'string' },
+  resources: { id: 'number' },
+  resource: { id: 'number', server: 'string', uri: 'string' },
+  done: { value: 'string', logs: 'array' },
+  error: { message: 'string', logs: 'array' },
+} as const satisfies Record<RunnerMessage['t'], Record<string, 'number' | 'string' | 'array'>>
+
+/** The message in one protocol line, or undefined when it is not a known kind with the fields of that kind. */
+const parseRunnerMessage = (text: string): RunnerMessage | undefined => {
+  let m: unknown
+  try {
+    m = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof m !== 'object' || m === null) return undefined
+  const t = (m as { t?: unknown }).t
+  if (typeof t !== 'string' || !Object.hasOwn(RUNNER_FIELDS, t)) return undefined
+  const fields: Record<string, string> = RUNNER_FIELDS[t as RunnerMessage['t']]
+  for (const [name, type] of Object.entries(fields)) {
+    const v = (m as Record<string, unknown>)[name]
+    if (type === 'array' ? !Array.isArray(v) : typeof v !== type) return undefined
+  }
+  return m as RunnerMessage
+}
+
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
 export type ToolEntry = { name: string; description: string }
@@ -33,13 +66,9 @@ export const takeMessages = (buffer: string): { messages: RunnerMessage[]; rest:
   while (i >= 0) {
     const line = rest.slice(0, i)
     rest = rest.slice(i + 1)
-    if (line.startsWith(MARK)) {
-      try {
-        messages.push(JSON.parse(line.slice(MARK.length)) as RunnerMessage)
-      } catch {
-        // a malformed line is the script's own output, not ours
-      }
-    }
+    // a line that is not a message is the script's own output, not ours
+    const m = line.startsWith(MARK) ? parseRunnerMessage(line.slice(MARK.length)) : undefined
+    if (m) messages.push(m)
     i = rest.indexOf('\n')
   }
   return { messages, rest }
