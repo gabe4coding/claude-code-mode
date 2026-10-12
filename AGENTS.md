@@ -18,4 +18,5 @@ value goes back into the context. The whole repo is the plugin (marketplace sour
 - The plugin guards the hint folders in `~/.claude` and in the project, and the function folder in `~/.claude`:
   Write, Edit, and Bash commands that name them are denied. To change code or tests that name these folders, use
   the Edit tool: the guard checks its file path, while a Bash command that names a folder is denied. To test a hint, use the bundled `hints/` or the fake host in `tests/hints.test.ts`.
-- Run the three checks in `CODING_STANDARDS.md` before every commit.
+- Before every commit, do the verification loop in `CODING_STANDARDS.md`: `/simplify`, the three checks, then
+  `/verify`.
