@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
-import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, bundledRef, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, refTarget, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
+import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, bundledRef, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseDecision, parseHint, pendingFileName, pendingPathOf, proposalKind, refTarget, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
 import { guardedDirs } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
 import { HOME, TMP, fakeHome, textOf } from './fakes'
@@ -70,6 +70,16 @@ describe('hint files', () => {
     expect(decisionKey(short)).toBe(`decision:${short}`)
     const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/pending/gmail--abcdef234567.md`
     expect(decisionKey(deep)).toBe('decision:gmail--abcdef234567.md')
+  })
+
+  test('parseDecision reads each shape the store has kept, and nothing else', () => {
+    expect(parseDecision({ action: 'approved', dest: '/a.md', kind: 'change' })).toEqual({ action: 'approved', dest: '/a.md', kind: 'change' })
+    expect(parseDecision({ action: 'approved', dest: '/f.md', kind: 'function' })).toEqual({ action: 'approved', dest: '/f.md', kind: 'function' })
+    expect(parseDecision({ action: 'approved', dest: '/f.md', isFunction: true })).toEqual({ action: 'approved', dest: '/f.md', kind: 'function' })
+    expect(parseDecision({ action: 'discarded', isRemoval: true })).toEqual({ action: 'discarded', kind: 'removal' })
+    expect(parseDecision({ action: 'discarded' })).toEqual({ action: 'discarded', kind: 'add' })
+    expect(parseDecision({ action: 'approved', kind: 'toString', dest: 1 })).toEqual({ action: 'approved', kind: 'add' })
+    for (const v of [undefined, null, 'approved', { action: 'maybe' }]) expect(parseDecision(v)).toBeUndefined()
   })
 
   test('the store keeps the newest decisions, and a decision made again becomes the newest', () => {
@@ -628,7 +638,7 @@ describe('remove_hint', () => {
     expect(refTarget(hintRef({ ...hint, scope: 'user' }))).toEqual({ bundled: false, file: 'mail.md', path: '/plugin/hints/mail.md' })
     expect(refTarget(bundledRef('mail.md'))).toEqual(refTarget(hintRef(hint)))
     const proposal = parseHint(removalProposal(hint, '- Mail returns JSON.', { why: 'W.', flags: [] }), '/p.md', 'user')
-    expect(proposal.remove).toBe('bundled:mail.md')
+    expect(proposal.edit).toEqual({ kind: 'removal', ref: 'bundled:mail.md' })
     expect(proposal.servers).toEqual(['Mail'])
     expect(proposal.body).toBe('- Mail returns JSON.')
     expect(reviewFields(proposal, { file: 'mail.md', hints: 2, kind: 'removal' }).file)
@@ -642,7 +652,7 @@ describe('remove_hint', () => {
     expect(r).toContain('Hid the hint in this session')
     expect(r).toContain(`pending: ${USER_DIR}/pending/mail-hide.remove--`)
     const [pending, text] = Object.entries(fs.written)[0]!
-    expect(parseHint(text, pending, 'user').remove).toBe(path)
+    expect(parseHint(text, pending, 'user').edit).toEqual({ kind: 'removal', ref: path })
     expect(fs.written[path]).toBe(undefined)
     const shown = await search($)
     expect(shown).not.toContain('Mail returns JSON.')
@@ -791,8 +801,7 @@ describe('edit_hint', () => {
   test('a change proposal carries the new text and parses back', () => {
     const hint = parseHint(FILE, '/plugin/hints/mail.md', 'bundled')
     const proposal = parseHint(removalProposal(hint, '- Mail returns JSON.', { why: 'W.', flags: [] }, 'Mail returns TSV.'), '/p.md', 'user')
-    expect(proposal.remove).toBe('bundled:mail.md')
-    expect(proposal.replace).toBe('Mail returns TSV.')
+    expect(proposal.edit).toEqual({ kind: 'change', ref: 'bundled:mail.md', text: 'Mail returns TSV.' })
     expect(proposal.body).toBe('- Mail returns JSON.')
     expect(proposalKind(proposal)).toBe('change')
     expect(reviewFields(proposal, { file: 'mail.md', hints: 2, kind: 'change' }).file)

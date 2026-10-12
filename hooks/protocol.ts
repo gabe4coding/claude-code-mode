@@ -227,9 +227,9 @@ export const formatOutcome = (
  * One nested call as the run's footer shows it: its number in the session
  * (`ref`, absent when it failed or was not kept), its size and shape, the
  * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none),
- * and `unfinished` when the run ended before its reply came.
+ * and its status: `unfinished` when the run ended before its reply came.
  */
-export type CallRecord = { ref?: number; tool: string; ok: boolean; chars: number; shape?: string; repeatOf?: number; unfinished?: boolean }
+export type CallRecord = { ref?: number; tool: string; status: 'ok' | 'failed' | 'unfinished'; chars: number; shape?: string; repeatOf?: number }
 
 /**
  * What a run with output projection reports: its calls, the results it read
@@ -709,7 +709,7 @@ export const charCount = (n: number): string =>
 
 /** True when a program returned nothing although its calls returned data: a filter that missed. */
 export const missedData = (outcome: RunnerDone | RunnerError | undefined, calls: readonly CallRecord[]): boolean => {
-  if (outcome?.t !== 'done' || !calls.some(c => c.ok && c.chars > 2)) return false
+  if (outcome?.t !== 'done' || !calls.some(c => c.status === 'ok' && c.chars > 2)) return false
   try {
     return isEmpty(JSON.parse(outcome.value))
   } catch {
@@ -730,8 +730,8 @@ export const callKey = (tool: string, args: Record<string, unknown>): string => 
 
 const callLine = (c: CallRecord): string => {
   const id = c.ref === undefined ? '-' : `#${c.ref}`
-  if (c.unfinished === true) return `${id} ${c.tool} did not finish`
-  if (!c.ok) return `${id} ${c.tool} failed`
+  if (c.status === 'unfinished') return `${id} ${c.tool} did not finish`
+  if (c.status === 'failed') return `${id} ${c.tool} failed`
   const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
   return `${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()
 }
@@ -743,10 +743,10 @@ const groupLines = (calls: readonly CallRecord[]): string[] => {
   return [...byTool].map(([tool, group]) => {
     const kept = group.filter(c => c.ref !== undefined).map(c => c.ref!)
     const ids = kept.length === 0 ? '-' : kept.length === 1 ? `#${kept[0]}` : `#${kept[0]}…#${kept.at(-1)}`
-    const unfinished = group.filter(c => c.unfinished === true).length
-    const failed = group.filter(c => !c.ok).length - unfinished
+    const unfinished = group.filter(c => c.status === 'unfinished').length
+    const failed = group.filter(c => c.status === 'failed').length
     const chars = group.reduce((n, c) => n + c.chars, 0)
-    const first = group.find(c => c.ok)
+    const first = group.find(c => c.status === 'ok')
     const failures = `${failed === 0 ? '' : `, ${failed} failed`}${unfinished === 0 ? '' : `, ${unfinished} did not finish`}`
     return `${ids} ${tool} ×${group.length}${failures} ${charCount(chars)} ${first?.shape ?? ''}`.trimEnd()
   })

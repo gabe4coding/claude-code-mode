@@ -27,6 +27,7 @@ import {
   mergeShapes,
   parseShapes,
   projectionFooter,
+  type CallRecord,
   rankTools,
   savedResultOf,
   savedReply,
@@ -795,10 +796,10 @@ describe('output projection', () => {
   })
 
   test('many calls: the group line counts the calls that did not finish', () => {
-    const calls = [
-      ...Array.from({ length: 8 }, (_, i) => ({ ref: i + 1, tool: 'mcp__x__get', ok: true, chars: 10 })),
-      { tool: 'mcp__x__get', ok: false, chars: 0 },
-      { tool: 'mcp__x__get', ok: false, chars: 0, unfinished: true },
+    const calls: CallRecord[] = [
+      ...Array.from({ length: 8 }, (_, i): CallRecord => ({ ref: i + 1, tool: 'mcp__x__get', status: 'ok', chars: 10 })),
+      { tool: 'mcp__x__get', status: 'failed', chars: 0 },
+      { tool: 'mcp__x__get', status: 'unfinished', chars: 0 },
     ]
     const text = projectionFooter({ calls, recalls: 0, recalled: [] }, { t: 'error', message: 'timeout after 2000 ms', logs: [] })
     expect(text).toContain('--- 10 MCP calls: ')

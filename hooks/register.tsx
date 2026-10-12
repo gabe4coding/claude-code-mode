@@ -21,7 +21,10 @@ import {
   hiddenKey,
   hintRef,
   refTarget,
+  parseDecision,
+  type Decision,
   type HiddenKey,
+  type HintEdit,
   hintsFor,
   hintApplies,
   isUnder,
@@ -53,7 +56,6 @@ import {
   withoutReview,
   type Hint,
   type HintScope,
-  type ProposalKind,
   type Review,
   type ReviewFields,
 } from './hints'
@@ -200,7 +202,7 @@ async function readHintFiles($: EngineInterface, dir: string, scope: HintScope):
   )
   return files.map((f, i) => {
     const hint = parseHint(String(texts[i]), `${dir}/${f.name}`, scope)
-    if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.remove === undefined) {
+    if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.edit === undefined) {
       debugLog($, `${hint.path} names no servers, identify or tools in its frontmatter, so it applies to no server`)
     }
     return hint
@@ -442,23 +444,22 @@ async function bundledChangeName($: EngineInterface, file: string, hint: Hint): 
 // the new hint in its place: in the same file, or, for a bundled hint, in the
 // user file that bundledChangeFile gives. The file must be directly in a hint folder: a
 // pending file names it, and a pending file is only as safe as the folder it is in.
-async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
-  const ref = hint.remove!
-  const target = refTarget(ref)
+async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, projectHints: boolean): Promise<string> {
+  const target = refTarget(edit.ref)
   const key = hintKey(hint.body)
   const dirs = await hintDirs($, projectHints)
   const userDir = dirs.find(d => d.scope === 'user')?.dir
   // The new hint at the end of a file, with the old hint's frontmatter when the file is new or empty.
-  const withNew = (text: string | undefined) => appendHint(text, hint.servers, hint.identify, hint.tools, hint.replace!)
+  const withNew = (text: string | undefined, newText: string) => appendHint(text, hint.servers, hint.identify, hint.tools, newText)
   if (target.bundled) {
     const { file } = target
-    if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
+    if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${edit.ref}`)
     // The new hint first: if a write fails, the old hint still shows.
     const path = removedFile(userDir)
     let dest = path
-    if (hint.replace !== undefined) {
+    if (edit.kind === 'change') {
       const own = await bundledChangeFile($, userDir, file, hint)
-      await $.fs.write(own.path, withNew(own.text))
+      await $.fs.write(own.path, withNew(own.text, edit.text))
       dest = own.path
     }
     const removed = parseRemoved(String(await $.fs.read(path).catch(() => '')))
@@ -470,8 +471,8 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
   const dir = dirs.find(d => d.scope !== 'bundled' && path.startsWith(`${d.dir}/`) && !path.slice(d.dir.length + 1).includes('/'))
   if (dir === undefined || !path.endsWith('.md')) throw new Error(`not a hint file: ${path}`)
   const text = await readIfExists($, path)
-  if (hint.replace !== undefined) {
-    await $.fs.write(path, (text === undefined ? undefined : replaceInFile(text, key, hint.replace)) ?? withNew(text))
+  if (edit.kind === 'change') {
+    await $.fs.write(path, (text === undefined ? undefined : replaceInFile(text, key, edit.text)) ?? withNew(text, edit.text))
     return path
   }
   if (text === undefined) return path
@@ -487,8 +488,8 @@ async function approveRemoval($: EngineInterface, hint: Hint, projectHints: bool
 async function approvePending($: EngineInterface, path: string, projectHints: boolean): Promise<string> {
   const proposal = String(await $.fs.read(path))
   const hint = parseHint(proposal, path, 'user')
-  if (hint.remove !== undefined) {
-    const dest = await approveRemoval($, hint, projectHints)
+  if (hint.edit !== undefined) {
+    const dest = await approveRemoval($, hint, hint.edit, projectHints)
     await $.process.run(['rm', '-f', path])
     return dest
   }
@@ -504,23 +505,19 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
 // again in the session that hid it.
 async function discardPending($: EngineInterface, path: string): Promise<void> {
   const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
-  if (hint.remove !== undefined) for (const { hidden } of bySession.values()) hidden.delete(hiddenKey(hint.remove, hintKey(hint.body)))
+  if (hint.edit !== undefined) for (const { hidden } of bySession.values()) hidden.delete(hiddenKey(hint.edit.ref, hintKey(hint.body)))
   await $.process.run(['rm', '-f', path])
 }
 
-type Action = 'approved' | 'discarded'
-
-// A decision as $.store keeps it for its row. One from before 0.12 has
-// isRemoval in place of kind.
-type Decision = { action: Action; dest?: string; kind?: ProposalKind; isRemoval?: boolean; isFunction?: boolean }
+type Action = Decision['action']
 
 // The line a decided proposal shows, in its row and in the band: green when
 // approved, dim otherwise (no color).
 type Shown = { text: string; color?: 'green' | 'red' }
 function decisionShown(d: Decision): Shown {
   const color = d.action === 'approved' ? { color: 'green' as const } : {}
-  if (d.isFunction) return { text: d.action === 'approved' ? `✓ Function saved: ${d.dest}` : 'Function discarded.', ...color }
-  const words = PROPOSAL_TEXT[d.kind ?? (d.isRemoval ? 'removal' : 'add')]
+  if (d.kind === 'function') return { text: d.action === 'approved' ? `✓ Function saved: ${d.dest}` : 'Function discarded.', ...color }
+  const words = PROPOSAL_TEXT[d.kind]
   return { text: d.action === 'approved' ? `${words.approved}: ${d.dest}` : words.discarded, ...color }
 }
 
@@ -595,13 +592,13 @@ async function hintCount($: EngineInterface, path: string, scope: HintScope): Pr
 // The review fields of a proposal's card, with the active file it goes to
 // (or, for a removal, comes out of) and how many hints that file has now.
 async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields> {
-  if (hint.remove !== undefined) {
-    const target = refTarget(hint.remove)
+  if (hint.edit !== undefined) {
+    const target = refTarget(hint.edit.ref)
     const path = target.bundled ? `${$.plugin.root}/hints/${target.file}` : target.path
     // A change of a bundled hint names the user file that Approve writes.
     const [hints, ownFile] = await Promise.all([
       hintCount($, path, hint.scope),
-      target.bundled && hint.replace !== undefined ? bundledChangeName($, target.file, hint) : undefined,
+      target.bundled && hint.edit.kind === 'change' ? bundledChangeName($, target.file, hint) : undefined,
     ])
     return reviewFields(hint, { file: target.file, hints, kind: proposalKind(hint), isBundled: target.bundled, ownFile })
   }
@@ -649,7 +646,7 @@ function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, buttons: RenderChild
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
       <Markdown text={`**${words.title}** · ${serverLabel(hint)} · ${reach}`} />
       {cardField(ui, words.label, <Markdown text={hint.body} />)}
-      {hint.replace === undefined ? null : cardField(ui, 'New hint', <Markdown text={`- ${hint.replace}`} />)}
+      {hint.edit?.kind === 'change' ? cardField(ui, 'New hint', <Markdown text={`- ${hint.edit.text}`} />) : null}
       {hint.tools.length > 0 ? cardField(ui, 'Only for tools', <Markdown text={hint.tools.map(asCode).join(', ')} />) : null}
       {fields.reason === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(fields.reason, names)} />)}
       {fields.warnings.length + (fields.seen === undefined ? 0 : 1) === 0 ? null : cardField(ui, 'Checks', (
@@ -745,7 +742,7 @@ function decideFunction($: EngineInterface, path: string, action: Action): Promi
   return decideOnce($, path, async () => {
     const dest = action === 'approved' ? await saveFunction($, path) : undefined
     await $.process.run(['rm', '-f', path])
-    return { action, dest, isFunction: true }
+    return { action, dest, kind: 'function' }
   })
 }
 
@@ -819,7 +816,7 @@ async function probedTools($: EngineInterface, tries: Tries, worked: Set<string>
 // A finished program with many calls that worked, or a join of tools, and no
 // saved function asks for one; each set of tools once per session.
 async function functionNudgeAfter($: EngineInterface, records: readonly CallRecord[], usesLib: boolean): Promise<string> {
-  const ok = records.filter(r => r.ok)
+  const ok = records.filter(r => r.status === 'ok')
   const tools = [...new Set(ok.map(r => r.tool))].sort()
   if (usesLib || !(ok.length >= FUNCTION_CALLS || (tools.length > 1 && ok.length >= FUNCTION_JOIN_CALLS))) return ''
   const { tries } = await sessionOf($)
@@ -958,7 +955,7 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    const decision = parseDecision(await $.store.get(decisionKey(path)))
     if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
@@ -1044,7 +1041,7 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    const decision = parseDecision(await $.store.get(decisionKey(path)))
     if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
@@ -1268,7 +1265,7 @@ export const register: Register = (on, options) => {
       if (learned !== undefined) shapes.set(tool, learned)
       if (reply.ok) argNames.set(tool, [...new Set([...(argNames.get(tool) ?? []), ...argNamesOf(args)])])
       if (reply.ok && repeatOf === undefined && kept.seen.size < MAX_SEEN) kept.seen.set(key, ref ?? 0)
-      records.set(id, { ref, tool, ok: reply.ok, chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
+      records.set(id, { ref, tool, status: reply.ok ? 'ok' : 'failed', chars, shape: reply.ok && projection ? shapeOf(reply.value) : undefined, repeatOf })
     }
 
     // recall(n): a result this session kept, with no new call and no new check:
@@ -1382,7 +1379,7 @@ export const register: Register = (on, options) => {
 
     for (const [id, tool] of started) {
       if (records.has(id)) continue
-      records.set(id, { tool, ok: false, chars: 0, unfinished: true })
+      records.set(id, { tool, status: 'unfinished', chars: 0 })
       if (isCallable(tool, $.plugin.name)) failed.add(tool)
     }
 
@@ -1424,7 +1421,7 @@ export const register: Register = (on, options) => {
         projection,
         ok: isDone,
         calls,
-        failedCalls: callRecords.filter(r => !r.ok).length,
+        failedCalls: callRecords.filter(r => r.status !== 'ok').length,
         repeats: callRecords.filter(r => r.repeatOf !== undefined).length,
         recalls,
         recallMisses,
