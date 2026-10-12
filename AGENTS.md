@@ -7,7 +7,7 @@ value goes back into the context. The whole repo is the plugin (marketplace sour
 - Any change to code, tests, model-facing text or docs → `CODING_STANDARDS.md`.
 - The tools, their results and the permission path → `hooks/register.tsx`. Pure helpers: `hooks/protocol.ts`
   (runner protocol, results, search), `hooks/hints.ts` (hint files and matching), `hooks/functions.ts` (saved
-  functions).
+  functions), `hooks/paths.ts` (the folders in `.claude/code-mode` and the guarded ones).
 - The sandbox → `runtime/runner.mjs`, then `docs/how-it-works.mdx`.
 - Hints, proposals, the band, the hint-file guard → `docs/hints.mdx`. Saved functions → `docs/functions.mdx`.
 - Permission modes, allow rules, the auto mode "no verdict" error → `docs/permissions.mdx`.
