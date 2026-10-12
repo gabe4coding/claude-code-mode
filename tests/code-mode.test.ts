@@ -1,6 +1,7 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { TOOL, TOOL_NAMES, parseInput, registration } from '../hooks/tools'
+import { textOf } from './fakes'
 import {
   MARK,
   argNamesOf,
@@ -63,9 +64,6 @@ const fakeServer = (on: On, verdicts: Record<string, Verdict> = {}) => {
   })
   return { paths }
 }
-
-const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
-  r.deny !== undefined ? `DENY ${r.deny}` : typeof r.result === 'string' ? r.result : (r.text ?? JSON.stringify(r.result))
 
 describe('protocol', () => {
   test('takeMessages keeps partial lines and skips foreign output', () => {

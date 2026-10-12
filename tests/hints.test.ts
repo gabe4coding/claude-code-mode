@@ -3,63 +3,9 @@ import type { On, RenderElement } from 'claude-code'
 import { MAX_DECISIONS, TRANSFER_TEXT, activePathOf, appendHint, appendItems, canApprove, decisionKey, findItem, hintTransfer, hintApplies, hintFileName, hintItems, hintRef, isUnder, parseHint, pendingFileName, pendingPathOf, proposalKind, removalProposal, removalTransfer, removeFromFile, replaceInFile, resolvePath, reviewFields, codeNames, serverMatches, staleDecisionKeys, textFlags, withReview, withoutReview } from '../hooks/hints'
 import { guardedDirs } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
+import { HOME, TMP, fakeHome, textOf } from './fakes'
 
-const HOME = '/home/test'
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
-
-// A fake file system and session beneath the plugin. `files` maps absolute
-// paths to text; `written` records each write the plugin makes. `env` sets
-// a variable; any other variable reads as HOME.
-const fakeHome = (on: On, files: Record<string, string>, serverOf: Record<string, string> = {}, onWrite?: (path: string, text: string) => void, withRm = true) => {
-  const written: Record<string, string> = {}
-  const checked: string[] = []
-  const env: Record<string, string> = {}
-  const all = () => ({ ...files, ...written })
-  on('env.get', ($, e) => ({ value: env[e.name] ?? HOME }))
-  on('fs.exists', ($, e) => (checked.push(e.path), { value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
-  on('fs.list', ($, e) => {
-    const prefix = `${e.path}/`
-    const names = new Set<string>()
-    const dirs = new Set<string>()
-    for (const p of Object.keys(all())) {
-      if (!p.startsWith(prefix)) continue
-      const rest = p.slice(prefix.length)
-      if (rest.includes('/')) dirs.add(rest.split('/')[0]!)
-      else names.add(rest)
-    }
-    const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
-    return { value: [...[...names].map(n => entry(n, 'file')), ...[...dirs].map(n => entry(n, 'dir'))] }
-  })
-  on('fs.read', ($, e) => {
-    const text = all()[e.path]
-    return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
-  })
-  on('fs.write', ($, e) => {
-    written[e.path] = e.text
-    onWrite?.(e.path, e.text)
-    return { value: undefined }
-  })
-  on('session.usage', () => ({
-    value: { context: { breakdown: { mcpTools: Object.entries(serverOf).map(([name, serverName]) => ({ name, serverName, tokens: 0, isLoaded: true })) } } } as never,
-  }))
-  on('tool.list', () => ({
-    value: Object.keys(serverOf).map(name => ({ name, description: `Tool ${name}`, mcp: true })),
-  }))
-  const removed: string[] = []
-  if (withRm) on('process.run', ($, e) => {
-    if (e.argv[0] === 'rm') {
-      const path = String(e.argv.at(-1))
-      removed.push(path)
-      delete files[path]
-      delete written[path]
-    }
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  return { written, removed, checked, env }
-}
-
-const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
-  r.deny !== undefined ? `DENY ${r.deny}` : typeof r.result === 'string' ? r.result : (r.text ?? JSON.stringify(r.result))
 
 describe('hint files', () => {
   test('frontmatter lists can be JSON, so a value can hold a comma', () => {
@@ -251,19 +197,17 @@ describe('hints in the tools', () => {
 
 describe('hints after a failed run_code call', () => {
   const FAIL = 'mcp__cccc-3333__broken'
-  const XDIR = '/tmp/code-mode-test'
 
   // One run_code run with one call to a tool that fails.
   const failedRun = async ($: Engine, on: On) => {
     on('tool.check', () => ({ decision: 'allow' as const }))
     on('model.classify', () => ({ value: 'error fix' }))
     on('tool.call', { tool: FAIL }, () => ({ deny: 'nope' }))
-    on('process.run', () => ({ value: { exitCode: 0, stdout: `${XDIR}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
     // A fake runner: one call to the failing tool, then done once its reply is written.
     let replied: (t: string) => void = () => {}
     const reply = new Promise<string>(r => { replied = r })
     const fs = fakeHome(on, { [`${USER_DIR}/broken.md`]: '---\nservers: [Broken]\n---\n- Broken hint.' }, { [FAIL]: 'claude.ai Broken' },
-      (path, text) => { if (path === `${XDIR}/r1.json`) replied(text) }, false)
+      { onWrite: (path, text) => { if (path === `${TMP}/r1.json`) replied(text) } })
     on('process.spawn', async function* () {
       yield { stream: 'stdout' as const, text: `\u0001cm ${JSON.stringify({ t: 'call', id: 1, tool: FAIL, args: {} })}\n` }
       const text = await reply
@@ -617,8 +561,10 @@ describe('the band above the prompt', () => {
 
     test(`a failed Approve shows its error in the band (${surface})`, async ($, on) => {
       mock.store(on)
-      fakeHome(on, { [PENDING_A]: A }, {}, () => {
-        throw new Error('disk full')
+      fakeHome(on, { [PENDING_A]: A }, {}, {
+        onWrite: () => {
+          throw new Error('disk full')
+        },
       })
       const ui = await $.ui.mount(band(surface))
       await ui.press({ key: 'review' })

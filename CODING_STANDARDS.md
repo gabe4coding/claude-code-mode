@@ -46,7 +46,7 @@ enforces; the others rely on discipline.
      nothing to drive. It reads the project recipe in `.claude/skills/verify/` (`SKILL.md` and `drive.mjs`): real
      Claude Code with the plugin and the bench's fake server. If the recipe fails or misses a step, fix it.
 - The checks. `[test: CI runs each one]`
-  - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
+  - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`; the shared fakes are in `tests/fakes.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
   - `node tests/code.check.mjs`: the code rules marked `[test: code.check.mjs]`.
