@@ -29,6 +29,10 @@ enforces; the others rely on discipline.
   - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
+- `node tests/smoke.e2e.mjs`: real `claude -p` with the plugin and the bench's fake server. It needs a login and
+  costs API usage, so it is not one of the three checks and CI does not run it. Run it after a change to `hooks/` or
+  `runtime/`, before a release, and after you raise the pinned Claude Code version. Its checks read the transcript,
+  the fake server's calls and the plugin's files, never the words of the model.
 - CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block
   (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works. CI pins the Claude Code version for `claude plugin test .`, and
   a weekly job runs the tests with the newest release.
