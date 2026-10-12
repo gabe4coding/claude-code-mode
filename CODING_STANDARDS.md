@@ -11,6 +11,8 @@ enforces; the others rely on discipline.
 - Context for the model at session start goes in `hooks/session-start.sh`, a command hook in `hooks/hooks.json`.
   Claude Code's built-in security module skips a hooks module's `classic.SessionStart`, so a module handler never
   runs. A set option reaches the script as `CLAUDE_PLUGIN_OPTION_<KEY>`.
+- Read the time with `await $.clock.now()`, never `Date.now()` or `new Date()`: a test sets the time with
+  `mock.clock`. `[test: code.check.mjs]`
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
   debug log" must have a line there.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
@@ -30,17 +32,18 @@ enforces; the others rely on discipline.
      the checks test its edits too.
   2. `/code-review`: the built-in Claude Code skill. It reviews the diff for correctness bugs, which `/simplify`
      does not look for. Check each finding against the code, and fix the real ones.
-  3. The three checks below. After a change to `hooks/` or `tests/`, also run the type check.
+  3. The checks below. After a change to `hooks/` or `tests/`, also run the type check.
   4. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. Run it
      after a change to `hooks/`, `runtime/` or `hints/`. Skip it when the diff touches only tests or docs: there is
      nothing to drive. It reads the project recipe in `.claude/skills/verify/` (`SKILL.md` and `drive.mjs`): real
      Claude Code with the plugin and the bench's fake server. If the recipe fails or misses a step, fix it.
-- The three checks. `[test: CI runs all three]`
+- The checks. `[test: CI runs each one]`
   - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
+  - `node tests/code.check.mjs`: the code rules marked `[test: code.check.mjs]`.
 - `node tests/smoke.e2e.mjs`: real `claude -p` with the plugin and the bench's fake server. It needs a login and
-  costs API usage, so it is not one of the three checks and CI does not run it. Run it after a change to `hooks/` or
+  costs API usage, so it is not one of the checks and CI does not run it. Run it after a change to `hooks/` or
   `runtime/`, before a release, and after you raise the pinned Claude Code version. Its checks read the transcript,
   the fake server's calls and the plugin's files, never the words of the model.
 - CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block

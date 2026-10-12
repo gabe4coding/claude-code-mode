@@ -1,4 +1,4 @@
-import { describe, expect, test, type Engine } from 'claude-code/testing'
+import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import {
   MARK,
@@ -377,6 +377,8 @@ describe('protocol', () => {
 // tests/runner.integration.mjs covers the real sandbox under Node.
 const XDIR = '/tmp/code-mode-test'
 const fakeHost = (on: On) => {
+  // run_code reads the time for each result it keeps: the test moves it.
+  const clock = mock.clock(on)
   const waiters = new Map<string, (text: string) => void>()
   const removed: string[] = []
   const spawned: string[][] = []
@@ -420,7 +422,7 @@ const fakeHost = (on: On) => {
     yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: JSON.stringify(value), logs: ['hello'] })}\n` }
     return { value: { code: 0, signal: null } }
   })
-  return { removed, spawned, ran, written }
+  return { removed, spawned, ran, written, clock }
 }
 
 type Step =
@@ -751,7 +753,11 @@ describe('output projection', () => {
     const host = fakeHost(on)
     on('tool.call', { tool: 'mcp__fake__hang' }, () => new Promise<never>(() => undefined))
     const code = JSON.stringify({ calls: [{ tool: 'mcp__fake__echo', args: { n: 1 } }, { tool: 'mcp__fake__hang', args: {} }], timeout: 1 })
-    const text = textOf(await $.tool.call({ tool: RUN, code }))
+    const run = $.tool.call({ tool: RUN, code })
+    // run_code waits one second for the call that never answers.
+    await host.clock.settle()
+    await host.clock.advance(1000)
+    const text = textOf(await run)
     expect(text).toContain('Error: timeout after 2000 ms')
     expect(text).toContain('--- 2 MCP calls: ')
     expect(text).toMatch(/#1 mcp__fake__echo \d+/)
@@ -790,15 +796,16 @@ describe('output projection', () => {
   test('recall(n) in a later run returns the kept result with no new call', ON, async ($, on) => {
     on('session.id', () => ({ value: 'sess-p' }))
     const server = fakeServer(on)
-    fakeHost(on)
+    const { clock } = fakeHost(on)
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { n: 7 } }) })
+    await clock.advance(12 * 60_000)
     const before = server.paths.length
     const text = textOf(await $.tool.call({ tool: RUN, code: scenario({ recall: 1 }, { recall: 9 }) }))
     expect(server.paths.length).toBe(before)
     expect(text).toContain('"n": 7')
     expect(text).toContain('no result #9 in this session')
     expect(text).toContain('--- 0 MCP calls, 2 recalls: ')
-    expect(text).toContain('recalled: #1 (0 s old)')
+    expect(text).toContain('recalled: #1 (12 min old)')
   })
 
   test('is on by default', async ($, on) => {
@@ -887,14 +894,16 @@ describe('output projection', () => {
 
   test('metrics: one line per run with counts and sizes, no data', { options: { projection: true, metrics: true } }, async ($, on) => {
     fakeServer(on)
-    const files = fakeHost(on).written
+    const { written: files, clock } = fakeHost(on)
     on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
     on('session.id', () => ({ value: 'sess-m' }))
+    await clock.set(Date.UTC(2026, 0, 2))
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }) })
     await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo', args: { secret: 's3' } }, { recall: 1 }) })
     const text = files['/home/u/.claude/code-mode/metrics/sess-m.jsonl']!
     const lines = text.trim().split('\n').map(l => JSON.parse(l))
     expect(lines.length).toBe(2)
+    expect(lines[0].ts).toBe('2026-01-02T00:00:00.000Z')
     expect(lines[1]).toMatchObject({ projection: true, ok: true, calls: 1, repeats: 1, recalls: 1, recallMisses: 0, cut: false })
     expect(text).not.toContain('s3')
   })

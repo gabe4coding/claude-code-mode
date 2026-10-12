@@ -277,12 +277,12 @@ const MAX_KEPT = 50
 const MAX_KEPT_CHARS = 8_000_000
 const MAX_SEEN = 2000
 
-// Keeps a result and returns its number; the oldest results go first. A
-// result larger than the whole limit is not kept.
-function keep(kept: Kept, json: string): number | undefined {
+// Keeps a result from time `at` and returns its number; the oldest results go
+// first. A result larger than the whole limit is not kept.
+function keep(kept: Kept, json: string, at: number): number | undefined {
   if (json.length > MAX_KEPT_CHARS) return undefined
   const ref = kept.next++
-  kept.results.set(ref, { json, at: Date.now() })
+  kept.results.set(ref, { json, at })
   kept.chars += json.length
   for (const [old, r] of kept.results) {
     if (kept.results.size <= MAX_KEPT && kept.chars <= MAX_KEPT_CHARS) break
@@ -296,9 +296,9 @@ function keep(kept: Kept, json: string): number | undefined {
 // One line per run in ~/.claude/code-mode/metrics/<session>.jsonl, for the
 // output projection experiment: sizes and counts only, no data and no arguments.
 async function writeMetrics($: EngineInterface, state: SessionState, line: Record<string, unknown>): Promise<void> {
-  const [home, id] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => '')])
+  const [home, id, now] = await Promise.all([$.env.get('HOME').catch(() => undefined), $.session.id().catch(() => ''), $.clock.now()])
   if (!home || id === '') return
-  state.metrics.push(JSON.stringify(line))
+  state.metrics.push(JSON.stringify({ ts: new Date(now).toISOString(), ...line }))
   await $.fs.write(`${home}/.claude/code-mode/metrics/${id}.jsonl`, `${state.metrics.join('\n')}\n`)
 }
 
@@ -1350,7 +1350,7 @@ export const register: Register = (on, options) => {
       const repeatOf = kept.seen.get(key)
       const json = reply.ok ? (JSON.stringify(reply.value) ?? 'null') : ''
       const chars = json.length
-      const ref = reply.ok && projection ? keep(kept, json) : undefined
+      const ref = reply.ok && projection ? keep(kept, json, await $.clock.now()) : undefined
       const learned = reply.ok && projection ? learnedShape(reply.value) : undefined
       if (learned !== undefined) shapes.set(tool, learned)
       if (reply.ok) argNames.set(tool, [...new Set([...(argNames.get(tool) ?? []), ...argNamesOf(args)])])
@@ -1363,8 +1363,6 @@ export const register: Register = (on, options) => {
     const answerRecall = async (id: number, ref: number): Promise<void> => {
       recalls++
       const found = projection ? kept.results.get(ref) : undefined
-      if (found === undefined) recallMisses++
-      else recalled.push({ ref, ageMs: Date.now() - found.at })
       const error =
         !projection ? 'recall() is off: call the tool again'
         : ref > 0 && ref < kept.next ? `result #${ref} is no longer kept: call the tool again`
@@ -1372,6 +1370,8 @@ export const register: Register = (on, options) => {
       // The kept JSON goes into the reply as it is: no parse and no copy of the value.
       const text = found !== undefined ? `{"ok":true,"value":${found.json}}` : JSON.stringify({ ok: false, error } satisfies Reply)
       await $.fs.write(`${xdir}/r${id}.json`, text)
+      if (found === undefined) recallMisses++
+      else recalled.push({ ref, ageMs: (await $.clock.now()) - found.at })
     }
 
     // saveFile, readFile and the resources: the sandbox cannot do them, so the plugin does.
@@ -1486,11 +1486,10 @@ export const register: Register = (on, options) => {
     const returned = outcome?.t === 'done' ? outcome.value : undefined
     const outChars = returned?.length ?? 0
     const isCut = outChars > MAX_RESULT_CHARS
-    const wholeRef = projection && isCut && returned !== undefined ? keep(kept, returned) : undefined
+    const wholeRef = projection && isCut && returned !== undefined ? keep(kept, returned, await $.clock.now()) : undefined
     const report: Projection | undefined = projection ? { calls: callRecords, recalls, recalled, wholeRef } : undefined
     if (opts.metrics === true) {
       await writeMetrics($, state, {
-        ts: new Date().toISOString(),
         projection,
         ok: isDone,
         calls,

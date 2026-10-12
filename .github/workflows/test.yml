@@ -43,6 +43,7 @@ jobs:
         env:
           EXPECT_NETWORK_BLOCK: "1"
       - run: node tests/docs.check.mjs
+      - run: node tests/code.check.mjs
 
   hooks:
     # The hooks against the fake host of claude-code/testing. It needs no login.
