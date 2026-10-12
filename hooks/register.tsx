@@ -2,9 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
   ADD_HINT_DESCRIPTION,
+  EDIT_HINT_DESCRIPTION,
   HINT_KINDS,
-  OTHER_INSTRUCTION,
   REMOVE_HINT_DESCRIPTION,
+  PROPOSAL_TEXT,
   TRANSFER_TEXT,
   activePathOf,
   appendHint,
@@ -23,28 +24,33 @@ import {
   hintApplies,
   isUnder,
   kindQuestion,
+  newHintFlags,
   normalize,
+  oneLine,
   parseHint,
   pendingFileName,
+  proposalKind,
   decisionKey,
   pendingPathOf,
   parseRemoved,
   removalProposal,
   removalTransfer,
   removeFromFile,
+  replaceInFile,
   resolvePath,
   reviewFields,
+  sameReach,
   serverKeyOf,
   serverLabel,
   staleDecisionKeys,
   targetsOf,
-  textFlags,
   toolsByServer,
   withReview,
   withoutItems,
   withoutReview,
   type Hint,
   type HintScope,
+  type ProposalKind,
   type Review,
   type ReviewFields,
 } from './hints'
@@ -91,9 +97,12 @@ import {
 } from './protocol'
 import {
   SAVE_FUNCTION_DESCRIPTION,
+  codeDiff,
+  failedFunctions,
   formatFunction,
   formatFunctions,
   functionError,
+  functionFixNudge,
   functionTransfer,
   functionsFor,
   parseFunction,
@@ -144,9 +153,10 @@ type Options = {
 
 const ADD_HINT = 'mcp__code-mode__add_hint'
 const REMOVE_HINT = 'mcp__code-mode__remove_hint'
+const EDIT_HINT = 'mcp__code-mode__edit_hint'
 const SAVE_FUNCTION = 'mcp__code-mode__save_function'
 // The names a card shows as inline code when the model's reason names them.
-const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'save_function']
+const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'edit_hint', 'save_function']
 // A program that did this many calls that worked, or this many to more than
 // one tool, is worth a saved function.
 const FUNCTION_CALLS = 10
@@ -288,6 +298,12 @@ async function writeMetrics($: EngineInterface, state: SessionState, line: Recor
 
 const removedFile = (userDir: string): string => `${userDir}/removed.json`
 
+// The text of a file, or undefined when there is none. A file that exists
+// but cannot be read throws: an approval must not write over it.
+async function readIfExists($: EngineInterface, path: string): Promise<string | undefined> {
+  return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
+}
+
 // The result shape of each MCP tool from its last call that worked, in any
 // session: search_tools shows it, so a first program need not guess it.
 async function shapesPath($: EngineInterface): Promise<string | undefined> {
@@ -398,27 +414,46 @@ async function serverNames($: EngineInterface): Promise<Map<string, string>> {
 }
 
 // Approve a removal: take the hint out of its file (and remove a file with no
-// hint left), or, for a bundled hint, add it to removed.json. The file must
-// be directly in a hint folder: a pending file names it, and a pending file
-// is only as safe as the folder it is in.
+// hint left), or, for a bundled hint, add it to removed.json. A change puts
+// the new hint in its place: in the same file, or, for a bundled hint, in the
+// user file of the same name. The file must be directly in a hint folder: a
+// pending file names it, and a pending file is only as safe as the folder it is in.
 async function approveRemoval($: EngineInterface, hint: Hint, projectHints: boolean): Promise<string> {
   const ref = hint.remove!
   const key = hintKey(hint.body)
   const dirs = await hintDirs($, projectHints)
   const userDir = dirs.find(d => d.scope === 'user')?.dir
+  // The new hint at the end of a file, with the old hint's frontmatter when the file is new or empty.
+  const withNew = (text: string | undefined) => appendHint(text, hint.servers, hint.identify, hint.tools, hint.replace!)
   if (ref.startsWith('bundled:')) {
     const file = ref.slice('bundled:'.length)
     if (userDir === undefined || !/^[\w.-]+\.md$/.test(file)) throw new Error(`not a bundled hint file: ${ref}`)
+    // The new hint first: if a write fails, the old hint still shows. It goes
+    // to the user file of the same name, or, when that file is for other
+    // servers or tools, to <name>-changed.md, so it keeps the bundled reach.
     const path = removedFile(userDir)
-    const current = parseRemoved(String(await $.fs.read(path).catch(() => '')))
-    if (!current.some(r => r.file === file && r.hint === key)) current.push({ file, hint: key })
-    await $.fs.write(path, `${JSON.stringify(current, null, 2)}\n`)
-    return path
+    let dest = path
+    if (hint.replace !== undefined) {
+      const same = `${userDir}/${file}`
+      const text = await readIfExists($, same)
+      const fits = text === undefined || text.trim() === '' || sameReach(parseHint(text, same, 'user'), hint)
+      dest = fits ? same : same.replace(/\.md$/, '-changed.md')
+      await $.fs.write(dest, withNew(fits ? text : await readIfExists($, dest)))
+    }
+    const removed = parseRemoved(String(await $.fs.read(path).catch(() => '')))
+    if (!removed.some(r => r.file === file && r.hint === key)) removed.push({ file, hint: key })
+    await $.fs.write(path, `${JSON.stringify(removed, null, 2)}\n`)
+    return dest
   }
   const dir = dirs.find(d => d.scope !== 'bundled' && ref.startsWith(`${d.dir}/`) && !ref.slice(d.dir.length + 1).includes('/'))
   if (dir === undefined || !ref.endsWith('.md')) throw new Error(`not a hint file: ${ref}`)
-  if (!(await $.fs.exists(ref))) return ref
-  const rest = removeFromFile(String(await $.fs.read(ref)), key)
+  const text = await readIfExists($, ref)
+  if (hint.replace !== undefined) {
+    await $.fs.write(ref, (text === undefined ? undefined : replaceInFile(text, key, hint.replace)) ?? withNew(text))
+    return ref
+  }
+  if (text === undefined) return ref
+  const rest = removeFromFile(text, key)
   if (rest === undefined) await $.process.run(['rm', '-f', ref])
   else await $.fs.write(ref, rest)
   return ref
@@ -435,7 +470,7 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
     return dest
   }
   const dest = activePathOf(path)
-  const current = (await $.fs.exists(dest)) ? String(await $.fs.read(dest)) : undefined
+  const current = await readIfExists($, dest)
   const bullets = parseHint(proposal, path, 'user').body.split('\n').filter(l => l.trim() !== '').join('\n')
   await $.fs.write(dest, current === undefined ? withoutReview(proposal) : `${current.replace(/\s*$/, '')}\n${bullets}\n`)
   await $.process.run(['rm', '-f', path])
@@ -460,9 +495,9 @@ async function rememberDecision($: EngineInterface, path: string, decision: Reco
 // One decision, from the add_hint or remove_hint row or from the band: act
 // on the file, remember the decision by path (the row reads it), and redraw both.
 async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded', projectHints: boolean): Promise<void> {
-  const isRemoval = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user').remove !== undefined
+  const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
   const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
-  await rememberDecision($, path, { action, dest, isRemoval })
+  await rememberDecision($, path, { action, dest, kind: proposalKind(hint) })
   $.ui.invalidate('ui.render')
 }
 
@@ -508,7 +543,7 @@ async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields>
     const path = bundled ? `${$.plugin.root}/hints/${name}` : hint.remove
     const text = await $.fs.read(path).catch(() => undefined)
     const hints = text === undefined ? undefined : hintItems(parseHint(String(text), path, hint.scope).body).length
-    return reviewFields(hint, { file: name, hints, isRemoval: true, isBundled: bundled })
+    return reviewFields(hint, { file: name, hints, kind: proposalKind(hint), isBundled: bundled })
   }
   const dest = activePathOf(hint.path)
   const file = dest.slice(dest.lastIndexOf('/') + 1)
@@ -547,10 +582,12 @@ function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, keys: { approve: str
   const { Box, Markdown, Text } = ui
   const reach = hint.scope === 'project' ? 'this project' : 'all projects'
   const names = [...hint.tools, ...hint.identify, ...OWN_TOOLS]
+  const words = PROPOSAL_TEXT[proposalKind(hint)]
   return (
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
-      <Markdown text={`**${hint.remove === undefined ? 'Usage hint' : 'Removal of a usage hint'}** · ${serverLabel(hint)} · ${reach}`} />
-      {cardField(ui, hint.remove === undefined ? 'Hint' : 'Hint to remove', <Markdown text={hint.body} />)}
+      <Markdown text={`**${words.title}** · ${serverLabel(hint)} · ${reach}`} />
+      {cardField(ui, words.label, <Markdown text={hint.body} />)}
+      {hint.replace === undefined ? null : cardField(ui, 'New hint', <Markdown text={`- ${hint.replace}`} />)}
       {hint.tools.length > 0 ? cardField(ui, 'Only for tools', <Markdown text={hint.tools.map(asCode).join(', ')} />) : null}
       {fields.reason === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(fields.reason, names)} />)}
       {fields.warnings.length + (fields.seen === undefined ? 0 : 1) === 0 ? null : cardField(ui, 'Checks', (
@@ -566,15 +603,19 @@ function hintCard(ui: Ui, hint: Hint, fields: ReviewFields, keys: { approve: str
   )
 }
 
-// A function proposal's card: the code to read, highlighted.
-function functionCard(ui: Ui, f: SavedFunction, keys: { approve: string; discard: string }, decide: Decide) {
+// A function proposal's card: the code to read, highlighted. A proposal that
+// replaces a saved function (`current`) shows the code as a diff from it.
+function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefined, keys: { approve: string; discard: string }, decide: Decide) {
   const { Box, Code, Markdown, Text } = ui
+  const before = current !== undefined && current.description !== f.description ? <Text dimColor>{`Now: ${current.description}`}</Text> : null
   return (
     <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
-      <Markdown text={`**Saved function** · ${asCode(`lib.${f.name}${signatureOf(f.code)}`)}`} />
-      {cardField(ui, 'What it returns', <Text>{f.description}</Text>)}
+      <Markdown text={`**${current === undefined ? 'Saved function' : 'Change of a saved function'}** · ${asCode(`lib.${f.name}${signatureOf(f.code)}`)}`} />
+      {cardField(ui, 'What it returns', <Box flexDirection="column"><Text>{f.description}</Text>{before}</Box>)}
       {f.why === undefined ? null : cardField(ui, "Claude's reason", <Markdown text={codeNames(f.why, OWN_TOOLS)} />)}
-      {cardField(ui, 'Code', <Code source={f.code} language="javascript" />)}
+      {current === undefined
+        ? cardField(ui, 'Code', <Code source={f.code} language="javascript" />)
+        : cardField(ui, 'Code changes', <Code source={codeDiff(current.code, f.code)} language="javascript" format="diff" />)}
       <Text dimColor>Programs can run this code in later sessions. Your approval of run_code covers its MCP calls. Approve only code you have read.</Text>
       {cardButtons(ui, keys, decide)}
     </Box>
@@ -582,7 +623,7 @@ function functionCard(ui: Ui, f: SavedFunction, keys: { approve: string; discard
 }
 
 const HINT_GUARD_DENY =
-  'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint or a function with save_function instead.'
+  'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint, a change of one with edit_hint, or a new or changed function with save_function instead.'
 
 // What a hint-file guard that failed answers: it denies, and logs why.
 function guardFailed($: EngineInterface, tool: string, error: { kind: string; message?: string }): { deny: string } {
@@ -614,6 +655,12 @@ async function loadFunctions($: EngineInterface): Promise<SavedFunction[]> {
   return dir === undefined ? [] : readFunctionFiles($, dir)
 }
 
+// One function file, or undefined when it is missing or not a function. For
+// a proposal, activePathOf gives the saved function it replaces.
+async function readFunction($: EngineInterface, path: string): Promise<SavedFunction | undefined> {
+  return parseFunction(String(await $.fs.read(path).catch(() => '')), path)
+}
+
 async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[]> {
   const dir = await functionsDir($)
   return dir === undefined ? [] : readFunctionFiles($, `${dir}/pending`)
@@ -622,7 +669,7 @@ async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[
 // Approve: the proposal becomes functions/<name>.md, without its reason, and
 // replaces a function with that name. Discard: the proposal goes.
 async function decideFunction($: EngineInterface, path: string, action: 'approved' | 'discarded'): Promise<void> {
-  const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
+  const proposal = await readFunction($, path)
   const dir = await functionsDir($)
   let dest: string | undefined
   if (action === 'approved' && proposal !== undefined && dir !== undefined && path.startsWith(`${dir}/pending/`)) {
@@ -730,6 +777,63 @@ async function mcpTypes($: EngineInterface): Promise<string> {
   return mcpTypesCache.text
 }
 
+// remove_hint and edit_hint: hide the hint in this session and write the
+// proposal (see where they register).
+async function proposeRemoval($: EngineInterface, e: unknown, isEdit: boolean, projectHints: boolean): Promise<{ result: string }> {
+  const input = e as { path?: unknown; text?: unknown; new_text?: unknown; why?: unknown; tool_use_id: string }
+  const path = typeof input.path === 'string' ? input.path.trim() : ''
+  const text = typeof input.text === 'string' ? input.text.trim() : ''
+  // The new text of a change; undefined for a removal.
+  const replacement = isEdit ? (typeof input.new_text === 'string' ? input.new_text.trim() : '') : undefined
+  const why = typeof input.why === 'string' ? oneLine(input.why) : ''
+  if (path === '' || text === '' || why === '' || replacement === '') {
+    return { result: `Error: path, text, ${isEdit ? 'new_text ' : ''}and why are required.` }
+  }
+  if (why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
+  if ((replacement?.length ?? 0) > 500) return { result: 'Error: a hint is one short sentence (500 characters at most).' }
+
+  const hint = (await loadHintFiles($, projectHints)).find(h => h.path === path)
+  if (!hint) return { result: `Error: ${path} is not a hint file. Give the path from "[<scope> hint: <path>]".` }
+  const found = findItem(hint.body, text)
+  if (found.item === undefined) return { result: `Error: ${found.error}` }
+  if (replacement !== undefined && hintKey(replacement) === hintKey(found.item)) return { result: 'Error: new_text is the same as the hint.' }
+  const dirs = await hintDirs($, projectHints)
+  const target = dirs.find(d => d.scope === (hint.scope === 'project' ? 'project' : 'user'))
+  if (!target) return { result: 'Error: the user hint folder is not known (HOME is not set).' }
+
+  // The failed tries on the servers the hint applies to, for the card. The
+  // new text of a change gets the checks of a new hint.
+  const [names, list, kind, state, shown] = await Promise.all([
+    serverNames($),
+    $.tool.list(),
+    replacement === undefined ? undefined : $.model.classify(kindQuestion(serverLabel(hint), replacement), HINT_KINDS).catch(() => undefined),
+    sessionOf($),
+    approvalShown($),
+  ])
+  const mcpTools = list.filter(t => t.mcp).map(t => t.name)
+  const servers = [...new Set(targetsOf(mcpTools, names, toolsByServer(mcpTools)).filter(t => hintApplies(hint, t)).map(t => t.serverKey))]
+  const failures = servers.reduce((n, s) => n + (state.tries.failedTries.get(s) ?? 0), 0)
+  const review: Review = {
+    why,
+    kind,
+    seen: seenText(failures),
+    flags: replacement === undefined ? [] : newHintFlags(kind, replacement, servers, servers.length > 0, mcpTools),
+  }
+  const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+  const pending = `${target.dir}/pending/${pendingFileName(`${name}.${isEdit ? 'edit' : 'remove'}.md`, input.tool_use_id)}`
+  await $.fs.write(pending, removalProposal(hint, found.item, review, replacement))
+  state.hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
+  $.ui.invalidate('ui.render')
+  const done = `Hid the hint in this session and proposed to ${isEdit ? 'change it in' : 'remove it from'} ${path}.`
+  if (!shown) {
+    const block = removalTransfer({ server: serverLabel(hint), text: hintKey(found.item), why, replacement })
+    return { result: `${done} ${TRANSFER_TEXT}\n\n${block}\npending: ${pending}` }
+  }
+  return {
+    result: `${done} The file changes only after the person approves the ${isEdit ? 'change' : 'removal'} in the band above the prompt. Tell the person.\npending: ${pending}`,
+  }
+}
+
 export const register: Register = (on, options) => {
   const opts = options as Options
   const node = opts.node || 'node'
@@ -802,6 +906,20 @@ export const register: Register = (on, options) => {
       },
     })
     await $.tool.register({
+      name: 'edit_hint',
+      description: EDIT_HINT_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'The hint file, from "[<scope> hint: <path>]".' },
+          text: { type: 'string', description: 'The hint to change, as shown.' },
+          new_text: { type: 'string', description: 'The corrected hint: one short, factual sentence.' },
+          why: { type: 'string', description: 'What the hint says and what the tool does now, in one sentence.' },
+        },
+        required: ['path', 'text', 'new_text', 'why'],
+      },
+    })
+    await $.tool.register({
       name: 'save_function',
       description: SAVE_FUNCTION_DESCRIPTION,
       inputSchema: {
@@ -824,18 +942,20 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: SAVE_FUNCTION }, async ($, e) => {
     const input = e as unknown as { name?: unknown; description?: unknown; code?: unknown; why?: unknown; tool_use_id: string }
     const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
-    const oneLine = (v: unknown) => text(v).replace(/\s*\n\s*/g, ' ')
-    const [name, description, code, why] = [text(input.name), oneLine(input.description), text(input.code), oneLine(input.why)]
+    const [name, description, code, why] = [text(input.name), oneLine(text(input.description)), text(input.code), oneLine(text(input.why))]
     if (why === '' || why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
     const problem = functionError(name, description, code)
     if (problem !== undefined) return { result: `Error: ${problem}.` }
     const dir = await functionsDir($)
     if (dir === undefined) return { result: 'Error: the function folder is not known (HOME is not set).' }
     const path = `${dir}/pending/${pendingFileName(`${name}.md`, input.tool_use_id)}`
-    await $.fs.write(path, formatFunction({ name, description, code, why }))
-    $.ui.invalidate('ui.render')
-    const replaces = (await loadFunctions($)).some(f => f.name === name) ? ` It replaces the saved function ${name}.` : ''
-    if (!(await approvalShown($))) {
+    const [current, shown] = await Promise.all([
+      readFunction($, `${dir}/${name}.md`),
+      approvalShown($),
+      $.fs.write(path, formatFunction({ name, description, code, why })).then(() => $.ui.invalidate('ui.render')),
+    ])
+    const replaces = current === undefined ? '' : ` It replaces the saved function ${name}.`
+    if (!shown) {
       return { result: `Proposed the function lib.${name}.${replaces} ${TRANSFER_TEXT}\n\n${functionTransfer({ name, description, code, why })}\npending: ${path}` }
     }
     return {
@@ -853,9 +973,9 @@ export const register: Register = (on, options) => {
     const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string } | undefined
     if (decision?.action === 'approved') return <Text color="green">✓ Function saved: {decision.dest}</Text>
     if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
-    const proposal = parseFunction(String(await $.fs.read(path).catch(() => '')), path)
+    const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
-    return functionCard(ui, proposal, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action))
+    return functionCard(ui, proposal, current, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action))
   })
 
   // add_hint never activates a hint: it writes a proposal under pending/,
@@ -869,7 +989,7 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { server?: unknown; text?: unknown; why?: unknown; tools?: unknown; scope?: unknown; tool_use_id: string }
     const server = typeof input.server === 'string' ? input.server.trim() : ''
     const text = typeof input.text === 'string' ? input.text.trim() : ''
-    const why = typeof input.why === 'string' ? input.why.trim().replace(/\s*\n\s*/g, ' ') : ''
+    const why = typeof input.why === 'string' ? oneLine(input.why) : ''
     const tools = Array.isArray(input.tools) ? input.tools.filter((t): t is string => typeof t === 'string') : []
     const scope = input.scope === 'project' ? 'project' : 'user'
     if (server === '' || text === '' || why === '') return { result: 'Error: server, text and why are required.' }
@@ -906,11 +1026,7 @@ export const register: Register = (on, options) => {
       why,
       kind,
       seen: seenText(failures),
-      flags: [
-        ...(offered.length === 0 ? ['Its server is not connected in this session.'] : []),
-        ...(kind === OTHER_INSTRUCTION ? ['A classifier reads it as an instruction, not as a fact about a call.'] : []),
-        ...textFlags(text, key, mcpTools.filter(t => splitToolName(t)?.server !== key)),
-      ],
+      flags: newHintFlags(kind, text, [key], offered.length > 0, mcpTools),
     }
     await $.fs.write(path, withReview(appendHint(undefined, servers, identify ? [identify] : [], tools, text), review))
     $.ui.invalidate('ui.render') // the band above the prompt counts the proposal
@@ -925,65 +1041,33 @@ export const register: Register = (on, options) => {
   // remove_hint hides the hint in this session at once (a wrong hint misleads
   // each later call) and proposes its removal. The file changes only after
   // the person approves, as for add_hint: a hidden hint costs one session at
-  // most, a removed one costs every session.
-  on('tool.call', { tool: REMOVE_HINT }, async ($, e) => {
-    const input = e as unknown as { path?: unknown; text?: unknown; why?: unknown; tool_use_id: string }
-    const path = typeof input.path === 'string' ? input.path.trim() : ''
-    const text = typeof input.text === 'string' ? input.text.trim() : ''
-    const why = typeof input.why === 'string' ? input.why.trim().replace(/\s*\n\s*/g, ' ') : ''
-    if (path === '' || text === '' || why === '') return { result: 'Error: path, text and why are required.' }
-    if (why.length > 300) return { result: 'Error: why is one short sentence (300 characters at most).' }
+  // most, a removed one costs every session. edit_hint is a removal that
+  // puts a new hint in the old one's place; its new text gets the checks of
+  // add_hint, so a change cannot carry what a new hint would be warned about.
+  on('tool.call', { tool: REMOVE_HINT }, ($, e) => proposeRemoval($, e, false, projectHints))
+    .catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
+  on('tool.call', { tool: EDIT_HINT }, ($, e) => proposeRemoval($, e, true, projectHints))
+    .catch(($, e, next) => (debugLog($, `edit_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: edit_hint failed; see the debug log.' }))
 
-    const hint = (await loadHintFiles($, projectHints)).find(h => h.path === path)
-    if (!hint) return { result: `Error: ${path} is not a hint file. Give the path from "[<scope> hint: <path>]".` }
-    const found = findItem(hint.body, text)
-    if (found.item === undefined) return { result: `Error: ${found.error}` }
-    const dirs = await hintDirs($, projectHints)
-    const target = dirs.find(d => d.scope === (hint.scope === 'project' ? 'project' : 'user'))
-    if (!target) return { result: 'Error: the user hint folder is not known (HOME is not set).' }
-
-    // The failed tries on the servers the hint applies to, for the card.
-    const [names, list] = await Promise.all([serverNames($), $.tool.list()])
-    const mcpTools = list.filter(t => t.mcp).map(t => t.name)
-    const servers = new Set(targetsOf(mcpTools, names, toolsByServer(mcpTools)).filter(t => hintApplies(hint, t)).map(t => t.serverKey))
-    const { tries } = await sessionOf($)
-    const failures = [...servers].reduce((n, s) => n + (tries.failedTries.get(s) ?? 0), 0)
-    const review: Review = {
-      why,
-      seen: seenText(failures),
-      flags: [],
-    }
-    const name = hint.path.slice(hint.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
-    const pending = `${target.dir}/pending/${pendingFileName(`${name}.remove.md`, input.tool_use_id)}`
-    await $.fs.write(pending, removalProposal(hint, found.item, review))
-    ;(await sessionOf($)).hidden.add(`${hintRef(hint)}\n${hintKey(found.item)}`)
-    $.ui.invalidate('ui.render')
-    if (!(await approvalShown($))) {
-      const server = serverLabel(hint)
-      return { result: `Hid the hint in this session and proposed to remove it from ${path}. ${TRANSFER_TEXT}\n\n${removalTransfer({ server, text: hintKey(found.item), why })}\npending: ${pending}` }
-    }
-    return {
-      result: `Hid the hint in this session and proposed to remove it from ${path}. The file changes only after the person approves the removal in the band above the prompt. Tell the person.\npending: ${pending}`,
-    }
-  }).catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
-
-  // The add_hint and remove_hint rows show the proposal with Approve and
+  // The add_hint, remove_hint and edit_hint rows show the proposal with Approve and
   // Discard, where the surface asks plugins to draw tool results (the desktop
   // app does not; the band above the prompt covers it). A press is the
   // person's own act; $.store keeps the decision so the row still shows it
   // after a reload.
-  for (const tool of [ADD_HINT, REMOVE_HINT]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
+  for (const tool of [ADD_HINT, REMOVE_HINT, EDIT_HINT]) on('ui.render', { component: 'ToolResult', props: { tool } }, async ($, e, next) => {
     if (e.props.isErrored) return next(e)
     const path = pendingPathOf(String(e.props.output ?? ''))
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string; isRemoval?: boolean } | undefined
+    // A decision from before 0.12 has isRemoval in place of kind.
+    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string; kind?: ProposalKind; isRemoval?: boolean } | undefined
+    const words = PROPOSAL_TEXT[decision?.kind ?? (decision?.isRemoval ? 'removal' : 'add')]
 
     if (decision?.action === 'approved') {
-      return <Text color="green">{decision.isRemoval ? '✓ Hint removed' : '✓ Hint approved'}: {decision.dest}</Text>
+      return <Text color="green">{words.approved}: {decision.dest}</Text>
     }
-    if (decision?.action === 'discarded') return <Text dimColor>{decision.isRemoval ? 'Removal discarded. The hint stays.' : 'Hint discarded.'}</Text>
+    if (decision?.action === 'discarded') return <Text dimColor>{words.discarded}</Text>
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
     const hint = parseHint(String(await $.fs.read(path)), path, await scopeOf($, path))
@@ -1020,9 +1104,11 @@ export const register: Register = (on, options) => {
     // A decision shortens the list: the same index then shows the next one.
     const index = Math.min(await read($, reviewIndex), total - 1)
     const go = (step: number) => update($, reviewIndex, () => (index + step + total) % total)
-    const card = index < pending.length
+    const fi = index - pending.length
+    const proposal = functions[fi]
+    const card = proposal === undefined
       ? hintCard(ui, pending[index]!, await cardFields($, pending[index]!), { approve: `approve-${index}`, discard: `discard-${index}` }, action => decidePending($, pending[index]!.path, action, projectHints))
-      : functionCard(ui, functions[index - pending.length]!, { approve: `approve-f-${index - pending.length}`, discard: `discard-f-${index - pending.length}` }, action => decideFunction($, functions[index - pending.length]!.path, action))
+      : functionCard(ui, proposal, await readFunction($, activePathOf(proposal.path)), { approve: `approve-f-${fi}`, discard: `discard-f-${fi}` }, action => decideFunction($, proposal.path, action))
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="column">
@@ -1276,7 +1362,10 @@ export const register: Register = (on, options) => {
     const nudge = await nudgeAfter($, isDone ? failed : new Set([...failed, ...worked]), isDone ? worked : new Set(), projectHints).catch(() => '')
     const callRecords = [...records].sort((a, b) => a[0] - b[0]).map(([, r]) => r)
     const keepNudge = isDone ? await functionNudgeAfter($, callRecords, Object.keys(lib).length > 0).catch(() => '') : ''
-    const tail = [nudge, keepNudge, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
+    // A run that failed in a saved function asks for a fix, once per function in a session.
+    const broken = outcome?.t === 'error' ? failedFunctions(outcome.message, Object.keys(lib)).filter(n => !state.tries.nudged.has(`fix:${n}`)) : []
+    for (const n of broken) state.tries.nudged.add(`fix:${n}`)
+    const tail = [nudge, keepNudge, functionFixNudge(broken), hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     // A result too large to show is kept whole, so the next program can page it.
     const returned = outcome?.t === 'done' ? outcome.value : undefined
     const outChars = returned?.length ?? 0

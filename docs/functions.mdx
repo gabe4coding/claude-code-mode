@@ -92,10 +92,25 @@ A file that does not follow these rules does not load. The debug log (`claude --
 
 To remove a function, delete its file.
 
+## Change a saved function
+
+A saved function can fail, for example when a tool changes its result format. Then the model can propose
+new code for it:
+
+1. The model reads the code of the function in a program with `return lib.<name>.toString()`.
+2. The model fixes the code and tests it in `run_code`.
+3. The model calls `save_function` with the same name and the new code.
+4. The card in the band has the title "Change of a saved function". It shows the changes to the code as a diff,
+   with all lines of the new code.
+5. Select **Approve** to replace the saved function, or **Discard** to keep the old code.
+
+When a program fails with an error from a saved function, the result of `run_code` asks the model to check the
+function. The plugin asks once for each function in a session.
+
 ## Safety rules
 
-- **A proposal has no effect until you approve it.** Text in a tool result can tell the model to propose
-  anything. Only you can press **Approve**.
+- **A proposal has no effect until you approve it.** This is also true for new code for a saved function. Text in
+  a tool result can tell the model to propose anything. Only you can press **Approve**.
 - **The model cannot write function files.** The plugin denies `Write`, `Edit`, `NotebookEdit` and `Bash` calls
   that name `~/.claude/code-mode/functions/`, as for the [hint folders](./hints.mdx#safety-rules). Edit the files
   in your own editor.

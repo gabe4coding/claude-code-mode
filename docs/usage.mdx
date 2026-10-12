@@ -26,10 +26,11 @@ into the context.
 | `mcp__code-mode__run_code` | Runs one program in the [sandbox](./how-it-works.mdx#sandbox) and gives back its return value. |
 | `mcp__code-mode__add_hint` | Proposes a hint for a server. The proposal has no effect until you approve it. See [Hints](./hints.mdx). |
 | `mcp__code-mode__remove_hint` | Hides a wrong hint in the current session and proposes to remove it from its hint file. See [Remove a hint that is wrong](./hints.mdx#remove-a-hint-that-is-wrong). |
-| `mcp__code-mode__save_function` | Proposes a part of a program as a saved function. The proposal has no effect until you approve it. See [Saved functions](./functions.mdx). |
+| `mcp__code-mode__edit_hint` | Hides a wrong hint in the current session and proposes a corrected hint in its place. See [Change a hint that is wrong](./hints.mdx#change-a-hint-that-is-wrong). |
+| `mcp__code-mode__save_function` | Proposes a part of a program as a saved function, or new code for a saved function. The proposal has no effect until you approve it. See [Saved functions](./functions.mdx). |
 
-`search_tools` and `run_code` load in every session. `add_hint`, `remove_hint` and `save_function` load only when
-the model needs them.
+`search_tools` and `run_code` load in every session. `add_hint`, `remove_hint`, `edit_hint` and `save_function` load
+only when the model needs them.
 
 ## Programs
 
