@@ -28,8 +28,10 @@ enforces; the others rely on discipline.
 - Before every commit, do the verification loop in this order. If a step changes code, start again at step 1.
   1. `/simplify`: the built-in Claude Code skill. It cleans up the diff and applies the fixes. Run it first, so
      the checks test its edits too.
-  2. The three checks below. After a change to `hooks/` or `tests/`, also run the type check.
-  3. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. Run it
+  2. `/code-review`: the built-in Claude Code skill. It reviews the diff for correctness bugs, which `/simplify`
+     does not look for. Check each finding against the code, and fix the real ones.
+  3. The three checks below. After a change to `hooks/` or `tests/`, also run the type check.
+  4. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. Run it
      after a change to `hooks/`, `runtime/` or `hints/`. Skip it when the diff touches only tests or docs: there is
      nothing to drive. It reads the project recipe in `.claude/skills/verify/` (`SKILL.md` and `drive.mjs`): real
      Claude Code with the plugin and the bench's fake server. If the recipe fails or misses a step, fix it.
@@ -45,7 +47,7 @@ enforces; the others rely on discipline.
   (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works. CI pins the Claude Code version for `claude plugin test .`, and
   a weekly job runs the tests with the newest release.
 - The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
-  Run it in step 2 of the loop. If `.claude-plugin/types/` is missing, start `claude --plugin-dir .` one time in
+  Run it in step 3 of the loop. If `.claude-plugin/types/` is missing, start `claude --plugin-dir .` one time in
   this worktree (see `docs/troubleshooting.mdx`, Limits).
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
   public. Use `fake`, `example.atlassian.net` and similar.
