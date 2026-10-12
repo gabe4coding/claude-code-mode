@@ -315,7 +315,7 @@ describe('protocol', () => {
       { tool: 'mcp__j__open', line: 5, keys: ['id', 'idz'] },
     ], tools, spec, learned)
     expect(problems.map(p => `${p.line} ${p.text} ${p.isGuess}`)).toEqual([
-      '1 no MCP tool "mcp__j__serch" is connected (did you mean "mcp__j__search"?) false',
+      '1 no tool "mcp__j__serch" on the connected server "j" (did you mean "mcp__j__search"?); if the name is right, a deny rule hides it false',
       '2 mcp__j__get: unknown argument "issuekey" (did you mean "issueKey"?) false',
       '2 mcp__j__get: unknown argument "expand" false',
       '2 mcp__j__get: missing required argument "issueKey" false',
@@ -324,6 +324,7 @@ describe('protocol', () => {
     expect(problemReport(problems)).toContain('pass the arguments as a variable')
     expect(problemReport(problems.slice(0, 1))).not.toContain('as a variable')
     expect(checkCalls([{ tool: 'mcp__j__x', line: 1, keys: [] }], new Set(), spec, {})).toEqual([])
+    expect(checkCalls([{ tool: 'mcp__k__x', line: 1, keys: [] }], tools, spec, {}).map(p => p.text)).toEqual(['no MCP tool "mcp__k__x" is connected'])
   })
 
   test('callKey ignores the order of keys', () => {
@@ -586,7 +587,18 @@ describe('the check before a run', () => {
     on('tool.list', () => ({ value: TOOLS }))
     const text = textOf(await $.tool.call({ tool: RUN, code: 'await call("mcp__fake__create", { a: 1 })\nreturn await call("mcp__fake__serch", { q: 1 })' }))
     expect(text).toContain('Error: the program did not run')
-    expect(text).toContain('- line 2: no MCP tool "mcp__fake__serch" is connected (did you mean "mcp__fake__search"?)')
+    expect(text).toContain('- line 2: no tool "mcp__fake__serch" on the connected server "fake" (did you mean "mcp__fake__search"?)')
+    expect(host.spawned).toEqual([])
+  })
+
+  // Claude Code takes a tool that a deny rule names out of the tool list, and
+  // $.tool.check throws for a tool that is not in the session.
+  test('a missing tool of a connected server can be hidden by a deny rule', async ($, on) => {
+    fakeServer(on)
+    const host = fakeHost(on)
+    on('tool.list', () => ({ value: TOOLS }))
+    const text = textOf(await $.tool.call({ tool: RUN, code: 'await call("mcp__fake__echo", { a: 1 })\nreturn await call("mcp__fake__delete", { id: 1 })' }))
+    expect(text).toContain('- line 2: no tool "mcp__fake__delete" on the connected server "fake"; if the name is right, a deny rule hides it')
     expect(host.spawned).toEqual([])
   })
 

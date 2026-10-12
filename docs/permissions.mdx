@@ -13,7 +13,10 @@ Your permission rules apply to each MCP call in a program, as they apply to a di
   `approval: program`, this approval also covers the nested calls that no rule decides.
 - **Auto mode:** add an allow rule for each MCP tool that your programs use. Without an allow rule, auto mode
   denies a nested call. See [Auto mode needs allow rules](#auto-mode-needs-allow-rules).
-- **Deny rules** always apply. A denied nested call throws an error in the program.
+- **Headless (`claude -p`):** add an allow rule for each MCP tool that your programs use. Without one, the nested
+  call is refused. See [Headless sessions need allow rules](#headless-sessions-need-allow-rules).
+- **Deny rules** always apply. A deny rule takes the tool out of the session, so no program can call it. See
+  [Deny rules](#deny-rules).
 - **Files:** `readFile` reads only the files that Claude Code reads with no prompt, and the files from `saveFile`.
   See [Files](./usage.mdx#files).
 - **MCP resources:** `resources` and `readResource` get the normal check of `ListMcpResourcesTool` and
@@ -40,6 +43,35 @@ rules:
 | --- | --- | --- |
 | Manual (default) | Runs. | `program`: runs, covered by your approval of `run_code`. `per-call`: you get a prompt for each call. |
 | Auto | Runs. | Denied. |
+| Headless (`claude -p`) | Runs. | Refused. Nobody can approve it. |
+
+## Headless sessions need allow rules
+
+In `claude -p`, nobody can answer a permission prompt. Thus Claude Code refuses a nested call that no rule allows,
+also with `approval: program`. The program gets this error:
+
+```
+code-mode: $.mcp.call(<server>, <tool>) refused: Claude requested permissions to use mcp__<server>__<tool>, but you haven't granted it yet.
+```
+
+Add an allow rule for each MCP tool that your programs use. For one run, use `--allowedTools`:
+
+```bash
+claude -p "…" --allowedTools "mcp__code-mode__run_code,mcp__code-mode__search_tools,mcp__claude_ai_Jira__getJiraIssue"
+```
+
+## Deny rules
+
+A deny rule for an MCP tool or a server takes the tool out of the session. Thus `search_tools` does not show it, and
+no program can call it:
+
+- If the program names the tool in a literal call, the [check before a run](./usage.mdx#the-check-before-a-run)
+  stops the program. No call occurs. If the server of the tool is connected, the result says that a deny rule can
+  hide the tool.
+- If the program gets the tool name from a variable, the call throws an error in the program.
+
+Claude Code does not tell the plugin which rule hides a tool. Thus the result cannot say if the name is wrong or if
+a deny rule hides the tool.
 
 ## Auto mode needs allow rules
 

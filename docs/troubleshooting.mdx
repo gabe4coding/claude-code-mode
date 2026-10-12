@@ -35,6 +35,16 @@ wrong. No call occurred.
 Fix: the model corrects the names that the result gives. If a name is correct, the model passes the arguments as
 a variable. Then the check does not read them.
 
+If the result says `a deny rule hides it` and the tool name is correct, a deny rule takes the tool out of the
+session. Remove the rule, or do the task without the tool. See [Deny rules](./permissions.mdx#deny-rules).
+
+### "… refused: Claude requested permissions to use …, but you haven't granted it yet"
+
+Cause: in `claude -p`, no rule allows the nested call, and nobody can approve it.
+
+Fix: add an allow rule for the tool, or pass it in `--allowedTools`. See
+[Headless sessions need allow rules](./permissions.mdx#headless-sessions-need-allow-rules).
+
 ### "readFile: no permission to read …"
 
 Cause: Claude Code needs your approval to read the file. `readFile` reads no file that needs a prompt.
