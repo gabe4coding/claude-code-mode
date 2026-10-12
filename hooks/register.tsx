@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
+import type { Caught, Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
   HINT_KINDS,
   PROPOSAL_TEXT,
@@ -685,10 +685,20 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
 const HINT_GUARD_DENY =
   'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint, a change of one with edit_hint, or a new or changed function with save_function instead.'
 
-// What a hint-file guard that failed answers: it denies, and logs why.
-function guardFailed($: EngineInterface, tool: string, error: { kind: string; message?: string }): { deny: string } {
-  debugLog($, `the hint-file guard on ${tool} failed (${error.kind}): ${error.message ?? 'no message'}`)
-  return { deny: 'code-mode: the hint-file guard failed; try again.' }
+// The .catch of each tool.call hook here: it fails closed. A hook that passed
+// the call on before it failed (next.called) keeps that answer. Any other
+// failure denies the call, and the debug log says why. A tool that is not one
+// of this plugin's is a file tool, and its hook is the hint-file guard. The
+// engine takes only a function literal or a function name as a .catch handler.
+function failClosed<E extends { tool: string }, R>(
+  $: EngineInterface,
+  e: E,
+  next: ((e: E) => R) & Caught,
+): R | { deny: string } {
+  if (next.called) return next(e)
+  const own = TOOL_NAMES.find(n => TOOL[n] === e.tool)
+  debugLog($, `${own ?? `the hint-file guard on ${e.tool}`} failed (${next.error.kind}): ${next.error.message ?? 'no message'}`)
+  return { deny: own === undefined ? 'code-mode: the hint-file guard failed; try again.' : `code-mode: ${own} failed; see the debug log.` }
 }
 
 // Saved functions: the person's only, never the project's, because a
@@ -946,7 +956,7 @@ export const register: Register = (on, options) => {
     return {
       result: `Proposed the function lib.${name}.${replaces} It has no effect until the person reads it and approves it in the band above the prompt. Tell the person.\npending: ${path}`,
     }
-  }).catch(($, e, next) => (debugLog($, `save_function failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: save_function failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // The save_function row: the code to read, with Approve and Discard.
   on('ui.render', { component: 'ToolResult', props: { tool: TOOL.save_function } }, async ($, e, next) => {
@@ -1017,7 +1027,7 @@ export const register: Register = (on, options) => {
     return {
       result: `Proposed a ${scope} hint for ${servers[0]}. It has no effect until the person approves it in the band above the prompt (Review, then Approve or Discard). Tell the person.\npending: ${path}`,
     }
-  }).catch(($, e, next) => (debugLog($, `add_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: add_hint failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // remove_hint hides the hint in this session at once (a wrong hint misleads
   // each later call) and proposes its removal. The file changes only after
@@ -1026,9 +1036,9 @@ export const register: Register = (on, options) => {
   // puts a new hint in the old one's place; its new text gets the checks of
   // add_hint, so a change cannot carry what a new hint would be warned about.
   on('tool.call', { tool: TOOL.remove_hint }, ($, e) => proposeRemoval($, e, false, projectHints))
-    .catch(($, e, next) => (debugLog($, `remove_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: remove_hint failed; see the debug log.' }))
+    .catch(failClosed)
   on('tool.call', { tool: TOOL.edit_hint }, ($, e) => proposeRemoval($, e, true, projectHints))
-    .catch(($, e, next) => (debugLog($, `edit_hint failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: edit_hint failed; see the debug log.' }))
+    .catch(failClosed)
 
   // The add_hint, remove_hint and edit_hint rows show the proposal with Approve and
   // Discard, where the surface asks plugins to draw tool results (the desktop
@@ -1177,7 +1187,7 @@ export const register: Register = (on, options) => {
     const functionText = formatFunctions(functionsFor(await loadFunctions($), found.map(t => t.name), query))
     const tail = [functionText, hintText].filter(t => t !== '').map(t => `\n\n${t}`).join('')
     return { result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}` }
-  }).catch(($, e, next) => (debugLog($, `search_tools failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: search_tools failed; see the debug log.' }))
+  }).catch(failClosed)
 
   on('tool.call', { tool: TOOL.run_code }, async ($, e) => {
     const { code } = parseInput('run_code', e)
@@ -1432,7 +1442,7 @@ export const register: Register = (on, options) => {
       }).catch(err => debugLog($, `cannot write the metrics: ${errorText(err)}`))
     }
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS, report)}${tail}` }
-  }).catch(($, e, next) => (debugLog($, `run_code failed (${next.error.kind}): ${next.error.message ?? 'no message'}`), { deny: 'code-mode: run_code failed; see the debug log.' }))
+  }).catch(failClosed)
 
   // Guard: an active hint or a saved function is just a file, so the model
   // must not write one with its own tools, or the approval step means nothing. File tools
@@ -1443,16 +1453,16 @@ export const register: Register = (on, options) => {
   // Each tool has its own registration, so `claude plugin validate` lists it.
   on('tool.call', { tool: 'Write' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Write', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'Edit' }, async ($, e, next) =>
     (await touchesHints($, e.file_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Edit', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) =>
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'NotebookEdit', next.error)))
+  ).catch(failClosed)
   on('tool.call', { tool: 'Bash' }, ($, e, next) =>
     namesGuardedDir(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(($, e, next) => (next.called ? next(e) : guardFailed($, 'Bash', next.error)))
+  ).catch(failClosed)
 
   // Optional: push the model to run_code by refusing its direct MCP calls.
   // Calls this plugin makes (from run_code) pass.

@@ -998,5 +998,16 @@ describe('the hint-file guard', () => {
     expect(textOf(await $.tool.call({ tool: 'Edit', file_path: 'README.md', old_string: 'a', new_string: 'b' }))).toBe('edited')
     expect(textOf(await $.tool.call({ tool: 'Bash', command: 'ls ~/.claude' }))).toBe('ran')
   })
+
+  test('a guard that fails denies the call and says why in the debug log', async ($, on) => {
+    const logs: string[] = []
+    fakeHome(on, {})
+    on('session.root', () => ({ deny: 'no root' }))
+    on('session.cwd', () => ({ value: '/repo' }))
+    on('ui.log', ($, e) => (logs.push(`${e.to}: ${e.text}`), { value: undefined }))
+    on('tool.call', { tool: 'Write' }, () => ({ result: 'written' }))
+    expect(textOf(await $.tool.call({ tool: 'Write', file_path: '/repo/src/a.ts', content: 'x' }))).toBe('DENY code-mode: the hint-file guard failed; try again.')
+    expect(logs.some(l => l.startsWith('debug: code-mode: the hint-file guard on Write failed (throw): ') && l.includes('no root'))).toBe(true)
+  })
 })
 
