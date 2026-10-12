@@ -5,19 +5,38 @@ enforces; the others rely on discipline.
 
 ## Code
 - `hooks/` is the hooks module that Claude Code loads (`hooks/hooks.json`). Pure helpers go in `hooks/protocol.ts`,
-  `hooks/hints.ts` and `hooks/functions.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
+  `hooks/hints.ts`, `hooks/functions.ts`, `hooks/paths.ts` and `hooks/tools.ts`, with no `$`, so tests call them directly. Anything that uses `$` goes in
   `hooks/register.tsx`, in a function declared at the top of the file: the engine's loader follows `$` only there,
   never across an import, and a module that passes `$` to another file does not load.
+  `[test: tsconfig.pure.json fails when a pure helper imports claude-code, register.tsx or a Node module]`
 - Context for the model at session start goes in `hooks/session-start.sh`, a command hook in `hooks/hooks.json`.
   Claude Code's built-in security module skips a hooks module's `classic.SessionStart`, so a module handler never
   runs. A set option reaches the script as `CLAUDE_PLUGIN_OPTION_<KEY>`.
+- Read the time with `await $.clock.now()`, never `Date.now()` or `new Date()`: a test sets the time with
+  `mock.clock`. `[test: code.check.mjs]`
+- Make each path into `.claude/code-mode` with a helper from `hooks/paths.ts`: `hintsFolder`, `functionsFolder` or
+  `codeModePath`. The guard reads `guardedDirs` there, so the guard and the loaders name the same folders.
+  `[test: code.check.mjs]` `[test: hints.test.ts guards each folder of guardedDirs]`
+- Make a hint ref with `hintRef` or `bundledRef`, and read one with `refTarget` (all in `hooks/hints.ts`). Make the
+  key of a hidden or removed hint with `hiddenKey`. The types `HintRef` and `HiddenKey` refuse a plain string: the
+  full type check finds it in `register.tsx`, and `tsconfig.pure.json` in the pure helpers.
+  `[test: code.check.mjs fails when a hook outside hints.ts types out the bundled: prefix]`
+- Add or change a tool of this plugin in `TOOLS` in `hooks/tools.ts`: the registration, the full ids (`TOOL`) and the
+  typed input (`parseInput`) come from there. In the hooks and the `.ts` tests, write `TOOL.run_code`, never the full
+  id `mcp__code-mode__run_code`. `[test: code.check.mjs]`
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
-  debug log" must have a line there.
+  debug log" must have a line there. A `tool.call` hook ends with `.catch(failClosed)`: it denies the call when the
+  hook fails. The engine takes only a function literal or a function name there, not a call that makes one. The
+  one exception is the `blockDirectMcp` hook: it applies to every tool, so it fails open.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
+  `[test: runner.integration.mjs loads the runner with Node alone, so an import of a package fails]`
 - `LAUNCH`, `NO_NETWORK` and `MKTEMP` exist twice: in `hooks/register.tsx` and in `tests/runner.integration.mjs`. `MARK`
   exists in `runtime/runner.mjs`, `hooks/protocol.ts` and the same test. Change all copies.
   `[test: runner.integration.mjs fails when a copy differs]`
+- To add a kind of message that the runner sends, add it to `RunnerMessage` and `RUNNER_FIELDS` in
+  `hooks/protocol.ts`, and give it a case in the message loop of `run_code`. The host drops a message of a kind
+  that is not in `RUNNER_FIELDS`. `[test: runner.integration.mjs fails when the runner sends a kind that is not in RUNNER_FIELDS]`
 - Never weaken a sandbox layer, the guard of hint and function files or the approval of proposals to make a test
   pass. Each one is a
   safety rule (see `docs/hints.mdx` and `docs/how-it-works.mdx`).
@@ -30,23 +49,25 @@ enforces; the others rely on discipline.
      the checks test its edits too.
   2. `/code-review`: the built-in Claude Code skill. It reviews the diff for correctness bugs, which `/simplify`
      does not look for. Check each finding against the code, and fix the real ones.
-  3. The three checks below. After a change to `hooks/` or `tests/`, also run the type check.
+  3. The checks below. After a change to `hooks/` or `tests/`, also run the type check.
   4. `/verify`: the built-in Claude Code skill. It drives the change end to end and observes the behavior. Run it
      after a change to `hooks/`, `runtime/` or `hints/`. Skip it when the diff touches only tests or docs: there is
      nothing to drive. It reads the project recipe in `.claude/skills/verify/` (`SKILL.md` and `drive.mjs`): real
      Claude Code with the plugin and the bench's fake server. If the recipe fails or misses a step, fix it.
-- The three checks. `[test: CI runs all three]`
-  - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`). The test kit has no processes.
+- The checks. `[test: CI runs each one]`
+  - `claude plugin test .`: the hooks against a fake host (`tests/*.test.ts`; the shared fakes are in `tests/fakes.ts`). The test kit has no processes.
   - `node tests/runner.integration.mjs`: the real sandbox under Node.
   - `node tests/docs.check.mjs`: the doc rules below.
+  - `node tests/code.check.mjs`: the code rules marked `[test: code.check.mjs]`.
+  - `npx -p typescript tsc -p tsconfig.pure.json`: the types of the pure helpers, with no Claude Code types.
 - `node tests/smoke.e2e.mjs`: real `claude -p` with the plugin and the bench's fake server. It needs a login and
-  costs API usage, so it is not one of the three checks and CI does not run it. Run it after a change to `hooks/` or
+  costs API usage, so it is not one of the checks and CI does not run it. Run it after a change to `hooks/` or
   `runtime/`, before a release, and after you raise the pinned Claude Code version. Its checks read the transcript,
   the fake server's calls and the plugin's files, never the words of the model.
 - CI (`.github/workflows/test.yml`) runs the sandbox test on Linux and on macOS, each with its network block
   (`unshare -rn` on Linux, `sandbox-exec` on macOS). `EXPECT_NETWORK_BLOCK` makes the test fail where neither works. CI pins the Claude Code version for `claude plugin test .`, and
   a weekly job runs the tests with the newest release.
-- The type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
+- The full type check (`docs/development.mdx`) does not run in CI: its types come from a logged-in Claude Code session.
   Run it in step 3 of the loop. If `.claude-plugin/types/` is missing, start `claude --plugin-dir .` one time in
   this worktree (see `docs/troubleshooting.mdx`, Limits).
 - Never put real MCP data, company names, ticket keys, user ids or tokens in tests, hints or docs: this repo is
@@ -59,7 +80,7 @@ enforces; the others rely on discipline.
 - Run `claude plugin validate .` after a change to a manifest.
 
 ## Model-facing text
-The text the model reads is part of the product: tool descriptions and input schemas in `hooks/register.tsx`,
+The text the model reads is part of the product: the input schemas in `TOOLS` in `hooks/tools.ts`,
 `RUN_DESCRIPTION` and `SEARCH_DESCRIPTION` in `hooks/protocol.ts`, `ADD_HINT_DESCRIPTION`, `REMOVE_HINT_DESCRIPTION`, `EDIT_HINT_DESCRIPTION`, `TRANSFER_TEXT`, the transfer blocks and the hint
 preamble in `hooks/hints.ts`, `SAVE_FUNCTION_DESCRIPTION`, the functions section and the fix note in `hooks/functions.ts`, the SessionStart text in `hooks/session-start.sh`, tool results and deny messages, and
 the bundled hints in `hints/`.
@@ -69,10 +90,12 @@ the bundled hints in `hints/`.
   where the model needs it: argument types and hints in the `search_tools` result, server hints after a failed call,
   the limit in the message of a cut result.
 - `run_code` and `search_tools` load in every session (`isDeferred: false`), so each word costs tokens in every
-  session. `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
+  session. `[test: code-mode.test.ts fails when their registrations grow; raise the limit only for text that changes what the model does]`
+  `add_hint` is deferred: the `run_code` description names it, and that is how the model finds it.
   `remove_hint` and `edit_hint` are deferred too: the hint preamble names them, so the model learns of them when it
   sees a hint.
   `save_function` is deferred: the `run_code` description names it.
+  `[test: code-mode.test.ts fails when no front description or the hint preamble names a deferred tool]`
 - One way to do a thing. The runner also accepts `tools.<server>.<tool>()`, but descriptions show only `call()`.
 - A hint is one short, factual bullet about a server. No data, no instructions about other actions.
 

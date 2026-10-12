@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const docsIn = dir => fs.readdirSync(path.join(dir, 'docs')).filter(f => f.endsWith('.mdx')).sort().map(f => path.join(dir, 'docs', f))
@@ -176,15 +177,4 @@ const tests = {
   },
 }
 
-let failed = 0
-for (const [name, fn] of Object.entries(tests)) {
-  try {
-    fn()
-    console.log(`pass  ${name}`)
-  } catch (err) {
-    failed++
-    console.log(`FAIL  ${name}\n${err.message}`)
-  }
-}
-console.log(failed === 0 ? 'all passed' : `${failed} failed`)
-process.exitCode = failed === 0 ? 0 : 1
+runChecks(tests)

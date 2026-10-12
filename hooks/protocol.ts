@@ -21,6 +21,39 @@ export type RunnerMessage =
   | RunnerDone
   | RunnerError
 
+// Each kind of message, with the fields the host reads and their types. The
+// `satisfies` makes the table list every kind of RunnerMessage and no other.
+// runner.integration.mjs checks that the runner sends these kinds.
+const RUNNER_FIELDS = {
+  call: { id: 'number', tool: 'string' },
+  recall: { id: 'number', ref: 'number' },
+  save: { id: 'number', name: 'string' },
+  read: { id: 'number', path: 'string' },
+  resources: { id: 'number' },
+  resource: { id: 'number', server: 'string', uri: 'string' },
+  done: { value: 'string', logs: 'array' },
+  error: { message: 'string', logs: 'array' },
+} as const satisfies Record<RunnerMessage['t'], Record<string, 'number' | 'string' | 'array'>>
+
+/** The message in one protocol line, or undefined when it is not a known kind with the fields of that kind. */
+const parseRunnerMessage = (text: string): RunnerMessage | undefined => {
+  let m: unknown
+  try {
+    m = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof m !== 'object' || m === null) return undefined
+  const t = (m as { t?: unknown }).t
+  if (typeof t !== 'string' || !Object.hasOwn(RUNNER_FIELDS, t)) return undefined
+  const fields: Record<string, string> = RUNNER_FIELDS[t as RunnerMessage['t']]
+  for (const [name, type] of Object.entries(fields)) {
+    const v = (m as Record<string, unknown>)[name]
+    if (type === 'array' ? !Array.isArray(v) : typeof v !== type) return undefined
+  }
+  return m as RunnerMessage
+}
+
 export type Reply = { ok: true; value: unknown } | { ok: false; error: string }
 
 export type ToolEntry = { name: string; description: string }
@@ -33,13 +66,9 @@ export const takeMessages = (buffer: string): { messages: RunnerMessage[]; rest:
   while (i >= 0) {
     const line = rest.slice(0, i)
     rest = rest.slice(i + 1)
-    if (line.startsWith(MARK)) {
-      try {
-        messages.push(JSON.parse(line.slice(MARK.length)) as RunnerMessage)
-      } catch {
-        // a malformed line is the script's own output, not ours
-      }
-    }
+    // a line that is not a message is the script's own output, not ours
+    const m = line.startsWith(MARK) ? parseRunnerMessage(line.slice(MARK.length)) : undefined
+    if (m) messages.push(m)
     i = rest.indexOf('\n')
   }
   return { messages, rest }
@@ -198,9 +227,9 @@ export const formatOutcome = (
  * One nested call as the run's footer shows it: its number in the session
  * (`ref`, absent when it failed or was not kept), its size and shape, the
  * earlier call it repeats (`repeatOf`: that call's number, 0 when it has none),
- * and `unfinished` when the run ended before its reply came.
+ * and its status: `unfinished` when the run ended before its reply came.
  */
-export type CallRecord = { ref?: number; tool: string; ok: boolean; chars: number; shape?: string; repeatOf?: number; unfinished?: boolean }
+export type CallRecord = { ref?: number; tool: string; status: 'ok' | 'failed' | 'unfinished'; chars: number; shape?: string; repeatOf?: number }
 
 /**
  * What a run with output projection reports: its calls, the results it read
@@ -680,7 +709,7 @@ export const charCount = (n: number): string =>
 
 /** True when a program returned nothing although its calls returned data: a filter that missed. */
 export const missedData = (outcome: RunnerDone | RunnerError | undefined, calls: readonly CallRecord[]): boolean => {
-  if (outcome?.t !== 'done' || !calls.some(c => c.ok && c.chars > 2)) return false
+  if (outcome?.t !== 'done' || !calls.some(c => c.status === 'ok' && c.chars > 2)) return false
   try {
     return isEmpty(JSON.parse(outcome.value))
   } catch {
@@ -701,8 +730,8 @@ export const callKey = (tool: string, args: Record<string, unknown>): string => 
 
 const callLine = (c: CallRecord): string => {
   const id = c.ref === undefined ? '-' : `#${c.ref}`
-  if (c.unfinished === true) return `${id} ${c.tool} did not finish`
-  if (!c.ok) return `${id} ${c.tool} failed`
+  if (c.status === 'unfinished') return `${id} ${c.tool} did not finish`
+  if (c.status === 'failed') return `${id} ${c.tool} failed`
   const repeat = c.repeatOf === undefined || c.repeatOf === 0 ? '' : `, the same call as #${c.repeatOf}`
   return `${id} ${c.tool} ${charCount(c.chars)}${repeat} ${c.shape ?? ''}`.trimEnd()
 }
@@ -714,10 +743,10 @@ const groupLines = (calls: readonly CallRecord[]): string[] => {
   return [...byTool].map(([tool, group]) => {
     const kept = group.filter(c => c.ref !== undefined).map(c => c.ref!)
     const ids = kept.length === 0 ? '-' : kept.length === 1 ? `#${kept[0]}` : `#${kept[0]}…#${kept.at(-1)}`
-    const unfinished = group.filter(c => c.unfinished === true).length
-    const failed = group.filter(c => !c.ok).length - unfinished
+    const unfinished = group.filter(c => c.status === 'unfinished').length
+    const failed = group.filter(c => c.status === 'failed').length
     const chars = group.reduce((n, c) => n + c.chars, 0)
-    const first = group.find(c => c.ok)
+    const first = group.find(c => c.status === 'ok')
     const failures = `${failed === 0 ? '' : `, ${failed} failed`}${unfinished === 0 ? '' : `, ${unfinished} did not finish`}`
     return `${ids} ${tool} ×${group.length}${failures} ${charCount(chars)} ${first?.shape ?? ''}`.trimEnd()
   })

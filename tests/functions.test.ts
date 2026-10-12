@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import { TOOL } from '../hooks/tools'
+import { HOME, fakeHome as fakeHomeIn, textOf } from './fakes'
 import { MARK } from '../hooks/protocol'
 import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
@@ -17,44 +19,14 @@ import {
   type SavedFunction,
 } from '../hooks/functions'
 
-const HOME = '/home/test'
 const DIR = `${HOME}/.claude/code-mode/functions`
 const CODE = 'async ({ cloudId, jql }) => {\n  const r = await call("mcp__jira__search", { cloudId, jql })\n  return r.issues\n}'
-const SAVE = 'mcp__code-mode__save_function'
+const SAVE = TOOL.save_function
 
 const fn = (name: string, code: string, description = `Does ${name}.`): SavedFunction => ({ name, description, code, path: `${DIR}/${name}.md` })
 
-// A fake file system and session beneath the plugin, as in hints.test.ts.
-const fakeHome = (on: On, files: Record<string, string>) => {
-  const written: Record<string, string> = {}
-  const removed: string[] = []
-  const env: Record<string, string> = {}
-  const all = () => ({ ...files, ...written })
-  on('env.get', ($, e) => ({ value: env[e.name] ?? HOME }))
-  on('session.id', () => ({ value: 'sess-1' }))
-  on('fs.exists', ($, e) => ({ value: Object.keys(all()).some(p => p === e.path || p.startsWith(`${e.path}/`)) }))
-  on('fs.list', ($, e) => {
-    const prefix = `${e.path}/`
-    const names = new Set(Object.keys(all()).filter(p => p.startsWith(prefix) && !p.slice(prefix.length).includes('/')).map(p => p.slice(prefix.length)))
-    return { value: [...names].map(name => ({ name, kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })) }
-  })
-  on('fs.read', ($, e) => (all()[e.path] === undefined ? { deny: `ENOENT ${e.path}` } : { value: all()[e.path]! }))
-  on('fs.write', ($, e) => ((written[e.path] = e.text), { value: undefined }))
-  on('process.run', ($, e) => {
-    if (e.argv[0] === 'rm') {
-      const path = String(e.argv.at(-1))
-      removed.push(path)
-      delete files[path]
-      delete written[path]
-    }
-    return { value: { exitCode: 0, stdout: e.argv[0] === 'mktemp' ? '/tmp/cm-test\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('tool.list', () => ({ value: [{ name: 'mcp__jira__search', description: 'Search issues', mcp: true }, { name: 'mcp__mail__send', description: 'Send mail', mcp: true }] }))
-  return { written, removed, env }
-}
-
-const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
-  r.deny !== undefined ? `DENY ${r.deny}` : typeof r.result === 'string' ? r.result : (r.text ?? JSON.stringify(r.result))
+const TOOLS = [{ name: 'mcp__jira__search', description: 'Search issues' }, { name: 'mcp__mail__send', description: 'Send mail' }]
+const fakeHome = (on: On, files: Record<string, string>) => fakeHomeIn(on, files, {}, { sessionId: 'sess-1', tools: TOOLS })
 
 describe('function files', () => {
   test('functionError accepts an async function expression with a name and a description', () => {
@@ -222,7 +194,7 @@ describe('saved functions in programs', () => {
       yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: '1', logs: [] })}\n` }
       return { value: { code: 0, signal: null } }
     })
-    await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' })
+    await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' })
     expect(Object.keys(input.lib ?? {}).sort()).toEqual(['page', 'searchAll'])
     expect(input.lib?.page).toBe(CODE)
   })
@@ -233,14 +205,14 @@ describe('saved functions in programs', () => {
       yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'error', message: 'TypeError: x is undefined\n    at eval (lib/page.js:2:9)', logs: [] })}\n` }
       return { value: { code: 0, signal: null } }
     })
-    const run = async () => textOf(await $.tool.call({ tool: 'mcp__code-mode__run_code', code: 'return await lib.searchAll({ jql: "x" })' }))
+    const run = async () => textOf(await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.searchAll({ jql: "x" })' }))
     expect(await run()).toContain('## A saved function failed\n\nThe error comes from lib.page.')
     expect(await run()).not.toContain('A saved function failed')
   })
 
   test('search_tools lists the functions that call a found tool', async ($, on) => {
     fakeHome(on, { ...files })
-    const text = textOf(await $.tool.call({ tool: 'mcp__code-mode__search_tools', query: 'search' }))
+    const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'search' }))
     expect(text).toContain('## Saved functions')
     expect(text).toContain('- lib.page({ cloudId, jql }): One page.')
     expect(text).toContain('- lib.searchAll(a): Every issue.')

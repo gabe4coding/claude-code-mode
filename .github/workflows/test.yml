@@ -1,6 +1,7 @@
-# Runs the checks of CODING_STANDARDS.md: the real sandbox, the doc rules, the
-# hooks, and on pull requests the version rule. The type check stays on a
-# contributor's machine: its types come from a logged-in Claude Code session.
+# Runs the checks of CODING_STANDARDS.md: the real sandbox, the doc and code
+# rules, the types of the pure helpers, the hooks, and on pull requests the
+# version rule. The full type check stays on a contributor's machine: its
+# types come from a logged-in Claude Code session.
 name: test
 
 on:
@@ -43,6 +44,20 @@ jobs:
         env:
           EXPECT_NETWORK_BLOCK: "1"
       - run: node tests/docs.check.mjs
+      - run: node tests/code.check.mjs
+
+  pure:
+    # The pure helpers without the Claude Code types: an import of the engine
+    # fails. Pinned, so a new TypeScript cannot make it fail.
+    name: pure helpers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: npx -y -p typescript@7.0.2 tsc -p tsconfig.pure.json
 
   hooks:
     # The hooks against the fake host of claude-code/testing. It needs no login.
