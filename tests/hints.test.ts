@@ -456,6 +456,15 @@ describe('add_hint and its approval row', () => {
       expect(await ui.find({ key: 'approve' })).toBe(undefined)
     })
 
+    test(`a double press in the row approves the hint once (${surface})`, async ($, on) => {
+      mock.store(on)
+      const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${USER_DIR}/things.md`]: '---\nservers: [Things]\n---\n- Older hint.\n' })
+      const ui = await $.ui.mount(row(surface))
+      await Promise.all([ui.press({ key: 'approve' }), ui.press({ key: 'approve' })])
+      expect(fs.written[`${USER_DIR}/things.md`]).toBe('---\nservers: [Things]\n---\n- Older hint.\n- Pass ids as strings.\n')
+      expect(fs.removed).toEqual([PENDING])
+    })
+
     test(`Discard deletes the proposal (${surface})`, async ($, on) => {
       mock.store(on)
       const fs = fakeHome(on, { [PENDING]: PROPOSAL })
@@ -544,9 +553,67 @@ describe('the band above the prompt', () => {
       await ui.press({ key: 'approve-0' })
       expect(fs.written[`${USER_DIR}/things.md`]).toBe(A)
       expect(fs.removed).toEqual([PENDING_A])
+      // the result shows in place of the next proposal, until Show next
+      const result = JSON.stringify(await ui.drawn())
+      expect(result).toContain(`✓ Hint approved: ${USER_DIR}/things.md`)
+      expect(result).not.toContain('"Approve"')
+      await ui.press({ key: 'show-next' })
       const left = JSON.stringify(await ui.drawn())
       expect(left).toContain('Code mode proposal ","1"," of ","1"')
       expect(left).toContain('analyze_datadog_logs')
+    })
+
+    test(`a double press in the band decides one proposal only (${surface})`, async ($, on) => {
+      mock.store(on)
+      const fs = fakeHome(on, { [PENDING_A]: A, [PENDING_B]: B })
+      const ui = await $.ui.mount(band(surface))
+      await ui.press({ key: 'review' })
+      // both presses reach the same drawing, before any redraw
+      await Promise.all([ui.press({ key: 'approve-0' }), ui.press({ key: 'approve-0' })])
+      // a press after the redraw finds no Approve: the band shows the result
+      await expect(ui.press({ key: 'approve-0' })).rejects.toThrow()
+      expect(fs.written[`${USER_DIR}/things.md`]).toBe(A)
+      expect(fs.removed).toEqual([PENDING_A])
+    })
+
+    test(`the next proposal opens on its card, not on the last result (${surface})`, async ($, on) => {
+      mock.store(on)
+      const files: Record<string, string> = { [PENDING_A]: A }
+      fakeHome(on, files)
+      const ui = await $.ui.mount(band(surface))
+      await ui.press({ key: 'review' })
+      await ui.press({ key: 'approve-0' })
+      await ui.unmount()
+      // a later session proposes again
+      files[PENDING_B] = B
+      const later = JSON.stringify(await (await $.ui.mount(band(surface))).drawn())
+      expect(later).toContain('analyze_datadog_logs')
+      expect(later).not.toContain('Hint approved')
+    })
+
+    test(`a failed Approve shows its error in the band (${surface})`, async ($, on) => {
+      mock.store(on)
+      fakeHome(on, { [PENDING_A]: A }, {}, () => {
+        throw new Error('disk full')
+      })
+      const ui = await $.ui.mount(band(surface))
+      await ui.press({ key: 'review' })
+      await ui.press({ key: 'approve-0' })
+      expect(JSON.stringify(await ui.drawn())).toContain('Approve failed: ')
+    })
+
+    test(`a press on a proposal that is gone changes nothing and says so (${surface})`, async ($, on) => {
+      mock.store(on)
+      const files: Record<string, string> = { [PENDING_A]: A }
+      const fs = fakeHome(on, files)
+      const ui = await $.ui.mount(band(surface))
+      await ui.press({ key: 'review' })
+      // decided elsewhere (a row, another session) between the drawing and the press
+      delete files[PENDING_A]
+      files[PENDING_B] = B
+      await ui.press({ key: 'approve-0' })
+      expect(JSON.stringify(await ui.drawn())).toContain('This proposal is no longer pending.')
+      expect(fs.written).toEqual({})
     })
   }
 })

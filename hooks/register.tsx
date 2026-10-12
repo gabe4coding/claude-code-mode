@@ -162,10 +162,11 @@ const OWN_TOOLS = ['run_code', 'search_tools', 'add_hint', 'remove_hint', 'edit_
 const FUNCTION_CALLS = 10
 const FUNCTION_JOIN_CALLS = 5
 
-// Whether the band above the prompt shows the proposals (else one line), and
-// which one it shows.
+// Whether the band above the prompt shows the proposals (else one line),
+// which one it shows, and the result of the last decision in it.
 const reviewOpen = atom({ plugin: 'code-mode', key: 'isReviewOpen' } as const, false)
 const reviewIndex = atom({ plugin: 'code-mode', key: 'reviewIndex' } as const, 0)
+const reviewResult = atom({ plugin: 'code-mode', key: 'reviewResult' } as const, null)
 
 // Hint folders. Bundled and user hints always load; project hints come from
 // the repository, so anyone who can commit there could steer the model: they
@@ -505,20 +506,54 @@ async function discardPending($: EngineInterface, path: string): Promise<void> {
   await $.process.run(['rm', '-f', path])
 }
 
+type Action = 'approved' | 'discarded'
+
+// A decision as $.store keeps it for its row. One from before 0.12 has
+// isRemoval in place of kind.
+type Decision = { action: Action; dest?: string; kind?: ProposalKind; isRemoval?: boolean; isFunction?: boolean }
+
+// The line a decided proposal shows, in its row and in the band: green when
+// approved, dim otherwise (no color).
+type Shown = { text: string; color?: 'green' | 'red' }
+function decisionShown(d: Decision): Shown {
+  const color = d.action === 'approved' ? { color: 'green' as const } : {}
+  if (d.isFunction) return { text: d.action === 'approved' ? `✓ Function saved: ${d.dest}` : 'Function discarded.', ...color }
+  const words = PROPOSAL_TEXT[d.kind ?? (d.isRemoval ? 'removal' : 'add')]
+  return { text: d.action === 'approved' ? `${words.approved}: ${d.dest}` : words.discarded, ...color }
+}
+
 // Keep a decision for its row, within MAX_DECISIONS (see hints.ts).
-async function rememberDecision($: EngineInterface, path: string, decision: Record<string, unknown>): Promise<void> {
+async function rememberDecision($: EngineInterface, path: string, decision: Decision): Promise<void> {
   const key = decisionKey(path)
   for (const stale of staleDecisionKeys(await $.store.keys(), key)) await $.store.delete(stale)
   await $.store.set(key, decision)
 }
 
-// One decision, from the add_hint or remove_hint row or from the band: act
-// on the file, remember the decision by path (the row reads it), and redraw both.
-async function decidePending($: EngineInterface, path: string, action: 'approved' | 'discarded', projectHints: boolean): Promise<void> {
-  const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
-  const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
-  await rememberDecision($, path, { action, dest, kind: proposalKind(hint) })
-  $.ui.invalidate('ui.render')
+// One decision, from a row or from the band: act on the file, remember the
+// decision by path (the row reads it), and redraw both. A second press on the
+// same proposal (a double click, or a press before the redraw) gets undefined
+// and changes nothing: the hint is not added two times.
+const deciding = new Set<string>()
+async function decideOnce($: EngineInterface, path: string, decide: () => Promise<Decision>): Promise<Decision | undefined> {
+  if (deciding.has(path)) return undefined
+  deciding.add(path)
+  try {
+    if (!(await $.fs.exists(path).catch(() => false))) return undefined
+    const decision = await decide()
+    await rememberDecision($, path, decision)
+    $.ui.invalidate('ui.render')
+    return decision
+  } finally {
+    deciding.delete(path)
+  }
+}
+
+function decidePending($: EngineInterface, path: string, action: Action, projectHints: boolean): Promise<Decision | undefined> {
+  return decideOnce($, path, async () => {
+    const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
+    const dest = action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
+    return { action, dest, kind: proposalKind(hint) }
+  })
 }
 
 // The folders whose files steer the model: the person's and the project's
@@ -577,7 +612,10 @@ async function cardFields($: EngineInterface, hint: Hint): Promise<ReviewFields>
 }
 
 type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markdown'>
-type Decide = (action: 'approved' | 'discarded') => unknown
+type Decide = (action: Action) => unknown
+
+// The line of a decision, in a row or in the band: no color shows dim.
+const shownLine = (ui: Ui, shown: Shown) => <ui.Text color={shown.color} dimColor={shown.color === undefined}>{shown.text}</ui.Text>
 
 // One field of a card: a gray uppercase label over its value.
 function cardField(ui: Ui, label: string, value: RenderChildren) {
@@ -694,17 +732,18 @@ async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[
 
 // Approve: the proposal becomes functions/<name>.md, without its reason, and
 // replaces a function with that name. Discard: the proposal goes.
-async function decideFunction($: EngineInterface, path: string, action: 'approved' | 'discarded'): Promise<void> {
-  const proposal = await readFunction($, path)
-  const dir = await functionsDir($)
-  let dest: string | undefined
-  if (action === 'approved' && proposal !== undefined && dir !== undefined && path.startsWith(`${dir}/pending/`)) {
-    dest = `${dir}/${proposal.name}.md`
-    await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
-  }
-  await $.process.run(['rm', '-f', path])
-  await rememberDecision($, path, { action: dest === undefined ? 'discarded' : action, dest, isFunction: true })
-  $.ui.invalidate('ui.render')
+function decideFunction($: EngineInterface, path: string, action: Action): Promise<Decision | undefined> {
+  return decideOnce($, path, async () => {
+    const proposal = await readFunction($, path)
+    const dir = await functionsDir($)
+    let dest: string | undefined
+    if (action === 'approved' && proposal !== undefined && dir !== undefined && path.startsWith(`${dir}/pending/`)) {
+      dest = `${dir}/${proposal.name}.md`
+      await $.fs.write(dest, formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }))
+    }
+    await $.process.run(['rm', '-f', path])
+    return { action: dest === undefined ? 'discarded' : action, dest, isFunction: true }
+  })
 }
 
 // Proposals waiting in the user's (and, when on, the project's) pending/.
@@ -996,9 +1035,8 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string } | undefined
-    if (decision?.action === 'approved') return <Text color="green">✓ Function saved: {decision.dest}</Text>
-    if (decision?.action === 'discarded') return <Text dimColor>Function discarded.</Text>
+    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
     if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
     return functionCard(ui, proposal, current, cardButtons(ui, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action)))
@@ -1086,14 +1124,8 @@ export const register: Register = (on, options) => {
     if (path === undefined) return next(e)
     const ui = $.ui.resolve(e)
     const { Text } = ui
-    // A decision from before 0.12 has isRemoval in place of kind.
-    const decision = (await $.store.get(decisionKey(path))) as { action: string; dest?: string; kind?: ProposalKind; isRemoval?: boolean } | undefined
-    const words = PROPOSAL_TEXT[decision?.kind ?? (decision?.isRemoval ? 'removal' : 'add')]
-
-    if (decision?.action === 'approved') {
-      return <Text color="green">{words.approved}: {decision.dest}</Text>
-    }
-    if (decision?.action === 'discarded') return <Text dimColor>{words.discarded}</Text>
+    const decision = (await $.store.get(decisionKey(path))) as Decision | undefined
+    if (decision !== undefined) return shownLine(ui, decisionShown(decision))
     if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
     const hint = parseHint(String(await $.fs.read(path)), path, await scopeOf($, path))
@@ -1107,7 +1139,7 @@ export const register: Register = (on, options) => {
   // Next when there are more. Nothing shows otherwise.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const [pending, functions] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($)])
+    const [pending, functions, isOpen, result] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($), read($, reviewOpen), read($, reviewResult)])
     const total = pending.length + functions.length
     if (total === 0) return next(e)
     const ui = $.ui.resolve(e)
@@ -1117,12 +1149,33 @@ export const register: Register = (on, options) => {
       ...(functions.length === 0 ? [] : [`${functions.length} function${functions.length === 1 ? '' : 's'}`]),
     ]
 
-    if (!(await read($, reviewOpen))) {
+    const title = `${total} proposal${total === 1 ? '' : 's'} for code mode`
+    if (!isOpen) {
       return (
         <Box gap={1} alignItems="center">
           <Text color="yellow">●</Text>
-          <Text>{`${total} proposal${total === 1 ? '' : 's'} for code mode: ${kinds.join(', ')}`}</Text>
+          <Text>{`${title}: ${kinds.join(', ')}`}</Text>
           <Button key="review" label="Review" onPress={() => update($, reviewOpen, () => true)} />
+        </Box>
+      )
+    }
+
+    // Close also drops the result, so the next Review starts on a proposal.
+    const close = <Button key="close" label="Close" role="dismiss" onPress={() => Promise.all([update($, reviewOpen, () => false), update($, reviewResult, () => null)])} />
+    // After a decision, the band shows its result until Show next, not the
+    // next proposal: the second click of a double click lands on this text,
+    // not on the next proposal's Approve.
+    if (result !== null) {
+      return (
+        <Box flexDirection="column">
+          <Box justifyContent="space-between">
+            <Text bold>{title}</Text>
+            <Box gap={1}>
+              <Button key="show-next" label="Show next" onPress={() => update($, reviewResult, () => null)} />
+              {close}
+            </Box>
+          </Box>
+          {shownLine(ui, result)}
         </Box>
       )
     }
@@ -1131,7 +1184,7 @@ export const register: Register = (on, options) => {
     const index = Math.min(await read($, reviewIndex), total - 1)
     const go = (step: number) => update($, reviewIndex, () => (index + step + total) % total)
     const hint = pending[index]
-    let decide: Decide
+    let decide: (action: Action) => Promise<Decision | undefined>
     let card: RenderChildren
     if (hint !== undefined) {
       decide = action => decidePending($, hint.path, action, projectHints)
@@ -1141,6 +1194,25 @@ export const register: Register = (on, options) => {
       const f = functions[index - pending.length]!
       decide = action => decideFunction($, f.path, action)
       card = functionCard(ui, f, await readFunction($, activePathOf(f.path)), null)
+    }
+    // The result shows before the files change, so no redraw puts the next
+    // proposal under the pointer. Only the press that sets the result counts:
+    // a second press, from this drawing or a later one, finds it set.
+    const decideHere: Decide = async action => {
+      let isFirst = false
+      await update($, reviewResult, r => {
+        isFirst = r === null
+        return isFirst ? { text: action === 'approved' ? 'Approving…' : 'Discarding…' } : r
+      })
+      if (!isFirst) return
+      const shown = await decide(action).then(
+        (d): Shown => (d === undefined ? { text: 'This proposal is no longer pending.' } : decisionShown(d)),
+        (err: unknown) => ({ text: `${action === 'approved' ? 'Approve' : 'Discard'} failed: ${errorText(err)}`, color: 'red' as const }),
+      )
+      // With no proposal left the band hides: drop the result, so the next
+      // proposal does not open on it.
+      const [hintsLeft, functionsLeft] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($)])
+      await update($, reviewResult, () => (hintsLeft.length + functionsLeft.length === 0 ? null : shown))
     }
     // Approve and Discard above the card: a card taller than the band
     // scrolls, and buttons under it would start out of view.
@@ -1152,11 +1224,11 @@ export const register: Register = (on, options) => {
             <Box gap={1}>
               {total > 1 ? <Button key="previous" label="Previous" onPress={() => go(-1)} /> : null}
               {total > 1 ? <Button key="next" label="Next" onPress={() => go(1)} /> : null}
-              <Button key="close" label="Close" role="dismiss" onPress={() => update($, reviewOpen, () => false)} />
+              {close}
             </Box>
           </Box>
           <Text dimColor>Approve only what you would write yourself. Approved hints guide Claude in later sessions. Approved functions run in its programs.</Text>
-          {cardButtons(ui, { approve: `approve-${index}`, discard: `discard-${index}` }, decide)}
+          {cardButtons(ui, { approve: `approve-${index}`, discard: `discard-${index}` }, decideHere)}
         </Box>
         {card}
       </Box>
