@@ -25,7 +25,9 @@ enforces; the others rely on discipline.
   typed input (`parseInput`) come from there. In the hooks and the `.ts` tests, write `TOOL.run_code`, never the full
   id `mcp__code-mode__run_code`. `[test: code.check.mjs]`
 - A hook's `.catch` writes `next.error` to the debug log (`debugLog`) before it answers. A deny that says "see the
-  debug log" must have a line there.
+  debug log" must have a line there. A `tool.call` hook ends with `.catch(failClosed)`: it denies the call when the
+  hook fails. The engine takes only a function literal or a function name there, not a call that makes one. The
+  one exception is the `blockDirectMcp` hook: it applies to every tool, so it fails open.
 - `runtime/runner.mjs` runs inside the sandbox: Node built-ins only, no dependencies. It needs Node 22.13+, because
   `LAUNCH` passes `--permission` (stable from 22.13; Node 20 knew only `--experimental-permission`).
   `[test: runner.integration.mjs loads the runner with Node alone, so an import of a package fails]`
