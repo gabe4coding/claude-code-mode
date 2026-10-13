@@ -590,7 +590,7 @@ function decisionShown(d: Decision): Shown {
 // Keep a decision for its row, within MAX_DECISIONS (see hints.ts).
 async function rememberDecision($: EngineInterface, path: string, decision: Decision): Promise<void> {
   const key = decisionKey(path)
-  for (const stale of staleDecisionKeys(await $.store.keys(), key)) await $.store.delete(stale)
+  await Promise.all(staleDecisionKeys(await $.store.keys(), key).map(stale => $.store.delete(stale)))
   await $.store.set(key, decision)
 }
 
