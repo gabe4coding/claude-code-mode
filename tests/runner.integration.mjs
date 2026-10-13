@@ -378,7 +378,12 @@ const cases = {
     )
   },
 
-  'the process gets no environment variables': async () => assert.deepEqual((await probe()).env, []),
+  // macOS adds __CF_USER_TEXT_ENCODING (the uid and a text encoding) to each process at start.
+  'the process gets no environment variables': async () =>
+    assert.deepEqual(
+      (await probe()).env.filter(name => name !== '__CF_USER_TEXT_ENCODING'),
+      [],
+    ),
 
   ...(HAS_SANDBOX_EXEC
     ? { 'the process has no network (sandbox-exec)': async () => assert.equal((await probe()).connect, 'EPERM') }
