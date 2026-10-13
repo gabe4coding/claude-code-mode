@@ -48,8 +48,8 @@ https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
 ## Why
 
 - **Fewer tokens.** Intermediate data never enters the context.
-- **Sandboxed.** Separate Node process, no file system, CPU limit; no network on macOS and on Linux where `unshare -rn` works.
-- **Learns your tools.** Hints per MCP server (formats, required args, limits). Claude proposes fixes; you approve.
+- **Sandboxed.** Separate Node process, no file system, CPU limit. No network on macOS and on Linux where `unshare -rn` works.
+- **Learns your tools.** Hints per MCP server (formats, required args, limits). Claude proposes fixes. You approve.
 - **Reusable functions.** Programs that work can become saved functions for later sessions, after you read and approve the code.
 - **Your permissions still apply.** Every MCP call inside the program gets the normal permission check.
 
