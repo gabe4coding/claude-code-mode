@@ -2,9 +2,11 @@
   <img src="docs/assets/banner.svg" alt="code-mode: many MCP calls, one program, one small result" width="100%">
 </p>
 
+<h3 align="center">Stop flooding Claude's context with MCP results.</h3>
+
 <p align="center">
-  A Claude Code plugin: the model writes one JavaScript program that calls your MCP tools in a sandbox.
-  Only the return value goes back into the context.
+  code-mode is a Claude Code plugin. Claude writes <b>one JavaScript program</b> that calls your MCP tools in a sandbox,
+  filters and joins the data there, and sends back <b>only the answer</b>.
 </p>
 
 <p align="center">
@@ -16,50 +18,44 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="docs/usage.mdx">Usage</a> ·
-  <a href="docs/hints.mdx">Hints</a> ·
-  <a href="docs/functions.mdx">Functions</a> ·
-  <a href="docs/permissions.mdx">Permissions</a> ·
-  <a href="docs/configuration.mdx">Config</a>
+  <a href="#install-in-30-seconds">Install</a> · <a href="#see-it-in-43-seconds">Demo</a> · <a href="#example">Example</a> ·
+  <a href="docs/how-it-works.mdx">How it works</a> · <a href="docs/configuration.mdx">Config</a>
 </p>
 
 ---
 
-https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
+## Install in 30 seconds
 
-Without code-mode, the model calls MCP tools one by one, and each full result goes into the context. With
-code-mode, the model writes one program. The program calls the tools, then filters and joins the results in a
-sandbox. Only the answer goes into the context.
-
-- **Fewer tokens**: the intermediate data stays out of the context. The model uses the context for the task.
-- **Sandbox**: the program runs in its own Node process, with no file system and a CPU limit. On macOS, and on
-  Linux where `unshare -rn` works, it also has no network.
-- **Hints**: short notes for each MCP server tell the model about result formats, required arguments and limits.
-  The model can propose a new hint or the removal of a wrong hint, and you approve it.
-- **Saved functions**: the model can propose a program part that works as a function for later sessions. You read
-  the code and approve it.
-- **Your permission rules apply**: each MCP call in the program gets the normal permission check.
-
-## Quick start
-
-You need Claude Code and Node.js 22.13 or later.
-
-Type these commands at the prompt of a Claude Code session:
+Needs Claude Code and Node.js 22.13+. No dependencies. In a Claude Code session:
 
 ```
 /plugin marketplace add gabe4coding/claude-code-mode
 /plugin install code-mode@claude-code-mode
 ```
 
-Start a new session. Then ask for a task that needs several MCP calls.
+Start a new session and ask for anything that needs several MCP calls. Using auto mode? Add allow rules first: [Permissions](docs/permissions.mdx).
 
-If you use auto mode, add allow rules for your MCP tools first. Read [Permissions](docs/permissions.mdx).
+## See it in 43 seconds
+
+https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
+
+| Without code-mode | With code-mode |
+| --- | --- |
+| Claude calls tools one by one | Claude writes one program |
+| Every full result lands in context | Results are filtered in a sandbox |
+| Context fills with raw JSON | Only the answer comes back |
+
+## Why
+
+- **Fewer tokens.** Intermediate data never enters the context.
+- **Sandboxed.** Separate Node process, no file system, CPU limit; no network on macOS and on Linux where `unshare -rn` works.
+- **Learns your tools.** Hints per MCP server (formats, required args, limits). Claude proposes fixes; you approve.
+- **Reusable functions.** Programs that work can become saved functions for later sessions, after you read and approve the code.
+- **Your permissions still apply.** Every MCP call inside the program gets the normal permission check.
 
 ## Example
 
-You ask: *"Which of my open Jira issues have no update in the last 14 days?"* The model writes one program, for
-example:
+*"Which of my open Jira issues have no update in the last 14 days?"*
 
 ```js
 const issues = await call("mcp__claude_ai_Jira__searchJiraIssuesUsingJql", {
@@ -72,7 +68,7 @@ return issues.issues
   .map(i => ({ key: i.key, title: i.fields.summary }))
 ```
 
-The model gets only the short list, not each full issue.
+Claude sees a short list of keys and titles, not every full issue.
 
 ## Documentation
 
@@ -87,6 +83,10 @@ The model gets only the short list, not each full issue.
 | [How it works](docs/how-it-works.mdx) | One run from start to end, the four sandbox layers |
 | [Troubleshooting](docs/troubleshooting.mdx) | Common errors and known limits |
 | [Development](docs/development.mdx) | Layout, tests, releases |
+
+## Contributing / feedback
+
+Issues and PRs welcome. If code-mode saves you tokens, a ⭐ helps others find it.
 
 ## License
 
