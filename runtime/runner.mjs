@@ -19,7 +19,8 @@
 // Only strings cross between host and context, so no host object (and no host
 // Function constructor) is reachable from the script. The host process is
 // also started with --permission (read-only access to this file and the
-// exchange dir) and, on macOS, under sandbox-exec with no network.
+// exchange dir), with no environment variables and, on macOS, under
+// sandbox-exec with no network.
 
 import fs from 'node:fs'
 import path from 'node:path'

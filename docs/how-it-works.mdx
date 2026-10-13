@@ -32,7 +32,7 @@ The sandbox has four layers:
 | Layer | What it stops |
 | --- | --- |
 | A Node `vm` context | The program has no `require`, `process`, `fetch`, timers or file system. Code generation from strings is off. The sandbox process does `sleep` with its own timer. The plugin writes and reads the files of `saveFile` and `readFile`, and reads the MCP resources. |
-| The Node permission model (`--permission`) | The process can read only the runner file and its temporary folder. It cannot write files or start processes or workers. |
+| The Node permission model (`--permission`) and `env -i` | The process can read only the runner file and its temporary folder. It cannot write files or start processes or workers. It starts with no environment variables, so it cannot read the secrets in them. Thus `TZ` and `LANG` do not apply: dates use the time zone of the system. |
 | `sandbox-exec` on macOS, `unshare -rn` on Linux | The process has no network access. |
 | `ulimit -t` and a timer | A CPU limit stops busy loops. A wall-clock limit stops programs that wait too long. |
 

@@ -129,16 +129,24 @@ const MAX_FILE_CHARS = 16 * 1024 * 1024
 // No network for the sandbox process: sandbox-exec on macOS, a new network
 // namespace (unshare -rn) on Linux where the kernel lets a user make one.
 // Elsewhere it relies on the vm context (no fetch, no require) and --permission.
+// env -i starts Node with no environment variables, so a program that gets out
+// of the vm context cannot read secrets there. env -i also clears PATH, so the
+// shell finds node first. A version-manager shim is a script that needs the
+// environment, so the shell asks it for the real binary.
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
+  'profile=$2',
+  'node=$(command -v "$3") || { echo "code-mode: $3: not found" >&2; exit 127; }',
+  'case $(head -c 2 "$node") in "#!") node=$("$node" -p process.execPath) || exit 127 ;; esac',
+  'set -- env -i "$node" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
   'if [ -x /usr/bin/sandbox-exec ]; then',
-  '  exec /usr/bin/sandbox-exec -p "$2" "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  '  exec /usr/bin/sandbox-exec -p "$profile" "$@"',
   'fi',
   'if unshare -rn true 2>/dev/null; then',
-  '  exec unshare -rn "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  '  exec unshare -rn "$@"',
   'fi',
-  'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  'exec "$@"',
 ].join('\n')
 // GNU mktemp needs at least three X's at the end of the template. BSD mktemp
 // adds its own suffix and keeps the X's as text, which is also safe.

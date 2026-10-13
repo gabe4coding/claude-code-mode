@@ -20,13 +20,17 @@ const RUNNER = path.join(ROOT, 'runtime', 'runner.mjs')
 const NO_NETWORK = '(version 1)(allow default)(deny network*)'
 const LAUNCH = [
   'ulimit -t "$1"',
+  'profile=$2',
+  'node=$(command -v "$3") || { echo "code-mode: $3: not found" >&2; exit 127; }',
+  'case $(head -c 2 "$node") in "#!") node=$("$node" -p process.execPath) || exit 127 ;; esac',
+  'set -- env -i "$node" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
   'if [ -x /usr/bin/sandbox-exec ]; then',
-  '  exec /usr/bin/sandbox-exec -p "$2" "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  '  exec /usr/bin/sandbox-exec -p "$profile" "$@"',
   'fi',
   'if unshare -rn true 2>/dev/null; then',
-  '  exec unshare -rn "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  '  exec unshare -rn "$@"',
   'fi',
-  'exec "$3" --permission --allow-fs-read="$4" --allow-fs-read="$5" "$4" "$5"',
+  'exec "$@"',
 ].join('\n')
 const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
@@ -49,24 +53,33 @@ const echo = m =>
               : { ok: true, value: { tool: m.tool, args: m.args } }
 
 // `script` replaces the runner, to test what the launch allows the process.
+// `node` is the option of the same name: a name on PATH or a path.
 // An `answer` that returns undefined writes no reply: a call that never finishes.
 const run = (
   code,
-  { timeoutMs = 5000, cpuSeconds = 10, answer = echo, script = RUNNER, env = process.env, lib } = {},
+  {
+    timeoutMs = 5000,
+    cpuSeconds = 10,
+    answer = echo,
+    script = RUNNER,
+    env = process.env,
+    node = process.execPath,
+    lib,
+  } = {},
 ) => {
   // The plugin's own command, so CI runs it on Linux and on macOS.
   const xdir = execFileSync(MKTEMP[0], MKTEMP.slice(1), { encoding: 'utf8' }).trim()
   return new Promise(resolve => {
-    const child = spawn(
-      '/bin/sh',
-      ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, process.execPath, script, xdir],
-      { env },
-    )
-    child.stdin.on('error', () => {}) // a probe exits without reading stdin
+    const child = spawn('/bin/sh', ['-c', LAUNCH, 'code-mode', String(cpuSeconds), NO_NETWORK, node, script, xdir], {
+      env,
+    })
+    child.stdin.on('error', () => {}) // a launch that ends early does not read stdin
     child.stdin.end(JSON.stringify({ code, timeoutMs, lib }))
     let buffer = ''
+    let stderr = ''
     let calls = 0
     let outcome
+    child.stderr.on('data', d => (stderr += d))
     child.stdout.on('data', d => {
       buffer += d
       let i
@@ -86,7 +99,7 @@ const run = (
     })
     child.on('close', (exit, signal) => {
       fs.rmSync(xdir, { recursive: true, force: true })
-      resolve({ exit, signal, calls, outcome })
+      resolve({ exit, signal, calls, outcome, stderr })
     })
   })
 }
@@ -99,6 +112,8 @@ import net from 'node:net'
 import cp from 'node:child_process'
 import { Worker } from 'node:worker_threads'
 const xdir = process.argv[2]
+// The port comes in place of the program: the process has no environment variables.
+const port = Number(JSON.parse(fs.readFileSync(0, 'utf8')).code)
 const attempt = async f => { try { await f(); return 'allowed' } catch (e) { return e.code ?? e.message } }
 const result = {
   write: await attempt(() => fs.writeFileSync(xdir + '/probe.txt', 'x')),
@@ -106,23 +121,24 @@ const result = {
   spawn: await attempt(() => cp.execFileSync('/bin/echo', ['x'])),
   worker: await attempt(() => new Worker('1', { eval: true }).terminate()),
   connect: await attempt(() => new Promise((resolve, reject) => {
-    const socket = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1', () => { socket.end(); resolve() })
+    const socket = net.connect(port, '127.0.0.1', () => { socket.end(); resolve() })
     socket.on('error', reject)
   })),
+  env: Object.keys(process.env),
 }
 process.stdout.write('\u0001cm ' + JSON.stringify({ t: 'done', value: JSON.stringify(result), logs: [] }) + '\n')
 `
 
-const probe = async () => {
+const runProbe = async () => {
   // The real path: on macOS the temp dir is under a link, and --allow-fs-read takes real paths.
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-probe-')))
   const server = net.createServer(socket => socket.end())
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
     fs.writeFileSync(path.join(dir, 'probe.mjs'), PROBE)
-    const r = await run('', {
+    const r = await run(String(server.address().port), {
       script: path.join(dir, 'probe.mjs'),
-      env: { ...process.env, PROBE_PORT: String(server.address().port) },
+      env: { ...process.env, CODE_MODE_SECRET: 'fake' },
     })
     assert.equal(r.outcome?.t, 'done', `the probe did not finish: exit ${r.exit}`)
     return JSON.parse(r.outcome.value)
@@ -131,6 +147,10 @@ const probe = async () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 }
+
+// One launch answers every probe case.
+let probed
+const probe = () => (probed ??= runProbe())
 
 // The network block exists where sandbox-exec does (macOS), and on Linux
 // where unshare can make a user and network namespace. CI sets
@@ -358,6 +378,8 @@ const cases = {
     )
   },
 
+  'the process gets no environment variables': async () => assert.deepEqual((await probe()).env, []),
+
   ...(HAS_SANDBOX_EXEC
     ? { 'the process has no network (sandbox-exec)': async () => assert.equal((await probe()).connect, 'EPERM') }
     : {}),
@@ -373,6 +395,24 @@ const cases = {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  },
+
+  'the launch finds node on PATH, also behind a version-manager shim': async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-shim-'))
+    try {
+      // Like an asdf shim: it finds the real node only through the environment.
+      fs.writeFileSync(path.join(dir, 'node'), '#!/bin/sh\nexec "$REAL_NODE" "$@"\n', { mode: 0o755 })
+      const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, REAL_NODE: process.execPath }
+      assert.equal(value(await run('return 1 + 1', { node: 'node', env })), 2)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  },
+
+  'the launch says when it cannot find node': async () => {
+    const r = await run('return 1', { node: 'code-mode-no-such-node' })
+    assert.equal(r.exit, 127)
+    assert.match(r.stderr, /code-mode-no-such-node: not found/)
   },
 
   ...(!HAS_SANDBOX_EXEC && HAS_UNSHARE
