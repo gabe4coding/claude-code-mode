@@ -42,9 +42,10 @@ is in `bench/data.mjs`.
 
 Run `--auto` two times:
 
-1. No allow rule: the nested call is refused with `auto mode classifier gave no verdict`, and `calls` stays empty.
-   This is the documented limit in `docs/permissions.mdx`. If the call reaches the server, Claude Code fixed
-   anthropics/claude-code#100575: tell the person, because the docs must change.
+1. No allow rule: in Claude Code 2.1.301 the call reaches the server, with `approval: program` and with
+   `per-call`. If it is refused with `auto mode classifier gave no verdict`, check `claude --version`. An older
+   version has the limit in `docs/permissions.mdx`. A newer one brought it back: tell the person, because the docs
+   must change.
 2. `--settings '{"permissions":{"allow":["mcp__{srv}__list_issues"]}}'`: the call reaches the server.
 
 ## The band (TUI)

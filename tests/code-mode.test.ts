@@ -63,7 +63,7 @@ const fakeServer = (on: On, verdicts: Record<string, Verdict> = {}) => {
   on('tool.call', { tool: 'mcp__fake__fail' }, () => ({ deny: 'server said no' }))
   on('mcp.call', ($, e) => {
     paths.push('mcp.call')
-    // As auto mode and claude -p refuse a call that no rule decides.
+    // As claude -p (and auto mode in older Claude Code) refuses a call that no rule decides.
     if (e.tool === 'refused') return { deny: 'the classifier gave no verdict' }
     if (e.tool === 'fail') return { value: { content: [{ type: 'text', text: 'server error' }], isError: true } }
     return {

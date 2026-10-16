@@ -31,7 +31,7 @@
     "approval": {
       "type": "string",
       "title": "Approval of nested MCP calls",
-      "description": "program: approving run_code approves the MCP calls inside it that no permission rule decides (deny rules and organization limits still apply). per-call: each nested call has its own permission check; in auto mode this needs allow rules.",
+      "description": "program: approving run_code approves the MCP calls inside it that no permission rule decides (deny rules and organization limits still apply). per-call: each nested call has its own permission check. In auto mode, Claude Code older than 2.1.301 needs allow rules for nested calls.",
       "options": ["program", "per-call"],
       "default": "program",
       "required": false
