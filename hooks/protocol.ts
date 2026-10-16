@@ -967,3 +967,15 @@ export const hintNudge = (
  */
 export const functionNudge = (calls: number, tools: readonly string[]): string =>
   `## Worth a saved function\n\nThis program made ${calls} call${calls === 1 ? '' : 's'} to ${tools.join(', ')}. If the person can ask for this task again, propose the program with save_function now: pass ids, dates and queries as arguments.`
+
+/**
+ * The note after nested calls that needed an approval (no rule decided them)
+ * and were refused. Without an allow rule they are refused each time (claude -p,
+ * and auto mode in some Claude Code versions); only the person can add the rule.
+ */
+export const approvalNote = (tools: readonly string[]): string => {
+  if (tools.length === 0) return ''
+  const names = tools.join(', ')
+  const one = tools.length === 1
+  return `## No allow rule\n\nNo allow rule matches ${names}, and ${one ? 'its call was' : 'their calls were'} refused. Without an allow rule, the same call is refused again. If the person wants programs to call ${one ? 'this tool' : 'these tools'}, ask them to add ${names} to permissions.allow in ~/.claude/settings.json. Do not change the settings yourself.`
+}

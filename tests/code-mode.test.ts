@@ -19,6 +19,7 @@ import {
   mergeArgNames,
   parseArgNames,
   problemReport,
+  approvalNote,
   hintNudge,
   isCallable,
   isSessionResult,
@@ -45,7 +46,8 @@ const RUN = TOOL.run_code
 
 // No `ceiling` here: the engine sets it from the tool and drops a hook's own,
 // so the organization-ceiling path cannot be faked in this kit.
-type Verdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string }
+type Verdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }
+const ASK: Verdict = { decision: 'ask' }
 
 // A fake MCP server beneath the plugin: echo returns its args, fail errors.
 // `verdicts` stands for the permission rules (allow when a tool is not listed).
@@ -61,6 +63,8 @@ const fakeServer = (on: On, verdicts: Record<string, Verdict> = {}) => {
   on('tool.call', { tool: 'mcp__fake__fail' }, () => ({ deny: 'server said no' }))
   on('mcp.call', ($, e) => {
     paths.push('mcp.call')
+    // As auto mode and claude -p refuse a call that no rule decides.
+    if (e.tool === 'refused') return { deny: 'the classifier gave no verdict' }
     if (e.tool === 'fail') return { value: { content: [{ type: 'text', text: 'server error' }], isError: true } }
     return {
       value: {
@@ -73,6 +77,13 @@ const fakeServer = (on: On, verdicts: Record<string, Verdict> = {}) => {
 }
 
 describe('protocol', () => {
+  test('approvalNote names every refused tool, and nothing when none was refused', () => {
+    expect(approvalNote([])).toBe('')
+    const note = approvalNote(['mcp__a__x', 'mcp__b__y'])
+    expect(note).toContain('No allow rule matches mcp__a__x, mcp__b__y, and their calls were refused.')
+    expect(note).toContain('call these tools, ask them to add mcp__a__x, mcp__b__y to permissions.allow')
+  })
+
   test('takeMessages keeps partial lines and skips foreign output', () => {
     const line = `${MARK}${JSON.stringify({ t: 'call', id: 1, tool: 'mcp__a__b', args: {} })}\n`
     const { messages, rest } = takeMessages(`noise\n${line}${MARK}{"t":"do`)
@@ -1157,8 +1168,6 @@ describe('output projection', () => {
 })
 
 describe('approval', () => {
-  const ASK: Verdict = { decision: 'ask' }
-
   test('program: a call no rule decides runs through $.mcp.call', async ($, on) => {
     const server = fakeServer(on, { mcp__fake__echo: ASK })
     fakeHost(on)
@@ -1189,7 +1198,73 @@ describe('approval', () => {
     fakeHost(on)
     const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__fail' }) })
     expect(textOf(r)).toContain('"error": "server error"')
+    expect(textOf(r)).not.toContain('## No allow rule')
   })
+
+  test('program: a refused call no rule decides names the allow rule to add', async ($, on) => {
+    fakeServer(on, { mcp__fake__refused: ASK })
+    fakeHost(on)
+    const r = await $.tool.call({
+      tool: RUN,
+      code: scenario({ tool: 'mcp__fake__refused' }, { tool: 'mcp__fake__refused' }),
+    })
+    const text = textOf(r)
+    expect(text).toContain('no verdict')
+    expect(text).toContain('## No allow rule\n\nNo allow rule matches mcp__fake__refused, and its call was refused.')
+    expect(text).toContain('add mcp__fake__refused to permissions.allow')
+  })
+
+  test('program: a throw for a name that no server offers adds no note', async ($, on) => {
+    fakeServer(on, { mcp__fake__refused: ASK })
+    fakeHost(on)
+    on('tool.list', () => ({ value: [{ name: 'mcp__fake__echo', description: 'Echo', mcp: true }] }))
+    const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__refused' }) })
+    expect(textOf(r)).toContain('no verdict')
+    expect(textOf(r)).not.toContain('## No allow rule')
+  })
+
+  test('a refused call that an allow rule decided adds no note', async ($, on) => {
+    fakeServer(on)
+    fakeHost(on)
+    const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__fail' }) })
+    expect(textOf(r)).toContain('denied: server said no')
+    expect(textOf(r)).not.toContain('## No allow rule')
+  })
+
+  test(
+    'per-call: a refused call no rule decides names the allow rule to add',
+    { options: { approval: 'per-call' } },
+    async ($, on) => {
+      fakeServer(on, { mcp__fake__fail: ASK })
+      fakeHost(on)
+      const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__fail' }) })
+      expect(textOf(r)).toContain('add mcp__fake__fail to permissions.allow')
+    },
+  )
+
+  test(
+    'per-call: a call that throws is no refusal and adds no note',
+    { options: { approval: 'per-call' } },
+    async ($, on) => {
+      fakeServer(on, { mcp__fake__gone: ASK })
+      fakeHost(on)
+      const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__gone' }) })
+      expect(textOf(r)).toContain('"ok": false')
+      expect(textOf(r)).not.toContain('## No allow rule')
+    },
+  )
+
+  test(
+    'per-call: a refused call that an ask rule decided adds no note',
+    { options: { approval: 'per-call' } },
+    async ($, on) => {
+      fakeServer(on, { mcp__fake__fail: { decision: 'ask', rule: 'mcp__fake__fail' } })
+      fakeHost(on)
+      const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__fail' }) })
+      expect(textOf(r)).toContain('denied: server said no')
+      expect(textOf(r)).not.toContain('## No allow rule')
+    },
+  )
 
   test(
     'per-call: a call no rule decides keeps the normal tool call',
@@ -1239,6 +1314,35 @@ describe('hint nudge', () => {
     expect(after).toContain('## Worth a hint')
     expect(after).toContain('Calls to fake failed earlier and work now.')
     expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+
+  test('a call refused for want of an allow rule is not a failed try', async ($, on) => {
+    session(on)
+    fakeServer(on, { mcp__fake__refused: ASK })
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__refused' })).toContain('## No allow rule')
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
+  })
+
+  test('a refusal that ends the program is not a failed try of the other servers', async ($, on) => {
+    session(on)
+    fakeServer(on, { mcp__other__refused: ASK })
+    fakeHost(on)
+    const calls = [
+      { tool: 'mcp__fake__echo', args: {} },
+      { tool: 'mcp__other__refused', args: {} },
+    ]
+    const r = await $.tool.call({ tool: RUN, code: JSON.stringify({ calls, timeout: 2 }) })
+    expect(textOf(r)).toContain('add mcp__other__refused to permissions.allow')
+    expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('failed earlier')
+  })
+
+  test('the allow rule note shows once per tool in a session', async ($, on) => {
+    session(on)
+    fakeServer(on, { mcp__fake__refused: ASK })
+    fakeHost(on)
+    expect(await run($, { tool: 'mcp__fake__refused' })).toContain('## No allow rule')
+    expect(await run($, { tool: 'mcp__fake__refused' })).not.toContain('## No allow rule')
   })
 
   test('a failed call and a working call to one server in one run ask for a hint', async ($, on) => {

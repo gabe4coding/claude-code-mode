@@ -60,6 +60,26 @@ Add an allow rule for each MCP tool that your programs use. For one run, use `--
 claude -p "…" --allowedTools "mcp__code-mode__run_code,mcp__code-mode__search_tools,mcp__claude_ai_Jira__getJiraIssue"
 ```
 
+The result of the run names each tool that needs an allow rule. See [The No allow rule section](#the-no-allow-rule-section).
+
+## The No allow rule section
+
+The plugin adds the section "No allow rule" to the result of a run when both conditions are true:
+
+1. No rule and no organization limit decided a nested call.
+2. The nested call did not run.
+
+The section names the tools and tells the model to ask you for allow rules. The model does not change your settings.
+The section names each tool one time in a session.
+
+Claude Code does not tell the plugin why a call did not run. Thus the section also shows in these cases:
+
+- With `approval: per-call`, you refuse the prompt for the call.
+- A hook refuses the call.
+- With `approval: program`, the server connection fails.
+
+If you do not want programs to call the tool, ignore the section.
+
 ## Deny rules
 
 A deny rule for an MCP tool or a server takes the tool out of the session. Thus `search_tools` does not show it, and
@@ -83,6 +103,9 @@ The server-side auto mode classifier gave no verdict for mcp__…: the request t
 ```
 
 The option `approval` cannot change this. It is a limit of Claude Code, and the plugin does not try to go around it.
+
+The result of the run names each tool that needs an allow rule. See
+[The No allow rule section](#the-no-allow-rule-section).
 
 Add an allow rule for each MCP tool that you use from `run_code`, in `~/.claude/settings.json`:
 
