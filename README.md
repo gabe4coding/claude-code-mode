@@ -33,7 +33,7 @@ Needs Claude Code and Node.js 22.13+. No dependencies. In a Claude Code session:
 /plugin install code-mode@claude-code-mode
 ```
 
-Start a new session and ask for anything that needs several MCP calls. Using auto mode? Add allow rules first: [Permissions](docs/permissions.mdx).
+Start a new session and ask for anything that needs several MCP calls. Using auto mode with Claude Code older than 2.1.301? Add allow rules first: [Permissions](docs/permissions.mdx).
 
 ## See it in 43 seconds
 

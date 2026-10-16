@@ -60,6 +60,7 @@ import {
   type ReviewFields,
 } from './hints'
 import {
+  approvalNote,
   argNamesOf,
   callKey,
   checkCalls,
@@ -1473,6 +1474,18 @@ export const register: Register = (on, options) => {
     const answers: Promise<void>[] = []
     const failed = new Set<string>()
     const worked = new Set<string>()
+    // Tools whose call no rule decided (verdict `ask`) and that were refused:
+    // they need an allow rule.
+    const unapproved = new Set<string>()
+    // The tool names the session offers, read once per run and only after a throw.
+    let offeredNames: Promise<Set<string> | undefined> | undefined
+    const isOffered = async (tool: string): Promise<boolean> => {
+      offeredNames ??= $.tool.list().then(
+        list => new Set(list.map(t => t.name)),
+        () => undefined,
+      )
+      return (await offeredNames)?.has(tool) ?? true
+    }
     const state = await sessionOf($)
     // Without a session id, the state above is shared by every session with no
     // id: results kept there could reach another session. Keep them for this run only.
@@ -1495,6 +1508,9 @@ export const register: Register = (on, options) => {
     const answer = async (id: number, tool: string, args: Record<string, unknown>): Promise<void> => {
       if (ended) return
       let reply: Reply
+      // Refused after an ask that no rule and no organization ceiling decided:
+      // an allow rule is the fix, not a hint about the server.
+      let isUnapproved = false
       if (!isCallable(tool, $.plugin.name)) {
         reply = { ok: false, error: `only MCP tools (mcp__<server>__<tool>) can be called, not "${tool}"` }
       } else {
@@ -1505,19 +1521,24 @@ export const register: Register = (on, options) => {
           // an allow rule or an organization ceiling takes the normal path.
           const check = await $.tool.check({ tool, input: args })
           const target = splitToolName(tool)
+          const isOpenAsk = check.decision === 'ask' && check.ceiling === undefined
+          const needsAllowRule = isOpenAsk && check.rule === undefined
           if (check.decision === 'deny') {
             reply = { ok: false, error: `denied: ${check.reason ?? 'a permission rule refuses this tool'}` }
-          } else if (
-            programApproval &&
-            check.decision === 'ask' &&
-            check.ceiling === undefined &&
-            target !== undefined
-          ) {
-            reply = mcpReply(await $.mcp.call(target.server, target.name, args))
+          } else if (programApproval && isOpenAsk && target !== undefined) {
+            // A refused $.mcp.call throws (a server error comes back as isError).
+            // So do a lost connection, which the note's condition covers, and a
+            // name from a variable that no server offers, which needs no allow rule.
+            reply = await $.mcp.call(target.server, target.name, args).then(mcpReply, async (err): Promise<Reply> => {
+              isUnapproved = needsAllowRule && (await isOffered(tool))
+              return { ok: false, error: errorText(err) }
+            })
           } else {
             const r = await $.tool.call({ ...args, tool })
-            if (r.deny !== undefined) reply = { ok: false, error: `denied: ${r.deny}` }
-            else if (r.isError === true) reply = { ok: false, error: r.text ?? String(r.result) }
+            if (r.deny !== undefined) {
+              reply = { ok: false, error: `denied: ${r.deny}` }
+              isUnapproved = needsAllowRule
+            } else if (r.isError === true) reply = { ok: false, error: r.text ?? String(r.result) }
             else reply = { ok: true, value: toValue(r.result, r.text) }
           }
         } catch (err) {
@@ -1528,7 +1549,7 @@ export const register: Register = (on, options) => {
         (err): Reply => ({ ok: false, error: `could not read the saved result: ${errorText(err)}` }),
       )
       if (closed) return
-      if (isCallable(tool, $.plugin.name)) (reply.ok ? worked : failed).add(tool)
+      if (isCallable(tool, $.plugin.name)) (isUnapproved ? unapproved : reply.ok ? worked : failed).add(tool)
       const text = JSON.stringify(reply)
       await $.fs.write(`${xdir}/r${id}.json`, text)
       // A repeat is a call equal to an earlier one that worked, with projection
@@ -1708,10 +1729,12 @@ export const register: Register = (on, options) => {
       }
     }
     // A program that failed (a wrong result shape, a throw) is a failed try for every server it called.
+    // A refusal for want of an allow rule can end the program too, but then the servers are not at fault.
     const isDone = outcome?.t === 'done'
+    const isProgramFault = !isDone && unapproved.size === 0
     const nudge = await nudgeAfter(
       $,
-      isDone ? failed : new Set([...failed, ...worked]),
+      isProgramFault ? new Set([...failed, ...worked]) : failed,
       isDone ? worked : new Set(),
       projectHints,
     ).catch(() => '')
@@ -1719,13 +1742,17 @@ export const register: Register = (on, options) => {
     const keepNudge = isDone
       ? await functionNudgeAfter($, callRecords, Object.keys(lib).length > 0).catch(() => '')
       : ''
+    // The names that `kind` was not yet noted for in this session; they count as noted from now.
+    const notYetNoted = (kind: string, names: readonly string[]): string[] => {
+      const fresh = names.filter(n => !state.tries.nudged.has(`${kind}:${n}`))
+      for (const n of fresh) state.tries.nudged.add(`${kind}:${n}`)
+      return fresh
+    }
     // A run that failed in a saved function asks for a fix, once per function in a session.
-    const broken =
-      outcome?.t === 'error'
-        ? failedFunctions(outcome.message, Object.keys(lib)).filter(n => !state.tries.nudged.has(`fix:${n}`))
-        : []
-    for (const n of broken) state.tries.nudged.add(`fix:${n}`)
-    const tail = [nudge, keepNudge, functionFixNudge(broken), hintText]
+    const broken = outcome?.t === 'error' ? notYetNoted('fix', failedFunctions(outcome.message, Object.keys(lib))) : []
+    // The allow rule note, once per tool in a session.
+    const toAllow = notYetNoted('allow', [...unapproved])
+    const tail = [approvalNote(toAllow), nudge, keepNudge, functionFixNudge(broken), hintText]
       .filter(t => t !== '')
       .map(t => `\n\n${t}`)
       .join('')
