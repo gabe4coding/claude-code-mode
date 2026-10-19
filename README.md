@@ -10,6 +10,11 @@
 </p>
 
 <p align="center">
+  <b>Measured:</b> the same 30/30 correct answers at 43% lower cost per task with Haiku 5.5.
+  <a href="#measured">How we measured</a> · If it saves you tokens, ⭐ the repo.
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/gabe4coding/claude-code-mode?color=blue"></a>
   <img alt="Node.js 22.13+" src="https://img.shields.io/badge/node-22.13%2B-339933?logo=nodedotjs&logoColor=white">
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
@@ -18,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="#install-in-30-seconds">Install</a> · <a href="#see-it-in-43-seconds">Demo</a> · <a href="#example">Example</a> ·
+  <a href="#install-in-30-seconds">Install</a> · <a href="#see-it-in-43-seconds">Demo</a> · <a href="#measured">Measured</a> · <a href="#example">Example</a> ·
   <a href="docs/how-it-works.mdx">How it works</a> · <a href="docs/configuration.mdx">Config</a>
 </p>
 
@@ -37,6 +42,12 @@ Start a new session and ask for anything that needs several MCP calls. Using aut
 
 ## See it in 43 seconds
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Without code-mode, tool results fill the context. With code-mode, a program runs in a sandbox and only the answer comes back." width="300">
+</p>
+
+The full film with sound:
+
 https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
 
 | Without code-mode | With code-mode |
@@ -47,11 +58,35 @@ https://github.com/user-attachments/assets/468c412f-ecae-4e04-a53b-8a291561a052
 
 ## Why
 
-- **Fewer tokens.** Intermediate data never enters the context.
+- **Fewer tokens.** Intermediate data never enters the context. See [Measured](#measured).
 - **Sandboxed.** Separate Node process, no file system, CPU limit. No network on macOS and on Linux where `unshare -rn` works.
 - **Learns your tools.** Hints per MCP server (formats, required args, limits). Claude proposes fixes. You approve.
 - **Reusable functions.** Programs that work can become saved functions for later sessions, after you read and approve the code.
 - **Your permissions still apply.** Every MCP call inside the program gets the normal permission check.
+
+## Measured
+
+The bench in `bench/` runs six tasks in headless Claude Code against a fake MCP server.
+Each task has traps: pages, nested fields, bots and results larger than 20,000 characters.
+
+**Haiku 5.5, without and with code-mode** (5 runs of each task, plugin 0.6.0 and 0.6.1, 2026-10-10).
+In 0.6.0 the code-mode start line did not reach the model, so Haiku called most tools directly.
+
+| | Tools called directly (0.6.0) | Through code-mode (0.6.1) |
+| --- | --- | --- |
+| Share of MCP calls made directly | 89% | 2% |
+| Correct answers | 30/30 | 30/30 |
+| Cost per task | $0.007 | $0.004 |
+| Input tokens per task | 167,297 | 149,995 |
+| Output tokens per task | 1,814 | 1,194 |
+| Seconds per task | 13.5 | 11.6 |
+
+**Opus 5.5, output projection off and on:** duplicate MCP calls per task went from 1.37 to 0.10.
+Cost and correct answers did not change. Refer to [PR #11](https://github.com/gabe4coding/claude-code-mode/pull/11).
+
+Limits: these are bench tasks in headless runs. Interactive sessions were not measured.
+Most input tokens are the fixed context of Claude Code, so the input saving is smaller than the cost saving.
+To run the bench again, refer to [Development](docs/development.mdx#output-projection-bench).
 
 ## Example
 
