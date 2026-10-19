@@ -34,6 +34,7 @@ rules:
 | --- | --- |
 | A deny rule matches | Denies the call. The program gets an error. |
 | An allow rule matches | Does the call as a direct call. |
+| An ask rule matches | Does the call as a direct call, so Claude Code asks you. Your approval of the program does not cover it. |
 | No rule, `approval: program` | Does the call. Your approval of the program covers it. |
 | No rule, `approval: per-call` | Does the call as a direct call, so Claude Code asks you. |
 | Your organization sets a limit | Does the call as a direct call, so Claude Code asks you. |
