@@ -11,9 +11,10 @@
 # A consumer of the tier (auto-merge) must read the "risk tier" check of a pull_request_target run of
 # .github/workflows/risk.yml, never a label or a check from a `pull_request` run: a PR can forge those.
 #
-# The reviewer is the "Greptile Review" check run from the greptile-apps app on the current head SHA.
-# The classifier reads that check and no label or comment. A failed, missing, pending, stale or
-# wrong-app check raises the deterministic tier by one step, and stops at T2-hard. A pass does not lower it.
+# A Greptile pass needs three things on the current head SHA: a successful "Greptile Review"
+# check from greptile-apps, a greptile-apps[bot] summary at confidence 4/5 or 5/5 for that SHA,
+# and no P0 or P1 inline comment from that bot on that SHA. Anything else raises the tier one
+# step and stops at T2-hard. A pass does not lower it. Labels are not read.
 name: risk
 
 on:
@@ -51,8 +52,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: write # the risk:* label
-      checks: write # the "risk tier" check run
+      issues: read # the Greptile summary comment
+      pull-requests: write # read review comments; write the risk:* label
+      checks: write # read check runs; write the "risk tier" check run
     steps:
       # The base branch: this file, .github/risk.yml and the classifier as the base has them.
       # The stored credentials are safe here: no step runs a file of the PR.
@@ -69,17 +71,21 @@ jobs:
           git fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head"
           git cat-file -e "$HEAD_SHA^{commit}"
 
-      - name: Read Greptile Review checks
+      - name: Read the Greptile review
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Pages of check runs on this SHA only. The classifier keeps the Greptile Review
-          # check from greptile-apps and ignores every other name, app, label and comment.
-          if ! gh api --paginate --slurp "repos/$REPO/commits/$HEAD_SHA/check-runs" > "$RUNNER_TEMP/checks.json"; then
-            echo '[]' > "$RUNNER_TEMP/checks.json"
-          fi
+          # GET only. The classifier keeps greptile-apps on this SHA and ignores labels
+          # and every other author.
+          get() {
+            if ! gh api --paginate --slurp "$1" > "$2"; then echo '[]' > "$2"; fi
+          }
+          get "repos/$REPO/commits/$HEAD_SHA/check-runs" "$RUNNER_TEMP/checks.json"
+          get "repos/$REPO/issues/$PR/comments" "$RUNNER_TEMP/comments.json"
+          get "repos/$REPO/pulls/$PR/comments" "$RUNNER_TEMP/reviews.json"
 
       - name: Classify
         id: tier
@@ -97,6 +103,8 @@ jobs:
             --rules .github/risk.yml --base "$BASE_SHA" --head "$HEAD_SHA" \
             --title="$PR_TITLE" --branch="$PR_BRANCH" --body-file "$RUNNER_TEMP/body.txt" \
             --automerge="$AUTOMERGE" --checks-file "$RUNNER_TEMP/checks.json" \
+            --comments-file "$RUNNER_TEMP/comments.json" \
+            --review-comments-file "$RUNNER_TEMP/reviews.json" \
             --note="Rules and classifier from the base branch ($GITHUB_SHA)." \
             --json "$RUNNER_TEMP/risk.json" --markdown "$RUNNER_TEMP/risk.md"
           python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print("tier="+d["tier"]); print("label="+d["label"])' \

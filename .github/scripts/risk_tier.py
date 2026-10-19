@@ -13,10 +13,13 @@ The core (`classify`) is a pure function of the changed files, the PR text, the 
 head contents of a few manifests, and the check runs on the head SHA. `collect` reads the
 files from git. The workflow fetches the check runs. No LLM.
 
-The reviewer is only the "Greptile Review" check from the greptile-apps app on the current
-head SHA. A failed, missing, pending, stale or wrong-app check is not passed. That raises
-the deterministic tier one step (T0 to T1, T1 to T2-soft, T2-soft to T2-hard) and stops at
-T2-hard. HOLD stays HOLD. A passing review never lowers a tier. Labels and comments are not read.
+The reviewer is only Greptile, on the current head SHA. A pass needs a successful
+"Greptile Review" check from greptile-apps, a greptile-apps[bot] summary whose last
+reviewed commit is that SHA and whose Confidence Score is at least 4/5, and no P0 or
+P1 inline comment from that bot on that SHA. Anything missing, unparseable, from
+another author, or tied to another SHA is not a pass. A non-pass raises the
+deterministic tier one step (T0 to T1, T1 to T2-soft, T2-soft to T2-hard) and stops at
+T2-hard. HOLD stays HOLD. A pass never lowers a tier. Labels are not read.
 """
 
 from __future__ import annotations
@@ -81,6 +84,9 @@ class Change:
     # Check runs for head_sha. None: the caller did not ask, so the file rules stand alone.
     # A list, including an empty one, is consulted, and missing counts as not passed.
     checks: Optional[List[dict]] = None
+    # Issue comments and inline review comments. Read only when checks is not None.
+    comments: Optional[List[dict]] = None
+    reviews: Optional[List[dict]] = None
     head_sha: str = ""
 
 
@@ -292,6 +298,11 @@ def workflow_reason(f: FileChange) -> Reason:
 
 GREPTILE_CHECK = "Greptile Review"
 GREPTILE_APP = "greptile-apps"
+GREPTILE_BOT = "greptile-apps[bot]"
+_CONFIDENCE = re.compile(r"Confidence Score:\s*(\d+)\s*/\s*5\b")
+# The markdown link ends at ")". Equality with the head SHA, not the length, decides a match.
+_LAST_REVIEWED = re.compile(r"Last reviewed commit:\s*.*?/commit/([^)\s]+)", re.S)
+_P_BADGE = re.compile(r"""alt=["']P([01])["']""")
 
 
 def _greptile_on(check, head_sha: str) -> bool:
@@ -302,17 +313,12 @@ def _greptile_on(check, head_sha: str) -> bool:
     app = check.get("app")
     if not isinstance(app, dict) or app.get("slug") != GREPTILE_APP:
         return False
-    return check.get("head_sha") == head_sha
+    return str(check.get("head_sha") or "").lower() == head_sha.lower()
 
 
-def review_passed(checks, head_sha: str) -> bool:
-    """True only when the newest Greptile Review check from greptile-apps on this head SHA
-    completed with conclusion success.
-
-    A failed, missing, pending or stale check (a different SHA, or another app) is not passed.
-    Labels, comment bodies and check output text are not read. When several checks share the
-    newest timestamp, each of them has to be a success.
-    """
+def _check_passed(checks, head_sha: str) -> bool:
+    """True when the newest Greptile Review check from greptile-apps on this head SHA
+    completed with conclusion success. A failed, missing, pending, stale or wrong-app check does not."""
     matched = [c for c in (checks or []) if _greptile_on(c, head_sha)]
     if not matched:
         return False
@@ -323,6 +329,62 @@ def review_passed(checks, head_sha: str) -> bool:
     newest = max(stamp(c) for c in matched)
     group = [c for c in matched if stamp(c) == newest]
     return all(c.get("status") == "completed" and c.get("conclusion") == "success" for c in group)
+
+
+def _greptile_bot(comment) -> bool:
+    if not isinstance(comment, dict):
+        return False
+    user = comment.get("user")
+    if not isinstance(user, dict):
+        return False
+    return user.get("login") == GREPTILE_BOT and user.get("type") == "Bot"
+
+
+def _is_summary(comment) -> bool:
+    body = comment.get("body") or ""
+    return "<!-- greptile_summary -->" in body or "Confidence Score:" in body or "Last reviewed commit:" in body
+
+
+def _summary_passed(comments, head_sha: str) -> bool:
+    """The latest greptile-apps[bot] summary reviewed this SHA at confidence 4/5 or 5/5."""
+    if not head_sha:
+        return False
+    summaries = [c for c in (comments or []) if _greptile_bot(c) and _is_summary(c)]
+    if not summaries:
+        return False
+
+    def stamp(c):
+        return (str(c.get("updated_at") or c.get("created_at") or ""), str(c.get("id") or ""))
+
+    body = (max(summaries, key=stamp).get("body") or "")
+    score, reviewed = _CONFIDENCE.search(body), _LAST_REVIEWED.search(body)
+    if not score or not reviewed or reviewed.group(1).lower() != head_sha.lower():
+        return False
+    return int(score.group(1)) >= 4
+
+
+def _blocking_inline(reviews, head_sha: str) -> bool:
+    """A P0 or P1 badge from greptile-apps[bot] whose commit_id is this head SHA."""
+    if not head_sha:
+        return False
+    for comment in reviews or []:
+        if not _greptile_bot(comment):
+            continue
+        if str(comment.get("commit_id") or "").lower() != head_sha.lower():
+            continue
+        if _P_BADGE.search(comment.get("body") or ""):
+            return True
+    return False
+
+
+def review_passed(checks, head_sha: str, comments=None, reviews=None) -> bool:
+    """True only when the check, the summary and the inline comments all pass on this head SHA.
+
+    Labels are ignored. Comments from anyone but greptile-apps[bot] are ignored. A missing,
+    unparseable or stale summary is not a pass, and a P0 or P1 inline comment on this SHA is not.
+    """
+    return (_check_passed(checks, head_sha) and _summary_passed(comments, head_sha)
+            and not _blocking_inline(reviews, head_sha))
 
 
 def load_checks(path: str) -> list:
@@ -345,6 +407,29 @@ def load_checks(path: str) -> list:
         elif isinstance(page, list):
             runs.extend(page)
     return [c for c in runs if isinstance(c, dict)]
+
+
+def load_comments(path: str) -> list:
+    """Issue or review comments from a JSON file. A missing or broken file is an empty list.
+
+    Accepts a list of comments, or the array of pages that `gh api --paginate --slurp` prints
+    when each page is itself a list.
+    """
+    try:
+        data = json.loads(open(path, encoding="utf-8").read())
+    except (OSError, ValueError):
+        return []
+    if isinstance(data, dict):
+        data = data.get("comments") or []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if isinstance(item, list):
+            out.extend(c for c in item if isinstance(c, dict))
+        elif isinstance(item, dict):
+            out.append(item)
+    return out
 
 
 # ---------------------------------------------------------------------------- classify
@@ -458,7 +543,8 @@ def classify(change: Change, rules: dict) -> dict:
 
     # A pass adds nothing, so the reviewer cannot lower a tier. A miss raises the
     # deterministic tier one step and stops at T2-hard. HOLD is not a review outcome.
-    if change.checks is not None and not review_passed(change.checks, change.head_sha):
+    if change.checks is not None and not review_passed(
+            change.checks, change.head_sha, change.comments, change.reviews):
         current = max((r.tier for r in reasons), key=TIERS.index)
         raised = {"T0": "T1", "T1": "T2-soft", "T2-soft": "T2-hard"}.get(current)
         if raised:
@@ -584,16 +670,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--body-file")
     ap.add_argument("--automerge", default="")
     ap.add_argument("--checks-file", help="check runs on --head; a missing file counts as no passing review")
+    ap.add_argument("--comments-file", help="issue comments; the Greptile summary is read from greptile-apps[bot]")
+    ap.add_argument("--review-comments-file", help="inline review comments; P0 and P1 from greptile-apps[bot] on --head block")
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--note", default="", help="extra line for the markdown summary")
     a = ap.parse_args(argv)
     body = open(a.body_file, encoding="utf-8", errors="replace").read() if a.body_file else ""
     files, merge_base, problem = collect(a.base, a.head)
-    checks = load_checks(a.checks_file) if a.checks_file else None
+    if a.checks_file:
+        checks = load_checks(a.checks_file)
+        comments = load_comments(a.comments_file) if a.comments_file else []
+        reviews = load_comments(a.review_comments_file) if a.review_comments_file else []
+    else:
+        checks = comments = reviews = None
     change = Change(files=files, title=a.title, branch=a.branch, body=body,
                     read=git_reader(merge_base, a.head), automerge=a.automerge, problem=problem,
-                    checks=checks, head_sha=a.head)
+                    checks=checks, comments=comments, reviews=reviews, head_sha=a.head)
     result = classify(change, load_rules(a.rules))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:

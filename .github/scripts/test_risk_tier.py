@@ -27,10 +27,11 @@ def f(path, added=(), removed=(), status="M", old_path=None):
     return rt.FileChange(path=path, status=status, added=list(added), removed=list(removed), old_path=old_path)
 
 
-def tier(*files, title="", branch="", body="", read=None, automerge="", checks=None, head_sha=""):
+def tier(*files, title="", branch="", body="", read=None, automerge="", checks=None, head_sha="",
+         comments=None, reviews=None):
     change = rt.Change(files=list(files), title=title, branch=branch, body=body,
                        read=read or (lambda p, s: None), automerge=automerge,
-                       checks=checks, head_sha=head_sha)
+                       checks=checks, comments=comments, reviews=reviews, head_sha=head_sha)
     return rt.classify(change, RULES)
 
 
@@ -431,16 +432,38 @@ def _greptile(sha="abc", status="completed", conclusion="success", slug="greptil
             "app": {"slug": slug}, **extra}
 
 
+def _summary(sha="abc", score=5, updated_at="2026-10-19T00:00:00Z", login="greptile-apps[bot]", type_="Bot"):
+    body = ("<!-- greptile_summary -->\n"
+            f"<h2>Confidence Score: {score}/5</h2>\n"
+            f'Last reviewed commit: ["title"](https://github.com/example/repo/commit/{sha})\n')
+    return {"user": {"login": login, "type": type_}, "body": body,
+            "created_at": updated_at, "updated_at": updated_at}
+
+
+def _inline(sha="abc", badge="P1", login="greptile-apps[bot]", type_="Bot"):
+    body = (f'<a href="#"><img alt="{badge}" src="https://greptile-static-assets.s3.amazonaws.com/badges/'
+            f'{badge.lower()}.svg?v=9" align="top"></a> **finding**\n')
+    return {"user": {"login": login, "type": type_}, "commit_id": sha, "body": body}
+
+
+def _passed(**kw):
+    """A docs change plus a full Greptile pass, with overrides."""
+    sha = kw.pop("sha", "abc")
+    return dict(checks=kw.pop("checks", [_greptile(sha=sha)]),
+                comments=kw.pop("comments", [_summary(sha)]),
+                reviews=kw.pop("reviews", []), head_sha=sha)
+
+
 def test_a_passing_greptile_review_does_not_lower_the_tier():
-    checks = [_greptile()]
-    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T0"
-    assert tier(f("src/a.py", ["x"]), checks=checks, head_sha="abc")["tier"] == "T1"
-    soft = tier(f("runtime/runner.mjs", ["x"]), checks=checks, head_sha="abc")
+    ok = _passed()
+    assert tier(f("README.md", ["x"]), **ok)["tier"] == "T0"
+    assert tier(f("src/a.py", ["x"]), **ok)["tier"] == "T1"
+    soft = tier(f("runtime/runner.mjs", ["x"]), **ok)
     assert soft["tier"] == "T2-soft" and not any(x["rule"] == "reviewer-not-passed" for x in soft["reasons"])
-    hard = tier(f(".github/risk.yml", ["x"]), checks=checks, head_sha="abc")
+    hard = tier(f(".github/risk.yml", ["x"]), **ok)
     assert hard["tier"] == "T2-hard"
     assert not any(x["rule"] == "reviewer-not-passed" for x in hard["reasons"])
-    held = tier(f("src/a.py", ["x"]), title="Prune redundant comments", checks=checks, head_sha="abc")
+    held = tier(f("src/a.py", ["x"]), title="Prune redundant comments", **ok)
     assert held["tier"] == "HOLD"
 
 
@@ -484,8 +507,8 @@ def test_a_greptile_review_from_the_wrong_app_is_not_passed():
 
 def test_a_greptile_review_on_an_old_sha_is_not_passed():
     checks = [_greptile(sha="old")]
-    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T1"
-    assert rt.review_passed(checks, "old") is True
+    assert tier(f("README.md", ["x"]), checks=checks, comments=[_summary("old")], head_sha="abc")["tier"] == "T1"
+    assert rt.review_passed(checks, "old", [_summary("old")], []) is True
 
 
 def test_a_bad_checks_file_counts_as_not_passed(tmp_path):
@@ -494,9 +517,102 @@ def test_a_bad_checks_file_counts_as_not_passed(tmp_path):
     broken.write_text("{", encoding="utf-8")
     assert rt.load_checks(str(missing)) == []
     assert rt.load_checks(str(broken)) == []
+    assert rt.load_comments(str(broken)) == []
     page = tmp_path / "page.json"
     page.write_text(json.dumps([{"check_runs": [_greptile()]}]), encoding="utf-8")
-    assert rt.review_passed(rt.load_checks(str(page)), "abc") is True
+    assert rt.review_passed(rt.load_checks(str(page)), "abc", [_summary()], []) is True
+
+
+# ---------------------------------------------------------------- Greptile pass rule: summary and inline comments
+
+
+HEAD47 = "5075dbc6918a73c32ed780236d3812bd007318f7"
+FIX = HERE / "fixtures"
+
+
+def _pr47():
+    return (json.loads((FIX / "pr47-summary.json").read_text(encoding="utf-8")),
+            json.loads((FIX / "pr47-reviews.json").read_text(encoding="utf-8")))
+
+
+def test_the_real_pr47_greptile_review_is_not_a_pass():
+    # Check run on 5075dbc concluded success. The summary says 0/5 and the head has P1 comments.
+    summary, reviews = _pr47()
+    assert summary[0]["user"] == {"login": "greptile-apps[bot]", "type": "Bot"}
+    assert "Confidence Score: 0/5" in summary[0]["body"]
+    assert HEAD47 in summary[0]["body"]
+    assert any(c["commit_id"] == HEAD47 and 'alt="P1"' in c["body"] for c in reviews)
+    checks = [_greptile(sha=HEAD47)]
+    assert rt.review_passed(checks, HEAD47, summary, reviews) is False
+    got = tier(f("README.md", ["x"]), checks=checks, comments=summary, reviews=reviews, head_sha=HEAD47)
+    assert got["tier"] == "T1" and got["reasons"][0]["rule"] == "reviewer-not-passed"
+    # P1 badges inside the summary are not inline comments, so a 5/5 rewrite of this summary passes.
+    clean = json.loads(json.dumps(summary))
+    clean[0]["body"] = summary[0]["body"].replace("Confidence Score: 0/5", "Confidence Score: 5/5")
+    assert rt.review_passed(checks, HEAD47, clean, []) is True
+
+
+@pytest.mark.parametrize("score", [4, 5])
+def test_a_high_confidence_summary_with_no_blocking_comment_passes(score):
+    ok = _passed(comments=[_summary(score=score)])
+    assert rt.review_passed(ok["checks"], ok["head_sha"], ok["comments"], ok["reviews"]) is True
+    assert tier(f("README.md", ["x"]), **ok)["tier"] == "T0"
+
+
+def test_a_confidence_score_of_3_is_not_a_pass():
+    got = tier(f("README.md", ["x"]), **_passed(comments=[_summary(score=3)]))
+    assert got["tier"] == "T1"
+
+
+def test_a_summary_of_an_old_sha_is_not_a_pass():
+    got = tier(f("README.md", ["x"]), **_passed(comments=[_summary("old")]))
+    assert got["tier"] == "T1"
+
+
+def test_a_missing_summary_is_not_a_pass():
+    got = tier(f("README.md", ["x"]), **_passed(comments=[]))
+    assert got["tier"] == "T1"
+
+
+def test_an_unparseable_confidence_score_is_not_a_pass():
+    comment = _summary()
+    comment["body"] = comment["body"].replace("Confidence Score: 5/5", "Confidence Score: high/5")
+    got = tier(f("README.md", ["x"]), **_passed(comments=[comment]))
+    assert got["tier"] == "T1"
+
+
+def test_a_p0_inline_comment_is_not_a_pass():
+    got = tier(f("README.md", ["x"]), **_passed(reviews=[_inline(badge="P0")]))
+    assert got["tier"] == "T1"
+
+
+def test_a_p1_inline_comment_on_an_old_commit_does_not_block():
+    ok = _passed(reviews=[_inline(sha="old")])
+    assert rt.review_passed(ok["checks"], "abc", ok["comments"], ok["reviews"]) is True
+    assert tier(f("README.md", ["x"]), **ok)["tier"] == "T0"
+    # a P2 badge on this head is not P0 or P1
+    assert rt.review_passed(ok["checks"], "abc", ok["comments"], [_inline(badge="P2")]) is True
+
+
+def test_the_right_greptile_text_from_another_author_is_not_a_pass():
+    foreign = _summary(login="octocat", type_="User")
+    assert tier(f("README.md", ["x"]), **_passed(comments=[foreign]))["tier"] == "T1"
+    # a P1 from someone else does not block a real Greptile pass
+    ok = _passed(reviews=[_inline(login="octocat", type_="User")])
+    assert tier(f("README.md", ["x"]), **ok)["tier"] == "T0"
+
+
+def test_a_failed_check_with_a_good_comment_is_not_a_pass():
+    got = tier(f("README.md", ["x"]), **_passed(checks=[_greptile(conclusion="failure")]))
+    assert got["tier"] == "T1"
+
+
+def test_the_latest_summary_is_the_one_that_counts():
+    older = _summary(score=0, updated_at="2026-10-19T00:00:00Z")
+    newer = _summary(score=4, updated_at="2026-10-19T01:00:00Z")
+    assert rt.review_passed([_greptile()], "abc", [older, newer], []) is True
+    fresh_low = _summary(score=1, updated_at="2026-10-19T02:00:00Z")
+    assert rt.review_passed([_greptile()], "abc", [newer, fresh_low], []) is False
 
 
 def test_pull_request_target_workflows_have_no_secrets():
