@@ -1,0 +1,68 @@
+[
+  {
+    "id": 4312996048,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "90f1fb98089860c577e53dfe3588868b852a74a3",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T10:55:57Z",
+    "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> <a href=\"#\"><img alt=\"security\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Security.svg?v=2\" align=\"top\"></a> **Parent paths bypass approval**\n\nIf `hints/a/b` exists, `D=a/b; printf x > ~/.claude/code-mode/hints/$D/../../x.md` passes the new check but writes `hints/x.md`. `pathsIn` removes both `$D` and `hints` before Bash expands `$D` into two directories. The old check denied this command because it contained `code-mode/hints`.\n\nPreserve the original protected prefix when folding paths, and add a regression test. This also violates the repository instruction to never weaken the hint-file guard.\n\n**How this was verified:** The path check removes both `$D` and `hints`, while Bash expands `$D` into two directories before resolving `..`; the Bash hook forwards commands when the check returns false.\n\n**Context Used:** AGENTS.md ([source](https://github.com/gabe4coding/claude-code-mode/blob/main/AGENTS.md))\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  },
+  {
+    "id": 4312996059,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "90f1fb98089860c577e53dfe3588868b852a74a3",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T10:55:57Z",
+    "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> <a href=\"#\"><img alt=\"security\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Security.svg?v=2\" align=\"top\"></a> **Character classes bypass approval**\n\n`globRegex` does not read Bash character classes correctly. For example, `cp f.md ~/.claude/code-mode/[[:alpha:]]ints/a.md` can write into `hints`, but the check stops at the first `]` and produces a JavaScript pattern that does not match `hints`. The new glob protection therefore misses a standard Bash spelling.\n\nSupport these classes or deny patterns that cannot be translated safely, and add this case to the spelling tests.\n\n**How this was verified:** Bash's `[[:alpha:]]ints` matches `hints`, but the bracket tokenizer produces a different pattern, so the Bash hook forwards the protected write.\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  },
+  {
+    "id": 4312996067,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "90f1fb98089860c577e53dfe3588868b852a74a3",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T10:55:58Z",
+    "body": "<a href=\"#\"><img alt=\"P2\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p2.svg?v=9\" align=\"top\"></a> **Shell patterns crash the check**\n\n`globRegex` can throw on command text instead of returning a result. For example, `ls ~/.claude/code-mode/[z-a]` builds an invalid JavaScript character range and throws `SyntaxError`. Previously this command passed through the guard; now it fails inside the plugin instead of reaching the shell.\n\nCatch unsupported patterns and handle them conservatively so a shell spelling cannot crash the check.\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  },
+  {
+    "id": 4313241737,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "5075dbc6918a73c32ed780236d3812bd007318f7",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T11:25:08Z",
+    "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> <a href=\"#\"><img alt=\"security\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Security.svg?v=2\" align=\"top\"></a> **Copy commands skip approval**\n\n`verbBefore` treats an argument named `ls` or `du` as the command. If local source folders `hints` and `ls` exist, `cp -r hints ls ~/.claude/code-mode/` returns false from `namesGuardedDir` and copies files into the protected hint folder without approval. The previous check denied this command.\n\nLimit the exception to the actual command, not the nearest bare argument. This violates the repository requirement that Bash commands naming protected folders be denied.\n\n**How this was verified:** The backward scan returns the source argument `ls`, the read-only exception skips denial, and the Bash hook forwards the copy.\n\n**Context Used:** AGENTS.md ([source](https://github.com/gabe4coding/claude-code-mode/blob/main/AGENTS.md))\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  },
+  {
+    "id": 4313241748,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "5075dbc6918a73c32ed780236d3812bd007318f7",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T11:25:08Z",
+    "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> <a href=\"#\"><img alt=\"security\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Security.svg?v=2\" align=\"top\"></a> **Brace spellings skip approval**\n\nSplitting on braces breaks protected names that contain a brace expansion. For example, `printf x | tee ~/.claude/code-mode/hi{nts,other}/x.md` writes `hints/x.md`, but the check sees separate words ending in `hi`, `nts`, and `other`. It returns false and forwards the write. The previous check kept `hi{nts,other}` together and matched `hints`.\n\nPreserve brace alternatives with their surrounding path text. This violates the repository requirement that Bash commands naming protected folders be denied.\n\n**How this was verified:** Brace splitting removes the protected name before the path check, while Bash expands the same argument to include `hints/x.md`; the hook forwards the missed command.\n\n**Context Used:** AGENTS.md ([source](https://github.com/gabe4coding/claude-code-mode/blob/main/AGENTS.md))\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  },
+  {
+    "id": 4313241756,
+    "user": {
+      "login": "greptile-apps[bot]",
+      "type": "Bot"
+    },
+    "commit_id": "5075dbc6918a73c32ed780236d3812bd007318f7",
+    "path": "hooks/paths.ts",
+    "created_at": "2026-10-19T11:25:08Z",
+    "body": "<a href=\"#\"><img alt=\"P1\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/p1.svg?v=9\" align=\"top\"></a> <a href=\"#\"><img alt=\"security\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/Security.svg?v=2\" align=\"top\"></a> **Relative deletions skip approval**\n\nThe new check skips a relative path whenever the previous word starts with `-`. If `~/.claude/code-mode/files` exists, `cd ~/.claude/code-mode/files && rm -f ../hints/x.md` therefore passes the guard and deletes a protected hint without approval. The previous check denied it.\n\nDo not skip paths merely because they follow an option. This violates the repository requirement that Bash commands naming protected folders be denied.\n\n**How this was verified:** The `cd` target is recognized, but `-f` makes the relative hint path get skipped; no remaining path triggers denial, so the Bash hook forwards the deletion.\n\n**Context Used:** AGENTS.md ([source](https://github.com/gabe4coding/claude-code-mode/blob/main/AGENTS.md))\n\n<a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursorDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"><img alt=\"Fix in Cursor\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInCursor.svg?v=7\"></picture></a> <a href=\"[trimmed-link]\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaudeDark.svg?v=7\"><source media=\"(prefers-color-scheme: light)\" srcset=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"><img alt=\"Fix in Claude Code\" src=\"https://greptile-static-assets.s3.amazonaws.com/badges/FixInClaude.svg?v=7\"></picture></a>\n"
+  }
+]
