@@ -1518,14 +1518,15 @@ export const register: Register = (on, options) => {
           // Program approval: the person or the auto-mode classifier approved
           // run_code with this program in view, so a call no rule decides
           // (verdict `ask`) runs as part of it. A deny rule still refuses, and
-          // an allow rule or an organization ceiling takes the normal path.
+          // an allow rule, an ask rule or an organization ceiling takes the
+          // normal path: an ask rule says "ask me each time", which the
+          // approval of the program does not answer.
           const check = await $.tool.check({ tool, input: args })
           const target = splitToolName(tool)
-          const isOpenAsk = check.decision === 'ask' && check.ceiling === undefined
-          const needsAllowRule = isOpenAsk && check.rule === undefined
+          const needsAllowRule = check.decision === 'ask' && check.ceiling === undefined && check.rule === undefined
           if (check.decision === 'deny') {
             reply = { ok: false, error: `denied: ${check.reason ?? 'a permission rule refuses this tool'}` }
-          } else if (programApproval && isOpenAsk && target !== undefined) {
+          } else if (programApproval && needsAllowRule && target !== undefined) {
             // A refused $.mcp.call throws (a server error comes back as isError).
             // So do a lost connection, which the note's condition covers, and a
             // name from a variable that no server offers, which needs no allow rule.
