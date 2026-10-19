@@ -27,12 +27,11 @@ export const guardedDirs = (home: string, project: string): string[] => [
   ...(project ? [hintsFolder(project)] : []),
 ]
 
-// A part of a path that the shell expands: a glob, a brace, a variable or a command.
-const EXPANDS = /[*?[{$`]/
-
-// Inspection of `.claude/code-mode` itself. A copy, a link or a `cd` into that
-// folder is still denied: those reach the guarded folders inside it.
-const READS_APP = new Set(['ls', 'du'])
+// Read-only programs that may name the folder `code-mode` itself. They may not
+// name `hints` or `functions`, and an argument is never the program.
+const READ_ONLY = new Set(['ls', 'du', 'cat', 'head', 'tail', 'wc', 'stat', 'file', 'rg', 'grep'])
+const WRAPPERS = new Set(['sudo', 'env', 'command'])
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -137,119 +136,275 @@ const globSource = (part: string): string | null => {
   return out
 }
 
-// A part of a path as the shell reads it: true when it can expand to `name`.
-// A variable, a command, or a pattern that cannot be translated can be anything.
-const canBe = (part: string | undefined, name: string): boolean => {
-  if (part === undefined) return false
-  if (!EXPANDS.test(part)) return part.toLowerCase() === name
-  if (/[$`]/.test(part)) return true
-  try {
-    const source = globSource(part)
-    if (source === null) return true
-    return new RegExp(`^${source}$`, 'i').test(name)
-  } catch {
-    return true
-  }
-}
-const canBeGuarded = (part: string | undefined): boolean => canBe(part, HINTS) || canBe(part, FUNCTIONS)
-
 const low = (part: string): string => part.toLowerCase()
 
-// Index of `hints` or `functions` in `.claude/code-mode/...`, or -1.
-const guardedEnd = (parts: string[]): number => {
-  for (let i = 0; i < parts.length - 2; i++) {
-    if (low(parts[i] ?? '') !== '.claude' || low(parts[i + 1] ?? '') !== APP) continue
-    const name = low(parts[i + 2] ?? '')
-    if (name === HINTS || name === FUNCTIONS) return i + 2
+// True when a glob segment can be `name`. Null when the pattern cannot be read.
+const globMatch = (segment: string, name: string): boolean | null => {
+  try {
+    const source = globSource(segment)
+    if (source === null) return null
+    return new RegExp(`^${source}$`, 'i').test(name)
+  } catch {
+    return null
   }
-  return -1
 }
 
-// Quotes and backslashes are already gone. `//` and `/./` fold. `..` folds a
-// real directory, but never the protected prefix: a `$var` or a glob may be
-// several directories, so `..` after it must not climb past the guarded folder.
-const fold = (word: string): string[] => {
-  const parts: string[] = []
-  let uncertain = false
-  for (const part of word.split('/')) {
-    if (part === '.' || (part === '' && parts.length > 0)) continue
-    if (part !== '..') {
-      parts.push(part)
-      uncertain = false
-      continue
+type Risk = { hints: boolean; app: boolean; unsafe: boolean; claude: boolean }
+
+const riskOfSegment = (segment: string): Risk => {
+  const none = { hints: false, app: false, unsafe: false, claude: false }
+  if (segment === '' || segment === '.') return none
+  if (segment === '..' || /[$`{]/.test(segment)) return { ...none, unsafe: true }
+  if (!/[*?[]/.test(segment)) {
+    const name = low(segment)
+    return {
+      hints: name === HINTS || name === FUNCTIONS,
+      app: name === APP,
+      unsafe: false,
+      claude: name === '.claude',
     }
-    const last = parts[parts.length - 1]
-    if (last === undefined || last === '' || last === '..') {
-      parts.push('..')
-      continue
-    }
-    const end = guardedEnd(parts)
-    if (end >= 0 && parts.length - 1 <= end) continue
-    if (EXPANDS.test(last)) {
-      if (end >= 0) continue
-      uncertain = true
-      parts.pop()
-      continue
-    }
-    const appUnderClaude = low(last) === APP && low(parts[parts.length - 2] ?? '') === '.claude'
-    if (uncertain && appUnderClaude) continue
-    parts.pop()
-    uncertain = false
   }
+  const hints = globMatch(segment, HINTS)
+  const functions = globMatch(segment, FUNCTIONS)
+  const app = globMatch(segment, APP)
+  const claude = globMatch(segment, '.claude')
+  if (hints === null || functions === null || app === null || claude === null)
+    return { hints: false, app: false, unsafe: true, claude: false }
+  return { hints: hints || functions, app, unsafe: false, claude }
+}
+
+const segmentsOf = (word: string): string[] => {
+  const parts: string[] = []
+  for (const part of word.split(/[/=]/)) if (part !== '' && part !== '.') parts.push(part)
   return parts
 }
 
-// `{`, `}` and `,` split brace expansion (`{x,~/.claude/code-mode/hints}`).
-const commandWords = (command: string): string[] =>
-  command
-    .replace(/['"\\]/g, '')
-    .split(/[\s;&|<>()={},]+/)
-    .filter(Boolean)
-
-const verbBefore = (words: string[], index: number): string => {
-  for (let i = index - 1; i >= 0; i--) {
-    const word = words[i] ?? ''
-    if (word.startsWith('-') || word.includes('/') || word.startsWith('~')) continue
-    return word
+// `{a,b}` expands with its prefix and suffix. A brace that does not close is unsafe.
+const expandBraces = (word: string): string[] | null => {
+  let depth = 0
+  let start = -1
+  for (let i = 0; i < word.length; i++) {
+    const ch = word.charAt(i)
+    if (ch === '{') {
+      if (depth === 0) start = i
+      depth++
+      continue
+    }
+    if (ch !== '}') continue
+    if (depth === 0) return null
+    depth--
+    if (depth !== 0 || start < 0) continue
+    const body = word.slice(start + 1, i)
+    const braceAt = start
+    start = -1
+    if (!body.includes(',')) continue
+    const alts: string[] = []
+    let alt = ''
+    let nest = 0
+    for (const c of body) {
+      if (c === '{') nest++
+      if (c === '}' && nest > 0) nest--
+      if (c === ',' && nest === 0) {
+        alts.push(alt)
+        alt = ''
+      } else alt += c
+    }
+    alts.push(alt)
+    if (alts.length > 32) return null
+    const head = word.slice(0, braceAt)
+    const tail = word.slice(i + 1)
+    const out: string[] = []
+    for (const piece of alts) {
+      const next = expandBraces(head + piece + tail)
+      if (next === null) return null
+      out.push(...next)
+      if (out.length > 32) return null
+    }
+    return out
   }
-  return ''
+  if (depth !== 0) return null
+  return [word]
 }
 
-const entersApp = (parts: string[]): boolean =>
-  parts.some((part, i) => low(part) === '.claude' && canBe(parts[i + 1], APP))
+type Parsed = { commands: string[][]; redirect: boolean }
 
-// `hints` in another word counts only as a path after `cd` into the folder
-// (`cd ~/.claude/code-mode && cp a hints/`). A grep word does not.
-const reachesAfterCd = (words: string[], paths: string[][]): boolean => {
-  for (let i = 0; i < words.length - 1; i++) {
-    if (words[i] !== 'cd' || !entersApp(paths[i + 1] ?? [])) continue
-    for (let j = i + 2; j < words.length; j++) {
-      if ((words[j - 1] ?? '').startsWith('-') || !(words[j] ?? '').includes('/')) continue
-      if ((paths[j] ?? []).some(part => low(part) === HINTS || low(part) === FUNCTIONS)) return true
+// Quotes and backslashes come off. `&&`, `|`, `;`, and newlines separate
+// programs. `>` marks an output redirection. A quote that never ends is unsafe.
+const parseCommand = (command: string): Parsed | null => {
+  const commands: string[][] = []
+  let words: string[] = []
+  let buf = ''
+  let quote: "'" | '"' | null = null
+  let redirect = false
+  const flushWord = () => {
+    if (buf.length > 0) {
+      words.push(buf)
+      buf = ''
     }
   }
-  return false
+  const flushCommand = () => {
+    flushWord()
+    if (words.length > 0) commands.push(words)
+    words = []
+  }
+  for (let i = 0; i < command.length; i++) {
+    const ch = command.charAt(i)
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      else buf += ch
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '\\') {
+        const next = command.charAt(i + 1)
+        if (next === '') return null
+        buf += '"\\`$\n'.includes(next) ? next : ch
+        if ('"\\`$\n'.includes(next)) i++
+        continue
+      }
+      if (ch === '"') quote = null
+      else buf += ch
+      continue
+    }
+    if (ch === '\\') {
+      const next = command.charAt(i + 1)
+      if (next === '') return null
+      buf += next
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '&' && command.charAt(i + 1) === '>') {
+      redirect = true
+      flushWord()
+      i++
+      continue
+    }
+    if (ch === '>') {
+      redirect = true
+      if (/^\d+$/.test(buf)) buf = ''
+      flushWord()
+      if (command.charAt(i + 1) === '>') i++
+      else if (command.charAt(i + 1) === '&') i++
+      continue
+    }
+    if ((ch === '&' && command.charAt(i + 1) === '&') || (ch === '|' && command.charAt(i + 1) === '|')) {
+      flushCommand()
+      i++
+      continue
+    }
+    if (ch === '|' || ch === '&' || ch === ';' || ch === '\n') {
+      flushCommand()
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') {
+      flushWord()
+      continue
+    }
+    buf += ch
+  }
+  if (quote !== null) return null
+  flushCommand()
+  const expanded: string[][] = []
+  for (const argv of commands) {
+    const flat: string[] = []
+    for (const word of argv) {
+      const alts = expandBraces(word)
+      if (alts === null) return null
+      flat.push(...alts)
+    }
+    if (flat.length > 0) expanded.push(flat)
+  }
+  return { commands: expanded, redirect }
 }
+
+// The program name: after assignments and after sudo, env, or command.
+const programAt = (argv: string[]): { name: string; index: number } | null => {
+  let i = 0
+  while (i < argv.length && ASSIGNMENT.test(argv[i] ?? '')) i++
+  while (i < argv.length && WRAPPERS.has(low(argv[i] ?? ''))) {
+    i++
+    while (i < argv.length && (argv[i] ?? '').startsWith('-')) {
+      const flag = argv[i] ?? ''
+      i++
+      if (flag === '-u' || flag === '--user' || flag === '-g' || flag === '--group') {
+        if (i >= argv.length) return null
+        i++
+      }
+    }
+    while (i < argv.length && ASSIGNMENT.test(argv[i] ?? '')) i++
+  }
+  const name = argv[i]
+  if (name === undefined || name === '') return null
+  return { name: low(name), index: i }
+}
+
+const operandPaths = (argv: string[], from: number): string[] => {
+  const paths: string[] = []
+  let flags = true
+  for (let i = from + 1; i < argv.length; i++) {
+    const word = argv[i] ?? ''
+    if (flags && word === '--') {
+      flags = false
+      continue
+    }
+    if (flags && word.startsWith('-')) continue
+    flags = false
+    paths.push(word)
+  }
+  return paths
+}
+
+const absolute = (word: string): boolean => word.startsWith('/') || word.startsWith('~')
+
+const writesOut = (argv: string[]): boolean =>
+  argv.some(word => word === '-o' || word === '--output' || word.startsWith('--output=') || low(word) === 'tee')
 
 /**
- * True when a shell command names a guarded folder. Best effort, as a shell
- * can spell a path many ways. It reads quotes, backslashes, braces, `//`,
- * `/./` and `x/../` as the shell does, and a glob, bracket, variable or
- * command as any name it can expand to. A `cd` into `.claude/code-mode` plus
- * a later path of `hints` or `functions` is denied. So is a copy or a link
- * of that folder. `ls` and `du` of the folder itself are not.
+ * True when a shell command could name a guarded folder. Fail closed.
+ * Quotes and backslashes come off, and braces expand. A word that is
+ * `hints` or `functions`, a `..`, a pattern that cannot be read, or a
+ * relative path after `cd` into `.claude` is denied. A word that is
+ * `code-mode` is denied unless every program is read-only, with no `>`,
+ * `>>`, `tee`, or `-o`, and no program outside that list in a pipeline.
  */
 export const namesGuardedDir = (command: string): boolean => {
-  const words = commandWords(command)
-  const paths = words.map(fold)
-  if (reachesAfterCd(words, paths)) return true
-  for (const [index, p] of paths.entries()) {
-    for (const [i, part] of p.entries()) {
-      const isUnderClaude = low(p[i - 1] ?? '') === '.claude'
-      if (!(isUnderClaude ? canBe(part, APP) : low(part) === APP)) continue
-      if (canBeGuarded(p[i + 1])) return true
-      if (isUnderClaude && p[i + 1] === undefined && !READS_APP.has(verbBefore(words, index))) return true
+  const parsed = parseCommand(command)
+  if (parsed === null) return true
+  let hints = false
+  let app = false
+  let unsafe = false
+  let underClaude = false
+  let relative = false
+  let pure = parsed.commands.length > 0 && !parsed.redirect
+  for (const argv of parsed.commands) {
+    const program = programAt(argv)
+    if (program === null || !READ_ONLY.has(program.name) || writesOut(argv)) pure = false
+    for (const word of argv) {
+      for (const segment of segmentsOf(word)) {
+        const risk = riskOfSegment(segment)
+        hints ||= risk.hints
+        app ||= risk.app
+        unsafe ||= risk.unsafe
+      }
+    }
+    if (program !== null && underClaude && program.name !== 'cd') {
+      const paths = operandPaths(argv, program.index)
+      if (paths.length === 0 || paths.some(word => !absolute(word))) relative = true
+    }
+    if (program?.name === 'cd') {
+      const dest = operandPaths(argv, program.index)[0]
+      if (underClaude && dest !== undefined && !absolute(dest)) relative = true
+      if (
+        dest !== undefined &&
+        segmentsOf(dest).some(segment => riskOfSegment(segment).claude || riskOfSegment(segment).unsafe)
+      )
+        underClaude = true
     }
   }
-  return false
+  if (unsafe || hints || relative) return true
+  return app && !pure
 }

@@ -1270,26 +1270,45 @@ describe('the hint-file guard', () => {
     'cp f.md {~/.claude/code-mode/hints,x}/a.md',
     'cp f.md ~/.claude/code-mode/hints,/a.md',
     'cp f.md ~/.claude/{code-mode/hints,x}/a.md',
-  ]
-  for (const command of spellings)
-    test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
-
-  // Commands that name other files in or near the folder.
-  const others = [
-    'ls ~/.claude',
-    'cat ~/.claude/*.json',
+    // The program is the command word, not an argument named like a reader.
+    'cp -r hints ls ~/.claude/code-mode/',
+    'mv du ~/.claude/code-mode/hints/a.md /tmp/a.md',
+    'env ls=1 cp f.md ~/.claude/code-mode/hints/a.md',
+    'sudo cp f.md ~/.claude/code-mode/functions/a.md',
+    // A brace expands inside one word (`hi{nts,other}` is `hints`).
+    'tee ~/.claude/code-mode/hi{nts,other}/x.md',
+    'cp f.md ~/.claude/code-mode/hi{nts,other}/x.md',
+    'cp f.md ~/.claude/code-mode/func{tions,x}/a.md',
+    'cp f.md ~/.claude/code-mode/{fu,func}tions/a.md',
+    // A flag does not hide the path after it.
+    'cd ~/.claude/code-mode/files && rm -f ../hints/x.md',
+    'cd ~/.claude/code-mode && rm -rf -- hints/a.md',
+    'cd ~/.claude/plugins && cp a ../code-mode/hints/a.md',
+    'ls ~/.claude/code-mode > /tmp/out',
+    // These named a guarded word, used `..`, or could not be read. They now deny.
     'mv ~/.claude/code-mode/files/abc/issues.csv ./issues.csv',
-    'cat ~/.claude/code-mode/files/abc/functions.csv',
-    'ls ~/.claude/code-mode/metrics',
     'rg -n hints hooks/',
     'cd /src/code-mode/.claude/worktrees/x && rg -n hints hooks',
     'ls ~/.claude/*',
-    'du -sh ~/.claude/code-mode',
     'rg functions ~/.claude/code-mode/files',
     'ls ~/.claude/code-mode/files && git log --grep hints',
     'cp f.md ~/.claude/code-mode/[![:alpha:]]ints/a.md',
     'cp f.md ~/.claude/code-mode/files/../../readme',
     'ls /tmp/[z-a]',
+  ]
+  for (const command of spellings)
+    test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
+
+  // Benign commands. A read-only program may name `code-mode`, not `hints` or `functions`.
+  const others = [
+    'ls ~/.claude',
+    'cat ~/.claude/*.json',
+    'cat ~/.claude/code-mode/files/abc/functions.csv',
+    'ls ~/.claude/code-mode/metrics',
+    'du -sh ~/.claude/code-mode',
+    'command ls ~/.claude/code-mode/metrics',
+    'echo hello',
+    'git status',
   ]
   for (const command of others)
     test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
