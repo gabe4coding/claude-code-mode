@@ -1,0 +1,47 @@
+name: Bug report
+description: Something does not work as documented
+title: '[Bug]: '
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For security issues, use SECURITY.md instead of a public issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. Redact secrets and private MCP payloads.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version / commit
+      placeholder: 'e.g. v0.12.7 or a short SHA'
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: 'macOS or Linux, Node version, Claude Code version if known'
+      placeholder: 'macOS 15 / Node 22.13 / Claude Code 2.1.x'
+    validations:
+      required: false
+  - type: checkboxes
+    id: docs
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: This is not a security report (those go to SECURITY.md)
+          required: true
