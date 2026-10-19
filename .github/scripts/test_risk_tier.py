@@ -435,35 +435,56 @@ def test_a_passing_greptile_review_does_not_lower_the_tier():
     checks = [_greptile()]
     assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T0"
     assert tier(f("src/a.py", ["x"]), checks=checks, head_sha="abc")["tier"] == "T1"
+    soft = tier(f("runtime/runner.mjs", ["x"]), checks=checks, head_sha="abc")
+    assert soft["tier"] == "T2-soft" and not any(x["rule"] == "reviewer-not-passed" for x in soft["reasons"])
     hard = tier(f(".github/risk.yml", ["x"]), checks=checks, head_sha="abc")
     assert hard["tier"] == "T2-hard"
     assert not any(x["rule"] == "reviewer-not-passed" for x in hard["reasons"])
+    held = tier(f("src/a.py", ["x"]), title="Prune redundant comments", checks=checks, head_sha="abc")
+    assert held["tier"] == "HOLD"
 
 
-def test_a_failing_greptile_review_raises_and_does_not_lower():
+def test_a_failing_greptile_review_raises_one_step():
     checks = [_greptile(conclusion="failure")]
-    raised = tier(f("README.md", ["x"]), checks=checks, head_sha="abc")
-    assert raised["tier"] == "T2-soft" and raised["reasons"][0]["rule"] == "reviewer-not-passed"
+    docs = tier(f("README.md", ["x"]), checks=checks, head_sha="abc")
+    assert docs["tier"] == "T1" and docs["reasons"][0]["rule"] == "reviewer-not-passed"
+    assert tier(f("src/a.py", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-soft"
+    assert tier(f("runtime/runner.mjs", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-hard"
+    # capped at T2-hard: a failure does not turn it into HOLD
     assert tier(f(".github/risk.yml", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-hard"
-    pending = [_greptile(status="in_progress", conclusion=None)]
-    assert tier(f("README.md", ["x"]), checks=pending, head_sha="abc")["tier"] == "T2-soft"
+    held = tier(f("src/a.py", ["x"]), title="Prune redundant comments", checks=checks, head_sha="abc")
+    assert held["tier"] == "HOLD" and not any(x["rule"] == "reviewer-not-passed" for x in held["reasons"])
+
+
+@pytest.mark.parametrize("checks", [
+    [],
+    [_greptile(conclusion="failure")],
+    [_greptile(status="in_progress", conclusion=None)],
+    [_greptile(sha="old")],
+    [_greptile(slug="github-actions")],
+    [_greptile(conclusion="stale")],
+])
+def test_a_greptile_check_that_did_not_pass_raises_t0_to_t1(checks):
+    r = tier(f("README.md", ["x"]), checks=checks, head_sha="abc")
+    assert r["tier"] == "T1" and r["reasons"][0]["rule"] == "reviewer-not-passed"
 
 
 def test_a_missing_greptile_review_is_not_passed():
-    assert tier(f("README.md", ["x"]), checks=[], head_sha="abc")["tier"] == "T2-soft"
+    assert tier(f("README.md", ["x"]), checks=[], head_sha="abc")["tier"] == "T1"
     # a label or a comment that says the review passed is not the check
     decoy = [_greptile(name="risk:t0", output={"summary": "Greptile Review passed", "text": "LGTM"})]
-    assert tier(f("README.md", ["x"]), checks=decoy, head_sha="abc")["tier"] == "T2-soft"
+    assert tier(f("README.md", ["x"]), checks=decoy, head_sha="abc")["tier"] == "T1"
 
 
 def test_a_greptile_review_from_the_wrong_app_is_not_passed():
     checks = [_greptile(slug="github-actions")]
-    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-soft"
+    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T1"
+    assert tier(f("src/a.py", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-soft"
 
 
 def test_a_greptile_review_on_an_old_sha_is_not_passed():
     checks = [_greptile(sha="old")]
-    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T2-soft"
+    assert tier(f("README.md", ["x"]), checks=checks, head_sha="abc")["tier"] == "T1"
     assert rt.review_passed(checks, "old") is True
 
 

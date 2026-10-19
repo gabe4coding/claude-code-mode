@@ -14,8 +14,9 @@ head contents of a few manifests, and the check runs on the head SHA. `collect` 
 files from git. The workflow fetches the check runs. No LLM.
 
 The reviewer is only the "Greptile Review" check from the greptile-apps app on the current
-head SHA. A failed, missing, pending or stale check is not passed. That raises T0 or T1 to
-T2-soft. A passing review never lowers a tier. Labels and comments are not read.
+head SHA. A failed, missing, pending, stale or wrong-app check is not passed. That raises
+the deterministic tier one step (T0 to T1, T1 to T2-soft, T2-soft to T2-hard) and stops at
+T2-hard. HOLD stays HOLD. A passing review never lowers a tier. Labels and comments are not read.
 """
 
 from __future__ import annotations
@@ -452,14 +453,17 @@ def classify(change: Change, rules: dict) -> dict:
     else:
         reasons.append(Reason("T1", "source-change", f"{len(code)} code files, {code_lines} changed lines"))
 
-    # A pass adds nothing, so the reviewer cannot lower a tier. A miss adds T2-soft, which
-    # raises T0 and T1 and leaves T2-hard and HOLD where they are.
-    if change.checks is not None and not review_passed(change.checks, change.head_sha):
-        reasons.append(Reason("T2-soft", "reviewer-not-passed",
-                              "no passing Greptile Review check from greptile-apps on this head"))
-
     if str(change.automerge).strip().lower() == "off":
         reasons.append(Reason("T2-hard", "kill-switch", "repo variable AUTOMERGE=off: every PR goes to Gabe"))
+
+    # A pass adds nothing, so the reviewer cannot lower a tier. A miss raises the
+    # deterministic tier one step and stops at T2-hard. HOLD is not a review outcome.
+    if change.checks is not None and not review_passed(change.checks, change.head_sha):
+        current = max((r.tier for r in reasons), key=TIERS.index)
+        raised = {"T0": "T1", "T1": "T2-soft", "T2-soft": "T2-hard"}.get(current)
+        if raised:
+            reasons.append(Reason(raised, "reviewer-not-passed",
+                                  "Greptile Review has not passed on this head"))
 
     tier = max((r.tier for r in reasons), key=TIERS.index)
     return {

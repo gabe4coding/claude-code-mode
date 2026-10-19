@@ -12,8 +12,8 @@
 # .github/workflows/risk.yml, never a label or a check from a `pull_request` run: a PR can forge those.
 #
 # The reviewer is the "Greptile Review" check run from the greptile-apps app on the current head SHA.
-# The classifier reads that check and no label or comment. A failed, missing, pending or stale check
-# is not passed, and that can only raise the tier (T0 or T1 becomes T2-soft).
+# The classifier reads that check and no label or comment. A failed, missing, pending, stale or
+# wrong-app check raises the deterministic tier by one step, and stops at T2-hard. A pass does not lower it.
 name: risk
 
 on:
