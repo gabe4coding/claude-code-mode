@@ -33,6 +33,11 @@ hard:
   - LICENSE.*
   - .gitleaks.toml
   - '.githooks/**'
+  # Reviewer config. A PR must not retune the hosted reviewer to look clean.
+  - greptile.json
+  - .greptile/**
+  - .coderabbit.yaml
+  - .coderabbit.yml
 # T2-soft: Gabe, unless the LLM layer (not active yet) shows the change only tightens.
 # The sandbox: the runner and the integration test that proves its layers (never weaken a sandbox layer).
 soft: ['runtime/runner.mjs', 'tests/runner.integration.mjs']

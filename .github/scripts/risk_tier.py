@@ -7,10 +7,15 @@ so a pull request cannot loosen its own rules.
 
     risk_tier.py --rules RULES.yml --base BASE_SHA --head HEAD_SHA \
         [--title T] [--branch B] [--body-file F] [--automerge off] \
-        [--json OUT.json] [--markdown OUT.md]
+        [--checks-file CHECKS.json] [--json OUT.json] [--markdown OUT.md]
 
-The core (`classify`) is a pure function of the changed files, the PR text and the base and
-head contents of a few manifests; `collect` reads them from git. No network, no LLM.
+The core (`classify`) is a pure function of the changed files, the PR text, the base and
+head contents of a few manifests, and the check runs on the head SHA. `collect` reads the
+files from git. The workflow fetches the check runs. No LLM.
+
+The reviewer is only the "Greptile Review" check from the greptile-apps app on the current
+head SHA. A failed, missing, pending or stale check is not passed. That raises T0 or T1 to
+T2-soft. A passing review never lowers a tier. Labels and comments are not read.
 """
 
 from __future__ import annotations
@@ -37,6 +42,10 @@ MEANING = {
 COMMENT_LINE = re.compile(r"^\s*(#(?!!)|//|/\*|\*(?!\*)|\*/|<!--|--\s)")
 ASSERTION = re.compile(r"\bassert\w*\b|\bexpect\s*\(|\.toBe\w*\(|\bt\.(is|true|false|throws|deepEqual|equal)\b"
                        r"|\bpytest\.raises\b|\bself\.assert\w+")
+# a test that no longer runs: skip, only (the others skip), todo, xit/fit, pytest and unittest skips
+SKIPPED = re.compile(r"\b(?:it|test|describe|suite|context)\.(?:skip|only|todo|failing|if|skipIf)\b"
+                     r"|\b[xf](?:it|describe|test)\s*\(|\bpytest\.(?:mark\.(?:skip|skipif|xfail)|skip|xfail)\b"
+                     r"|\bunittest\.skip|@skip\b")
 WORKFLOW_SENSITIVE = re.compile(r"^\s*(on|permissions)\s*:|secrets\.|\bgithub\.token\b|GITHUB_TOKEN|pull_request_target"
                                 r"|workflow_run|^\s*(contents|actions|checks|pull-requests|issues|id-token|packages)\s*:\s*write")
 # a removed workflow line is a pinned version bump only for these keys (with a new value added)
@@ -66,6 +75,12 @@ class Change:
     # (path, "base" | "head") -> file text, or None when the file does not exist on that side
     read: Callable[[str, str], Optional[str]] = lambda path, side: None
     automerge: str = ""
+    # set when git's file list and its diff do not agree: the files cannot be trusted
+    problem: str = ""
+    # Check runs for head_sha. None: the caller did not ask, so the file rules stand alone.
+    # A list, including an empty one, is consulted, and missing counts as not passed.
+    checks: Optional[List[dict]] = None
+    head_sha: str = ""
 
 
 @dataclass
@@ -271,6 +286,66 @@ def workflow_reason(f: FileChange) -> Reason:
     return Reason("T2-soft", "workflow-additive", f"`{f.path}`: additive edit or pinned version bump")
 
 
+# ---------------------------------------------------------------------------- reviewer
+
+
+GREPTILE_CHECK = "Greptile Review"
+GREPTILE_APP = "greptile-apps"
+
+
+def _greptile_on(check, head_sha: str) -> bool:
+    if not isinstance(check, dict) or not head_sha:
+        return False
+    if check.get("name") != GREPTILE_CHECK:
+        return False
+    app = check.get("app")
+    if not isinstance(app, dict) or app.get("slug") != GREPTILE_APP:
+        return False
+    return check.get("head_sha") == head_sha
+
+
+def review_passed(checks, head_sha: str) -> bool:
+    """True only when the newest Greptile Review check from greptile-apps on this head SHA
+    completed with conclusion success.
+
+    A failed, missing, pending or stale check (a different SHA, or another app) is not passed.
+    Labels, comment bodies and check output text are not read. When several checks share the
+    newest timestamp, each of them has to be a success.
+    """
+    matched = [c for c in (checks or []) if _greptile_on(c, head_sha)]
+    if not matched:
+        return False
+
+    def stamp(c):
+        return (str(c.get("completed_at") or ""), str(c.get("started_at") or ""))
+
+    newest = max(stamp(c) for c in matched)
+    group = [c for c in matched if stamp(c) == newest]
+    return all(c.get("status") == "completed" and c.get("conclusion") == "success" for c in group)
+
+
+def load_checks(path: str) -> list:
+    """Check runs from a JSON file. A missing or broken file is an empty list (not passed).
+
+    Accepts a list of check runs, one API page (`{"check_runs": [...]}`), or the array of
+    pages that `gh api --paginate --slurp` prints.
+    """
+    try:
+        data = json.loads(open(path, encoding="utf-8").read())
+    except (OSError, ValueError):
+        return []
+    pages = data if isinstance(data, list) else [data]
+    runs = []
+    for page in pages:
+        if isinstance(page, dict) and "check_runs" in page:
+            runs.extend(page.get("check_runs") or [])
+        elif isinstance(page, dict):
+            runs.append(page)
+        elif isinstance(page, list):
+            runs.extend(page)
+    return [c for c in runs if isinstance(c, dict)]
+
+
 # ---------------------------------------------------------------------------- classify
 
 
@@ -306,6 +381,8 @@ def classify(change: Change, rules: dict) -> dict:
                                   f"{len(comments)} of {len(removed)} removed code lines are comments"))
 
     # T2-hard
+    if change.problem:
+        reasons.append(Reason("T2-hard", "unreadable-diff", change.problem))
     # Title and branch only: PR bodies often describe a guard that denies a force push.
     hist = rules.get("history_rewrite_text")
     if hist and re.search(hist, f"{change.title}\n{change.branch}", re.I):
@@ -361,15 +438,25 @@ def classify(change: Change, rules: dict) -> dict:
         lost = sum(1 for f in tests for l in f.removed if ASSERTION.search(l))
         gained = sum(1 for f in tests for l in f.added if ASSERTION.search(l))
         deleted_tests = [f.path for f in tests if f.status == "D"]
+        skipped = sum(1 for f in tests for l in f.added if SKIPPED.search(l))
         if deleted_tests:
             reasons.append(Reason("T1", "test-deletion", f"deletes {', '.join(deleted_tests[:3])}"))
-        elif lost > gained:
-            reasons.append(Reason("T1", "assertions-removed", f"removes {lost} assertion lines, adds {gained}"))
+        elif lost:
+            # any removed assertion: a changed one can be weaker, and the net count cannot tell
+            reasons.append(Reason("T1", "assertions-removed", f"removes or changes {lost} assertion lines, adds {gained}"))
+        elif skipped:
+            reasons.append(Reason("T1", "tests-skipped", f"adds {skipped} skip, only or todo markers"))
         else:
             kind = "docs-only" if not tests else ("test-only" if len(tests) == len(files) else "docs and tests only")
             reasons.append(Reason("T0", kind, f"{len(files)} files"))
     else:
         reasons.append(Reason("T1", "source-change", f"{len(code)} code files, {code_lines} changed lines"))
+
+    # A pass adds nothing, so the reviewer cannot lower a tier. A miss adds T2-soft, which
+    # raises T0 and T1 and leaves T2-hard and HOLD where they are.
+    if change.checks is not None and not review_passed(change.checks, change.head_sha):
+        reasons.append(Reason("T2-soft", "reviewer-not-passed",
+                              "no passing Greptile Review check from greptile-apps on this head"))
 
     if str(change.automerge).strip().lower() == "off":
         reasons.append(Reason("T2-hard", "kill-switch", "repo variable AUTOMERGE=off: every PR goes to Gabe"))
@@ -395,7 +482,8 @@ def _git(*args: str) -> str:
 def parse_diff(text: str) -> List[FileChange]:
     files: List[FileChange] = []
     cur: Optional[FileChange] = None
-    for line in text.splitlines():
+    # split at newlines only: str.splitlines() also splits at \x1c, \u2028 and others that a diff line can hold
+    for line in text.split("\n"):
         if line.startswith("diff --git "):
             m = re.match(r"diff --git a/(.*) b/(.*)$", line)
             cur = FileChange(path=m.group(2) if m else line.split(" b/", 1)[-1])
@@ -421,10 +509,36 @@ def parse_diff(text: str) -> List[FileChange]:
     return files
 
 
+def parse_name_status(text: str) -> List[tuple]:
+    """(status letter, old path or None, path) of each file in `git diff --name-status -z` output."""
+    out, items, i = [], text.split("\0"), 0
+    while i < len(items) and items[i]:
+        letter = items[i][0]
+        if letter in "RC":
+            out.append((letter, items[i + 1], items[i + 2]))
+            i += 3
+        else:
+            out.append((letter, None, items[i + 1]))
+            i += 2
+    return out
+
+
 def collect(base: str, head: str):
-    """(changed files, merge base) of head against where it left base."""
+    """(changed files, merge base, problem) of head against where it left base.
+
+    The paths come from `--name-status -z`: raw bytes, never quoted, so a name with a quote, a tab,
+    a non-ASCII letter or " b/" in it is read whole. The lines come from a diff with `--text`, so a
+    `.gitattributes` in the PR cannot turn a file into "Binary files differ" and hide its lines."""
     merge_base = _git("merge-base", base, head).strip()
-    return parse_diff(_git("diff", "--no-color", "--no-ext-diff", "-M", "-U0", merge_base, head)), merge_base
+    opts = ["--no-color", "--no-ext-diff", "--no-textconv", "-M", merge_base, head]
+    names = parse_name_status(_git("diff", "--name-status", "-z", *opts))
+    files = parse_diff(_git("diff", "--text", "-U0", *opts))
+    if len(names) != len(files):
+        return files, merge_base, f"git lists {len(names)} changed files and its diff shows {len(files)}"
+    for fc, (letter, old, path) in zip(files, names):
+        fc.path, fc.old_path = path, old if letter == "R" else None
+        fc.status = letter if letter in "ADR" else "M"
+    return files, merge_base, ""
 
 
 def git_reader(base: str, head: str) -> Callable[[str, str], Optional[str]]:
@@ -465,14 +579,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--branch", default="")
     ap.add_argument("--body-file")
     ap.add_argument("--automerge", default="")
+    ap.add_argument("--checks-file", help="check runs on --head; a missing file counts as no passing review")
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--note", default="", help="extra line for the markdown summary")
     a = ap.parse_args(argv)
     body = open(a.body_file, encoding="utf-8", errors="replace").read() if a.body_file else ""
-    files, merge_base = collect(a.base, a.head)
+    files, merge_base, problem = collect(a.base, a.head)
+    checks = load_checks(a.checks_file) if a.checks_file else None
     change = Change(files=files, title=a.title, branch=a.branch, body=body,
-                    read=git_reader(merge_base, a.head), automerge=a.automerge)
+                    read=git_reader(merge_base, a.head), automerge=a.automerge, problem=problem,
+                    checks=checks, head_sha=a.head)
     result = classify(change, load_rules(a.rules))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:
