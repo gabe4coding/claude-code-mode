@@ -5,6 +5,7 @@
 //
 //   node drive.mjs run "<prompt>" [--auto] [--allow t1,t2] [--settings <json>]
 //                      [--max-output-tokens N] [--model haiku] [--base <dir>]
+//                      [--tools Bash]
 //   node drive.mjs evidence <dir>
 //   node drive.mjs clean <dir>
 //   node drive.mjs band start [--settings <json>] [--model haiku] [--base <dir>]
@@ -112,6 +113,8 @@ async function run() {
   ]
   if (flags.auto) argv.push('--permission-mode', 'auto')
   if (flags.allow) argv.push('--allowedTools', fill(flags.allow, meta))
+  // --restricted removes Bash unless --tools names it.
+  if (flags.tools) argv.push('--tools', flags.tools)
   const env = { ...process.env }
   if (flags['max-output-tokens']) env.MAX_MCP_OUTPUT_TOKENS = flags['max-output-tokens']
   const out = fs.openSync(path.join(meta.dir, 'out.json'), 'w')
