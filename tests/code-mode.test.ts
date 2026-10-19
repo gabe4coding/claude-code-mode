@@ -831,6 +831,25 @@ describe('search_tools', () => {
     expect(text).not.toContain(RUN)
   })
 
+  test('names ToolSearch one time for the tools with no types', async ($, on) => {
+    const send = { name: 'mcp__mail__send', description: 'Send an email', mcp: true }
+    let tools = [
+      send,
+      { name: 'mcp__mail__list', description: 'List emails', mcp: true },
+      { name: 'mcp__mail__read', description: 'Read an email', mcp: true },
+    ]
+    on('tool.list', () => ({ value: tools }))
+    const dts = 'interface McpToolInputs {\n  "mcp__mail__send": { to: string }\n}'
+    on('fs.stat', () => ({ value: { kind: 'file', size: dts.length, mtimeMs: 1, isLink: false } }))
+    on('fs.read', () => ({ value: dts }))
+    const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'email' }))
+    expect(text.split('ToolSearch').length - 1).toBe(1)
+    expect(text).toContain('### mcp__mail__list\nList emails\nargs: unknown')
+    expect(text).toContain('args: { to: string }')
+    tools = [send]
+    expect(textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'send' }))).not.toContain('ToolSearch')
+  })
+
   test('reads the argument types again only when their file changes', async ($, on) => {
     on('tool.list', () => ({ value: [{ name: 'mcp__mail__send', description: 'Send an email', mcp: true }] }))
     let mtimeMs = 1

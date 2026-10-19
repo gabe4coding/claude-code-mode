@@ -935,6 +935,9 @@ return open.map(i => ({ id: i.id, title: i.title }))`
 
 export const SEARCH_DESCRIPTION = `Find MCP tools to use from run_code. Give keywords (for example "jira issue create"); get the matching tool names, their descriptions and, when known, their argument types and result shapes. Use an empty query to list all MCP tools.`
 
+/** After the header of a search_tools result with a tool that has no argument types: said once, not in each block. */
+export const UNTYPED_NOTE = `\nWhere args has no types, ToolSearch "select:<name>" shows the schema.`
+
 /**
  * The note after a run that worked where earlier tries did not: the servers
  * whose calls failed before and work now, and the searches that found nothing.

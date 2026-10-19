@@ -91,6 +91,7 @@ import {
   splitToolName,
   takeMessages,
   toValue,
+  UNTYPED_NOTE,
   type ArgNames,
   type CallRecord,
   type Projection,
@@ -1408,12 +1409,11 @@ export const register: Register = (on, options) => {
       projection ? readLearned($, SHAPES) : ({} as Shapes),
       readLearned($, ARG_NAMES),
     ])
-    const blocks = found.map(t => {
-      const declaration = dts === '' ? undefined : extractDeclaration(dts, t.name)
-      const names =
-        argNames[t.name] === undefined ? '' : `names from earlier calls: {${argNames[t.name]!.join(', ')}}; `
+    const declarations = found.map(t => (dts === '' ? undefined : extractDeclaration(dts, t.name)))
+    const blocks = found.map((t, i) => {
+      const names = argNames[t.name]
       const args =
-        declaration ?? `(argument types unknown here: ${names}ToolSearch "select:${t.name}" shows the schema)`
+        declarations[i] ?? (names === undefined ? 'unknown' : `names from earlier calls: {${names.join(', ')}}`)
       const summary = t.description.split('\n')[0]!.slice(0, 300)
       const shape = shapes[t.name] === undefined ? '' : `\nreturns (earlier call): ${shapes[t.name]}`
       return `### ${t.name}\n${summary}\nargs: ${args}${shape}`
@@ -1442,7 +1442,7 @@ export const register: Register = (on, options) => {
       .map(t => `\n\n${t}`)
       .join('')
     return {
-      result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).\n\n${blocks.join('\n\n')}${tail}`,
+      result: `${found.length} of ${all.length} MCP tools. Call them in run_code with call("<name>", args).${declarations.includes(undefined) ? UNTYPED_NOTE : ''}\n\n${blocks.join('\n\n')}${tail}`,
     }
   }).catch(failClosed)
 
