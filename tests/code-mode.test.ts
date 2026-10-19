@@ -472,6 +472,25 @@ describe('protocol', () => {
     expect(extractDeclaration(dts, 'mcp__x__other')).toBe('{ a: number }')
     expect(extractDeclaration(dts, 'mcp__x__missing')).toBe(undefined)
   })
+
+  test('extractDeclaration finds a key with no quotes, as Claude Code writes a JavaScript name', () => {
+    const dts = [
+      "declare module 'claude-code' {",
+      '  interface McpToolInputs {',
+      '    /** Use mcp__x__send: it sends */',
+      '    mcp__x__send: {',
+      '      to: string',
+      '    }',
+      '    "mcp__x__get-issue": { id: string }',
+      '    mcp__x__sendAll: { all: boolean }',
+      '  }',
+      '}',
+    ].join('\n')
+    expect(extractDeclaration(dts, 'mcp__x__send')).toBe('{\n  to: string\n}')
+    expect(extractDeclaration(dts, 'mcp__x__get-issue')).toBe('{ id: string }')
+    expect(extractDeclaration(dts, 'mcp__x__sendAll')).toBe('{ all: boolean }')
+    expect(extractDeclaration(dts, 'mcp__x__sen')).toBe(undefined)
+  })
 })
 
 // A fake host beneath the plugin. The test engine has no Node, so the fake

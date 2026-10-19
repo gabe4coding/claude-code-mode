@@ -874,22 +874,17 @@ export const rankTools = (tools: readonly ToolEntry[], query: string, limit: num
 
 /**
  * The input declaration of one tool in the engine's generated MCP types
- * (`interface McpToolInputs { "mcp__x__y": { ... } }`), or undefined.
+ * (`interface McpToolInputs { mcp__x__y: { ... } }`), or undefined. The engine
+ * quotes a key only when it is not a JavaScript name ("mcp__x__get-issue").
  */
 export const extractDeclaration = (dts: string, name: string): string | undefined => {
-  const keys = [`"${name}"`, `'${name}'`]
-  let at = -1
-  for (const key of keys) {
-    const found = dts.indexOf(`${key}:`)
-    if (found >= 0) {
-      at = found
-      break
-    }
-  }
-  if (at < 0) return undefined
-  const open = dts.indexOf('{', at)
+  const n = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&')
+  const key = new RegExp(`(?:^|[{;])[ \\t]*(?:"${n}"|'${n}'|${n}):`, 'm').exec(dts)
+  if (key === null) return undefined
+  const colon = key.index + key[0].length - 1
+  const open = dts.indexOf('{', colon)
   // A type that is not an object literal (a named type, Record<…>) gives nothing.
-  if (open < 0 || dts.slice(dts.indexOf(':', at) + 1, open).trim() !== '') return undefined
+  if (open < 0 || dts.slice(colon + 1, open).trim() !== '') return undefined
   let depth = 0
   for (let i = open; i < dts.length; i++) {
     const c = dts[i]
