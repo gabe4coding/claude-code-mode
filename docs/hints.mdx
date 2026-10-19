@@ -213,7 +213,8 @@ model does with your MCP tools. These rules make a bad hint less probable:
   `head`, `tail`, `wc`, `stat`, `file`, `rg`, and `grep`. The program is the command word, not an argument. Each
   program in a pipeline must be on that list. A `>`, `>>`, `tee`, or `-o` removes the exception. A glob, a variable,
   or a pattern the check cannot read denies the command. A `..` in a path denies the command. A relative path after
-  `cd` into `.claude` denies the command.
+  `cd` into `.claude` denies the command. If the command runs a shell, such as `bash -c`, `eval` or `source`, the
+  check also reads each quoted word as a command.
 - **Each hint shows its source file.**
 
 Your own editor is not a Claude tool, so you can edit hint files by hand.
@@ -221,9 +222,9 @@ Your own editor is not a Claude tool, so you can edit hint files by hand.
 These rules are not a full security boundary. The Bash check is best effort, because a shell command can make a
 path in many ways. Another plugin, a settings hook or a command that you run can also write to the hint folders.
 
-The Bash check still misses two shapes. The Bash tool keeps the current folder across calls. A later command that
+The Bash check still misses three shapes. The Bash tool keeps the current folder across calls. A later command that
 does not name the folders can write there. A copy into `~/.claude` itself does not name the folders. `cp -r` and
-`tar -C` are two such copies.
+`tar -C` are two such copies. The check does not read the code of other languages, such as `python -c` or `node -e`.
 
 For a stronger rule against the file tools of Claude, add a deny rule to `~/.claude/settings.json`:
 

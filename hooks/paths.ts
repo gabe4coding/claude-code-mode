@@ -228,8 +228,9 @@ const expandBraces = (word: string): string[] | null => {
 
 type Parsed = { commands: string[][]; redirect: boolean }
 
-// Quotes and backslashes come off. `&&`, `|`, `;`, and newlines separate
-// programs. `>` marks an output redirection. A quote that never ends is unsafe.
+// Quotes and backslashes come off. `&&`, `|`, `;`, `(`, `)`, and newlines
+// separate programs, and `<` ends a word. `>` marks an output redirection. A
+// quote that never ends is unsafe.
 const parseCommand = (command: string): Parsed | null => {
   const commands: string[][] = []
   let words: string[] = []
@@ -296,11 +297,11 @@ const parseCommand = (command: string): Parsed | null => {
       i++
       continue
     }
-    if (ch === '|' || ch === '&' || ch === ';' || ch === '\n') {
+    if ('|&;\n()'.includes(ch)) {
       flushCommand()
       continue
     }
-    if (ch === ' ' || ch === '\t' || ch === '\r') {
+    if (' \t\r<'.includes(ch)) {
       flushWord()
       continue
     }
@@ -360,6 +361,23 @@ const operandPaths = (argv: string[], from: number): string[] => {
 
 const absolute = (word: string): boolean => word.startsWith('/') || word.startsWith('~')
 
+// Programs that run a word as a script, as `bash -c` or `eval` do. A word with
+// one of the SCRIPT characters can then hide a command.
+const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'source', 'watch', 'su', 'script', 'flock']
+const SCRIPT = /[\s;&|<>()'"\\]/
+
+// The first token of the word, so `env -S "bash -c ..."` counts. A glob such
+// as `/bin/b?sh` counts when it can be a shell or cannot be read.
+const isShell = (word: string): boolean => {
+  const head = word.trim().split(/\s+/)[0] ?? ''
+  const name = low(head.slice(head.lastIndexOf('/') + 1))
+  if (!/[*?[]/.test(name)) return SHELLS.includes(name)
+  return SHELLS.some(shell => globMatch(name, shell) !== false)
+}
+
+const runsShell = (commands: string[][]): boolean =>
+  commands.some(argv => programAt(argv)?.name === '.' || argv.some(isShell))
+
 const writesOut = (argv: string[]): boolean =>
   argv.some(word => word === '-o' || word === '--output' || word.startsWith('--output=') || low(word) === 'tee')
 
@@ -370,6 +388,8 @@ const writesOut = (argv: string[]): boolean =>
  * relative path after `cd` into `.claude` is denied. A word that is
  * `code-mode` is denied unless every program is read-only, with no `>`,
  * `>>`, `tee`, or `-o`, and no program outside that list in a pipeline.
+ * When the command runs a shell, a word with spaces, quotes, backslashes, or
+ * shell operators is also read as a command of its own.
  */
 export const namesGuardedDir = (command: string): boolean => {
   const parsed = parseCommand(command)
@@ -380,10 +400,12 @@ export const namesGuardedDir = (command: string): boolean => {
   let underClaude = false
   let relative = false
   let pure = parsed.commands.length > 0 && !parsed.redirect
+  const shell = runsShell(parsed.commands)
   for (const argv of parsed.commands) {
     const program = programAt(argv)
     if (program === null || !READ_ONLY.has(program.name) || writesOut(argv)) pure = false
     for (const word of argv) {
+      if (shell && SCRIPT.test(word) && namesGuardedDir(word)) return true
       for (const segment of segmentsOf(word)) {
         const risk = riskOfSegment(segment)
         hints ||= risk.hints

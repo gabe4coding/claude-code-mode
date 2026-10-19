@@ -1285,6 +1285,25 @@ describe('the hint-file guard', () => {
     'cd ~/.claude/code-mode && rm -rf -- hints/a.md',
     'cd ~/.claude/plugins && cp a ../code-mode/hints/a.md',
     'ls ~/.claude/code-mode > /tmp/out',
+    // A quoted word can be a script that a shell runs again.
+    "bash -c 'rm -rf ~/.claude/code-mode;'",
+    "bash -c 'rm -rf ~/.claude/code-mode .'",
+    `bash -c 'rm -rf ~/.claude/"code-mode"'`,
+    "bash -c 'rm -rf ~/.claude/code\\-mode'",
+    `sh -c "bash -c 'rm -rf ~/.claude/code\\\\-mode'"`,
+    "eval 'cd ~/.claude;rm -rf code-mode'",
+    "echo 'rm -rf ~/.claude/code-mode;' | sh",
+    "find /tmp -exec /bin/sh -c 'rm -rf ~/.claude/code-mode;' \\;",
+    "/bin/b?sh -c 'rm -rf ~/.claude/code-mode;'",
+    "watch 'rm -rf ~/.claude/code-mode;'",
+    "su -c 'rm -rf ~/.claude/code-mode;'",
+    "source <(echo 'rm -rf ~/.claude/code-mode;')",
+    ". <(echo 'rm -rf ~/.claude/code-mode;')",
+    `env -S "bash -c 'rm -rf ~/.claude/code-mode;'"`,
+    // A parenthesis or `<` ends a word.
+    '(rm -rf ~/.claude/code-mode)',
+    'rm -rf ~/.claude/code-mode</dev/null',
+    'cat <(rm -rf ~/.claude/code-mode)',
     // These named a guarded word, used `..`, or could not be read. They now deny.
     'mv ~/.claude/code-mode/files/abc/issues.csv ./issues.csv',
     'rg -n hints hooks/',
@@ -1307,6 +1326,11 @@ describe('the hint-file guard', () => {
     'ls ~/.claude/code-mode/metrics',
     'du -sh ~/.claude/code-mode',
     'command ls ~/.claude/code-mode/metrics',
+    "grep -n 'code mode' ~/.claude/code-mode/metrics/a.log",
+    // Without a shell, a quoted word is not read again.
+    `git commit -m "don't stop"`,
+    `git commit -m "add helper functions; fix hints"`,
+    `bash -c 'git commit -m "add helper functions"'`,
     'echo hello',
     'git status',
   ]
