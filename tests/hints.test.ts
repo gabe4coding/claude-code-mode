@@ -35,7 +35,7 @@ import {
   withReview,
   withoutReview,
 } from '../hooks/hints'
-import { guardedDirs } from '../hooks/paths'
+import { guardedDirs, namesGuardedDir } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
 import { HOME, TMP, fakeHome, textOf } from './fakes'
 
@@ -1235,6 +1235,113 @@ describe('the hint-file guard', () => {
       expect(textOf(r)).toContain('hint files and saved functions steer the model')
     })
   }
+
+  // Each spelling of a guarded folder that the shell reads as the same path.
+  const spellings = [
+    'cp f.md ~/.claude/code-mode/./hints/a.md',
+    'cp f.md ~/.claude/code-mode//hints/a.md',
+    'cp f.md ~/.claude/code-mode/files/../hints/a.md',
+    'cp f.md ~/.claude/code-mode/hi""nts/a.md',
+    "cp f.md ~/.claude/code-mode/'hints'/a.md",
+    'cp f.md ~/.claude/code-mode/hin\\ts/a.md',
+    'cp f.md ~/.claude/Code-Mode/Hints/a.md',
+    'cp f.md ~/.claude/code-mode/h*/a.md',
+    'cp f.md ~/.claude/code-mode/hint?/a.md',
+    'cp f.md ~/.claude/code-mode/[h]ints/a.md',
+    'cp f.md ~/.claude/code-mode/{hints,x}/a.md',
+    'D=hints; cp f.md ~/.claude/code-mode/$D/a.md',
+    'cp f.md ~/.claude/code-mode/$(echo hints)/a.md',
+    'cp f.md ~/.claude/code-mode/`echo hints`/a.md',
+    'cp f.md ~/.claude/code-*/hints/a.md',
+    'cp f.md ~/.claude/*/functions/a.md',
+    'cd ~/.claude/code-mode && cp /tmp/a.md hints/',
+    'cd ~/.claude/code-mode/files && cp /tmp/a.md ../functions/x.md',
+    'D=~/.claude/code-mode; echo x > $D/hints/x.md',
+    'ln -s ~/.claude/code-mode /tmp/cm',
+    'cp -r /tmp/x ~/.claude/code-mode/',
+    'D=a/b; printf x > ~/.claude/code-mode/hints/$D/../../x.md',
+    'cp f.md ~/.claude/code-mode/hints/*/../../x.md',
+    'cp f.md ~/.claude/code-mode/*/../hints/a.md',
+    'cp f.md ~/.claude/code-mode/[[:alpha:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/[![:digit:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/[]h]ints/a.md',
+    'ls ~/.claude/code-mode/[z-a]',
+    'cp f.md {x,~/.claude/code-mode/hints}',
+    'cp f.md {~/.claude/code-mode/hints,x}/a.md',
+    'cp f.md ~/.claude/code-mode/hints,/a.md',
+    'cp f.md ~/.claude/{code-mode/hints,x}/a.md',
+    // The program is the command word, not an argument named like a reader.
+    'cp -r hints ls ~/.claude/code-mode/',
+    'mv du ~/.claude/code-mode/hints/a.md /tmp/a.md',
+    'env ls=1 cp f.md ~/.claude/code-mode/hints/a.md',
+    'sudo cp f.md ~/.claude/code-mode/functions/a.md',
+    // A brace expands inside one word (`hi{nts,other}` is `hints`).
+    'tee ~/.claude/code-mode/hi{nts,other}/x.md',
+    'cp f.md ~/.claude/code-mode/hi{nts,other}/x.md',
+    'cp f.md ~/.claude/code-mode/func{tions,x}/a.md',
+    'cp f.md ~/.claude/code-mode/{fu,func}tions/a.md',
+    // A flag does not hide the path after it.
+    'cd ~/.claude/code-mode/files && rm -f ../hints/x.md',
+    'cd ~/.claude/code-mode && rm -rf -- hints/a.md',
+    'cd ~/.claude/plugins && cp a ../code-mode/hints/a.md',
+    'ls ~/.claude/code-mode > /tmp/out',
+    // A quoted word can be a script that a shell runs again.
+    "bash -c 'rm -rf ~/.claude/code-mode;'",
+    "bash -c 'rm -rf ~/.claude/code-mode .'",
+    `bash -c 'rm -rf ~/.claude/"code-mode"'`,
+    "bash -c 'rm -rf ~/.claude/code\\-mode'",
+    `sh -c "bash -c 'rm -rf ~/.claude/code\\\\-mode'"`,
+    "eval 'cd ~/.claude;rm -rf code-mode'",
+    "echo 'rm -rf ~/.claude/code-mode;' | sh",
+    "find /tmp -exec /bin/sh -c 'rm -rf ~/.claude/code-mode;' \\;",
+    "/bin/b?sh -c 'rm -rf ~/.claude/code-mode;'",
+    "watch 'rm -rf ~/.claude/code-mode;'",
+    "su -c 'rm -rf ~/.claude/code-mode;'",
+    "source <(echo 'rm -rf ~/.claude/code-mode;')",
+    ". <(echo 'rm -rf ~/.claude/code-mode;')",
+    `env -S "bash -c 'rm -rf ~/.claude/code-mode;'"`,
+    // A parenthesis or `<` ends a word.
+    '(rm -rf ~/.claude/code-mode)',
+    'rm -rf ~/.claude/code-mode</dev/null',
+    'cat <(rm -rf ~/.claude/code-mode)',
+    // These named a guarded word, used `..`, or could not be read. They now deny.
+    'mv ~/.claude/code-mode/files/abc/issues.csv ./issues.csv',
+    'rg -n hints hooks/',
+    'cd /src/code-mode/.claude/worktrees/x && rg -n hints hooks',
+    'ls ~/.claude/*',
+    'rg functions ~/.claude/code-mode/files',
+    'ls ~/.claude/code-mode/files && git log --grep hints',
+    'cp f.md ~/.claude/code-mode/[![:alpha:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/files/../../readme',
+    'ls /tmp/[z-a]',
+  ]
+  for (const command of spellings)
+    test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
+
+  // Benign commands. A read-only program may name `code-mode`, not `hints` or `functions`.
+  const others = [
+    'ls ~/.claude',
+    'cat ~/.claude/*.json',
+    'cat ~/.claude/code-mode/files/abc/functions.csv',
+    'ls ~/.claude/code-mode/metrics',
+    'du -sh ~/.claude/code-mode',
+    'command ls ~/.claude/code-mode/metrics',
+    "grep -n 'code mode' ~/.claude/code-mode/metrics/a.log",
+    // Without a shell, a quoted word is not read again.
+    `git commit -m "don't stop"`,
+    `git commit -m "add helper functions; fix hints"`,
+    `bash -c 'git commit -m "add helper functions"'`,
+    'echo hello',
+    'git status',
+  ]
+  for (const command of others)
+    test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
+
+  test('denies a Bash command that reaches a hint folder through cd', async ($, on) => {
+    session(on)
+    const r = await $.tool.call({ tool: 'Bash', command: 'cd ~/.claude/code-mode && cp /tmp/a.md hints/' })
+    expect(textOf(r)).toContain('hint files and saved functions steer the model')
+  })
 
   test('guardedDirs skips an empty root', () => {
     expect(guardedDirs('', '/repo')).toEqual(['/repo/.claude/code-mode/hints'])

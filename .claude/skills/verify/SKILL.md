@@ -33,7 +33,9 @@ node $D clean <dir>          # after you read the evidence
 `reply` alone. One run with Haiku costs less than $0.01.
 
 Options: `--settings <json>` for plugin options and permission rules, `--max-output-tokens 5000` to make Claude Code
-save a large result to a file, `--base <dir>` for the run folder.
+save a large result to a file, `--base <dir>` for the run folder, `--tools Bash` with `--allow Bash` to drive the Bash
+guard (the run is `--restricted`, which removes Bash otherwise). Probe the guard only with read-only commands: a
+command that the guard lets through runs on this machine.
 
 Fake server tools: `search_messages` (pages), `list_issues`, `query_logs`, `create_ticket`, `get_deploys`. The data
 is in `bench/data.mjs`.
