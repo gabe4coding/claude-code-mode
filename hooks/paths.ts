@@ -27,7 +27,68 @@ export const guardedDirs = (home: string, project: string): string[] => [
   ...(project ? [hintsFolder(project)] : []),
 ]
 
-const GUARDED_IN_COMMAND = new RegExp(`${APP}/+(${HINTS}|${FUNCTIONS})`, 'i')
+// A part of a path that the shell expands: a glob, a brace, a variable or a command.
+const EXPANDS = /[*?[{$`]/
 
-/** True when a shell command names a guarded folder: best effort, as a shell can spell a path many ways. */
-export const namesGuardedDir = (command: string): boolean => GUARDED_IN_COMMAND.test(command)
+const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// A glob part as a regular expression: `*`, `?`, `[...]` and `{a,b}`.
+const globRegex = (part: string): RegExp => {
+  const token = (t: string): string => {
+    if (t === '*') return '.*'
+    if (t === '?') return '.'
+    if (/^\[.+\]$/.test(t)) return `[${t.slice(1, -1).replace(/^!/, '^')}]`
+    if (/^\{.*\}$/.test(t)) return `(${t.slice(1, -1).split(',').map(escape).join('|')})`
+    return escape(t)
+  }
+  return new RegExp(`^${part.replace(/\[!?[^\]]+\]|\{[^}]*\}|[*?]|[^*?[{]+|./g, token)}$`, 'i')
+}
+
+// A part of a path as the shell reads it: true when it can expand to `name`.
+// A variable or a command can be anything.
+const canBe = (part: string | undefined, name: string): boolean => {
+  if (part === undefined) return false
+  if (!EXPANDS.test(part)) return part.toLowerCase() === name
+  return /[$`]/.test(part) || globRegex(part).test(name)
+}
+const canBeGuarded = (part: string | undefined): boolean => canBe(part, HINTS) || canBe(part, FUNCTIONS)
+
+// The parts of each path in a command, as the shell reads them: quotes and
+// backslashes go (`hi""nts`, `hin\ts`), and `//`, `/./` and `x/../` fold.
+const pathsIn = (command: string): string[][] =>
+  command
+    .replace(/['"\\]/g, '')
+    .split(/[\s;&|<>()=]+/)
+    .filter(Boolean)
+    .map(word => {
+      const parts: string[] = []
+      for (const part of word.split('/')) {
+        const last = parts[parts.length - 1]
+        if (part === '.' || (part === '' && parts.length > 0)) continue
+        if (part === '..' && last !== undefined && last !== '' && last !== '..') parts.pop()
+        else parts.push(part)
+      }
+      return parts
+    })
+
+/**
+ * True when a shell command names a guarded folder. Best effort, as a shell
+ * can spell a path many ways. It reads quotes, backslashes, `//`, `/./` and
+ * `x/../` as the shell does, and a glob, brace, variable or command as any
+ * name it can expand to. It also denies a command that names the folder
+ * `.claude/code-mode` itself, or names it and a guarded folder in another word
+ * (`cd ~/.claude/code-mode && cp a hints/`), so a split path cannot reach them.
+ */
+export const namesGuardedDir = (command: string): boolean => {
+  const paths = pathsIn(command)
+  let namesApp = false
+  for (const p of paths) {
+    for (const [i, part] of p.entries()) {
+      const isUnderClaude = p[i - 1]?.toLowerCase() === '.claude'
+      if (!(isUnderClaude ? canBe(part, APP) : part.toLowerCase() === APP)) continue
+      if (canBeGuarded(p[i + 1]) || (isUnderClaude && p[i + 1] === undefined)) return true
+      namesApp ||= isUnderClaude
+    }
+  }
+  return namesApp && paths.some(p => p.some(part => [HINTS, FUNCTIONS].includes(part.toLowerCase())))
+}

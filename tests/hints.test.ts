@@ -35,7 +35,7 @@ import {
   withReview,
   withoutReview,
 } from '../hooks/hints'
-import { guardedDirs } from '../hooks/paths'
+import { guardedDirs, namesGuardedDir } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
 import { HOME, TMP, fakeHome, textOf } from './fakes'
 
@@ -1235,6 +1235,52 @@ describe('the hint-file guard', () => {
       expect(textOf(r)).toContain('hint files and saved functions steer the model')
     })
   }
+
+  // Each spelling of a guarded folder that the shell reads as the same path.
+  const spellings = [
+    'cp f.md ~/.claude/code-mode/./hints/a.md',
+    'cp f.md ~/.claude/code-mode//hints/a.md',
+    'cp f.md ~/.claude/code-mode/files/../hints/a.md',
+    'cp f.md ~/.claude/code-mode/hi""nts/a.md',
+    "cp f.md ~/.claude/code-mode/'hints'/a.md",
+    'cp f.md ~/.claude/code-mode/hin\\ts/a.md',
+    'cp f.md ~/.claude/Code-Mode/Hints/a.md',
+    'cp f.md ~/.claude/code-mode/h*/a.md',
+    'cp f.md ~/.claude/code-mode/hint?/a.md',
+    'cp f.md ~/.claude/code-mode/[h]ints/a.md',
+    'cp f.md ~/.claude/code-mode/{hints,x}/a.md',
+    'D=hints; cp f.md ~/.claude/code-mode/$D/a.md',
+    'cp f.md ~/.claude/code-mode/$(echo hints)/a.md',
+    'cp f.md ~/.claude/code-mode/`echo hints`/a.md',
+    'cp f.md ~/.claude/code-*/hints/a.md',
+    'cp f.md ~/.claude/*/functions/a.md',
+    'cd ~/.claude/code-mode && cp /tmp/a.md hints/',
+    'cd ~/.claude/code-mode/files && cp /tmp/a.md ../functions/x.md',
+    'D=~/.claude/code-mode; echo x > $D/hints/x.md',
+    'ln -s ~/.claude/code-mode /tmp/cm',
+    'cp -r /tmp/x ~/.claude/code-mode/',
+  ]
+  for (const command of spellings)
+    test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
+
+  // Commands that name other files in or near the folder.
+  const others = [
+    'ls ~/.claude',
+    'cat ~/.claude/*.json',
+    'mv ~/.claude/code-mode/files/abc/issues.csv ./issues.csv',
+    'cat ~/.claude/code-mode/files/abc/functions.csv',
+    'ls ~/.claude/code-mode/metrics',
+    'rg -n hints hooks/',
+    'cd /src/code-mode/.claude/worktrees/x && rg -n hints hooks',
+  ]
+  for (const command of others)
+    test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
+
+  test('denies a Bash command that reaches a hint folder through cd', async ($, on) => {
+    session(on)
+    const r = await $.tool.call({ tool: 'Bash', command: 'cd ~/.claude/code-mode && cp /tmp/a.md hints/' })
+    expect(textOf(r)).toContain('hint files and saved functions steer the model')
+  })
 
   test('guardedDirs skips an empty root', () => {
     expect(guardedDirs('', '/repo')).toEqual(['/repo/.claude/code-mode/hints'])

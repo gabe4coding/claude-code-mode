@@ -208,7 +208,10 @@ model does with your MCP tools. These rules make a bad hint less probable:
 - **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
   NotebookEdit on files in the hint folders. It checks the path as written and its real path through symbolic links.
 - **The guard also denies Bash commands that name a hint folder.** This includes read-only commands, because a text
-  check cannot find the difference. The model can use the Read tool to read hints.
+  check cannot find the difference. The model can use the Read tool to read hints. The check reads quotes,
+  backslashes, `/./` and `x/../` as the shell does. A glob, a brace, a variable or a command in place of a hint
+  folder name is denied. A command that names the folder `.claude/code-mode` itself is also denied, for example a
+  `cd` into it.
 - **Each hint shows its source file.**
 
 Your own editor is not a Claude tool, so you can edit hint files by hand.
