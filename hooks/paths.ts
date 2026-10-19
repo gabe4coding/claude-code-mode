@@ -30,65 +30,226 @@ export const guardedDirs = (home: string, project: string): string[] => [
 // A part of a path that the shell expands: a glob, a brace, a variable or a command.
 const EXPANDS = /[*?[{$`]/
 
+// Inspection of `.claude/code-mode` itself. A copy, a link or a `cd` into that
+// folder is still denied: those reach the guarded folders inside it.
+const READS_APP = new Set(['ls', 'du'])
+
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-// A glob part as a regular expression: `*`, `?`, `[...]` and `{a,b}`.
-const globRegex = (part: string): RegExp => {
-  const token = (t: string): string => {
-    if (t === '*') return '.*'
-    if (t === '?') return '.'
-    if (/^\[.+\]$/.test(t)) return `[${t.slice(1, -1).replace(/^!/, '^')}]`
-    if (/^\{.*\}$/.test(t)) return `(${t.slice(1, -1).split(',').map(escape).join('|')})`
-    return escape(t)
+// Bash POSIX classes, as ASCII. The guarded names are ASCII.
+const POSIX: Record<string, string> = {
+  alnum: '0-9A-Za-z',
+  alpha: 'A-Za-z',
+  ascii: '\\x00-\\x7F',
+  blank: '\\t ',
+  cntrl: '\\x00-\\x1F\\x7F',
+  digit: '0-9',
+  graph: '\\x21-\\x7E',
+  lower: 'a-z',
+  print: '\\x20-\\x7E',
+  punct: '!-/:-@\\[-`{-~',
+  space: '\\t\\n\\v\\f\\r ',
+  upper: 'A-Z',
+  word: '0-9A-Za-z_',
+  xdigit: '0-9A-Fa-f',
+}
+
+const classLiteral = (ch: string): string => (/[\\\]^/-]/.test(ch) ? `\\${ch}` : ch)
+
+// One Bash bracket expression at `start`, or null when it cannot be translated.
+const bracketAt = (part: string, start: number): { source: string; next: number } | null => {
+  const at = (index: number): string => part.charAt(index)
+  let i = start + 1
+  let neg = false
+  if (at(i) === '!' || at(i) === '^') {
+    neg = true
+    i++
   }
-  return new RegExp(`^${part.replace(/\[!?[^\]]+\]|\{[^}]*\}|[*?]|[^*?[{]+|./g, token)}$`, 'i')
+  let body = ''
+  if (at(i) === ']') {
+    body += '\\]'
+    i++
+  }
+  while (i < part.length && at(i) !== ']') {
+    if (at(i) === '[' && (at(i + 1) === ':' || at(i + 1) === '.' || at(i + 1) === '=')) {
+      const kind = at(i + 1)
+      const mark = `${kind}]`
+      const end = part.indexOf(mark, i + 2)
+      if (end < 0 || kind !== ':') return null
+      const mapped = POSIX[part.slice(i + 2, end)]
+      if (mapped === undefined) return null
+      body += mapped
+      i = end + mark.length
+      continue
+    }
+    if (at(i + 1) === '-' && i + 2 < part.length && at(i + 2) !== ']') {
+      if (at(i) > at(i + 2)) return null
+      body += `${classLiteral(at(i))}-${classLiteral(at(i + 2))}`
+      i += 3
+      continue
+    }
+    body += classLiteral(at(i))
+    i++
+  }
+  if (at(i) !== ']') return null
+  return { source: neg ? `[^${body}]` : `[${body}]`, next: i + 1 }
+}
+
+// A glob part as a regular expression, or null when a bracket or brace cannot be translated.
+const globSource = (part: string): string | null => {
+  let out = ''
+  for (let i = 0; i < part.length; ) {
+    const ch = part.charAt(i)
+    if (ch === '*') {
+      out += '.*'
+      i++
+      continue
+    }
+    if (ch === '?') {
+      out += '.'
+      i++
+      continue
+    }
+    if (ch === '[') {
+      const bracket = bracketAt(part, i)
+      if (bracket === null) return null
+      out += bracket.source
+      i = bracket.next
+      continue
+    }
+    if (ch === '{') {
+      const end = part.indexOf('}', i + 1)
+      if (end < 0) return null
+      const alts = part.slice(i + 1, end).split(',')
+      const mapped: string[] = []
+      for (const alt of alts) {
+        const source = globSource(alt)
+        if (source === null) return null
+        mapped.push(source)
+      }
+      out += `(${mapped.join('|')})`
+      i = end + 1
+      continue
+    }
+    out += escape(ch)
+    i++
+  }
+  return out
 }
 
 // A part of a path as the shell reads it: true when it can expand to `name`.
-// A variable or a command can be anything.
+// A variable, a command, or a pattern that cannot be translated can be anything.
 const canBe = (part: string | undefined, name: string): boolean => {
   if (part === undefined) return false
   if (!EXPANDS.test(part)) return part.toLowerCase() === name
-  return /[$`]/.test(part) || globRegex(part).test(name)
+  if (/[$`]/.test(part)) return true
+  try {
+    const source = globSource(part)
+    if (source === null) return true
+    return new RegExp(`^${source}$`, 'i').test(name)
+  } catch {
+    return true
+  }
 }
 const canBeGuarded = (part: string | undefined): boolean => canBe(part, HINTS) || canBe(part, FUNCTIONS)
 
-// The parts of each path in a command, as the shell reads them: quotes and
-// backslashes go (`hi""nts`, `hin\ts`), and `//`, `/./` and `x/../` fold.
-const pathsIn = (command: string): string[][] =>
+const low = (part: string): string => part.toLowerCase()
+
+// Index of `hints` or `functions` in `.claude/code-mode/...`, or -1.
+const guardedEnd = (parts: string[]): number => {
+  for (let i = 0; i < parts.length - 2; i++) {
+    if (low(parts[i] ?? '') !== '.claude' || low(parts[i + 1] ?? '') !== APP) continue
+    const name = low(parts[i + 2] ?? '')
+    if (name === HINTS || name === FUNCTIONS) return i + 2
+  }
+  return -1
+}
+
+// Quotes and backslashes are already gone. `//` and `/./` fold. `..` folds a
+// real directory, but never the protected prefix: a `$var` or a glob may be
+// several directories, so `..` after it must not climb past the guarded folder.
+const fold = (word: string): string[] => {
+  const parts: string[] = []
+  let uncertain = false
+  for (const part of word.split('/')) {
+    if (part === '.' || (part === '' && parts.length > 0)) continue
+    if (part !== '..') {
+      parts.push(part)
+      uncertain = false
+      continue
+    }
+    const last = parts[parts.length - 1]
+    if (last === undefined || last === '' || last === '..') {
+      parts.push('..')
+      continue
+    }
+    const end = guardedEnd(parts)
+    if (end >= 0 && parts.length - 1 <= end) continue
+    if (EXPANDS.test(last)) {
+      if (end >= 0) continue
+      uncertain = true
+      parts.pop()
+      continue
+    }
+    const appUnderClaude = low(last) === APP && low(parts[parts.length - 2] ?? '') === '.claude'
+    if (uncertain && appUnderClaude) continue
+    parts.pop()
+    uncertain = false
+  }
+  return parts
+}
+
+// `{`, `}` and `,` split brace expansion (`{x,~/.claude/code-mode/hints}`).
+const commandWords = (command: string): string[] =>
   command
     .replace(/['"\\]/g, '')
-    .split(/[\s;&|<>()=]+/)
+    .split(/[\s;&|<>()={},]+/)
     .filter(Boolean)
-    .map(word => {
-      const parts: string[] = []
-      for (const part of word.split('/')) {
-        const last = parts[parts.length - 1]
-        if (part === '.' || (part === '' && parts.length > 0)) continue
-        if (part === '..' && last !== undefined && last !== '' && last !== '..') parts.pop()
-        else parts.push(part)
-      }
-      return parts
-    })
+
+const verbBefore = (words: string[], index: number): string => {
+  for (let i = index - 1; i >= 0; i--) {
+    const word = words[i] ?? ''
+    if (word.startsWith('-') || word.includes('/') || word.startsWith('~')) continue
+    return word
+  }
+  return ''
+}
+
+const entersApp = (parts: string[]): boolean =>
+  parts.some((part, i) => low(part) === '.claude' && canBe(parts[i + 1], APP))
+
+// `hints` in another word counts only as a path after `cd` into the folder
+// (`cd ~/.claude/code-mode && cp a hints/`). A grep word does not.
+const reachesAfterCd = (words: string[], paths: string[][]): boolean => {
+  for (let i = 0; i < words.length - 1; i++) {
+    if (words[i] !== 'cd' || !entersApp(paths[i + 1] ?? [])) continue
+    for (let j = i + 2; j < words.length; j++) {
+      if ((words[j - 1] ?? '').startsWith('-') || !(words[j] ?? '').includes('/')) continue
+      if ((paths[j] ?? []).some(part => low(part) === HINTS || low(part) === FUNCTIONS)) return true
+    }
+  }
+  return false
+}
 
 /**
  * True when a shell command names a guarded folder. Best effort, as a shell
- * can spell a path many ways. It reads quotes, backslashes, `//`, `/./` and
- * `x/../` as the shell does, and a glob, brace, variable or command as any
- * name it can expand to. It also denies a command that names the folder
- * `.claude/code-mode` itself, or names it and a guarded folder in another word
- * (`cd ~/.claude/code-mode && cp a hints/`), so a split path cannot reach them.
+ * can spell a path many ways. It reads quotes, backslashes, braces, `//`,
+ * `/./` and `x/../` as the shell does, and a glob, bracket, variable or
+ * command as any name it can expand to. A `cd` into `.claude/code-mode` plus
+ * a later path of `hints` or `functions` is denied. So is a copy or a link
+ * of that folder. `ls` and `du` of the folder itself are not.
  */
 export const namesGuardedDir = (command: string): boolean => {
-  const paths = pathsIn(command)
-  let namesApp = false
-  for (const p of paths) {
+  const words = commandWords(command)
+  const paths = words.map(fold)
+  if (reachesAfterCd(words, paths)) return true
+  for (const [index, p] of paths.entries()) {
     for (const [i, part] of p.entries()) {
-      const isUnderClaude = p[i - 1]?.toLowerCase() === '.claude'
-      if (!(isUnderClaude ? canBe(part, APP) : part.toLowerCase() === APP)) continue
-      if (canBeGuarded(p[i + 1]) || (isUnderClaude && p[i + 1] === undefined)) return true
-      namesApp ||= isUnderClaude
+      const isUnderClaude = low(p[i - 1] ?? '') === '.claude'
+      if (!(isUnderClaude ? canBe(part, APP) : low(part) === APP)) continue
+      if (canBeGuarded(p[i + 1])) return true
+      if (isUnderClaude && p[i + 1] === undefined && !READS_APP.has(verbBefore(words, index))) return true
     }
   }
-  return namesApp && paths.some(p => p.some(part => [HINTS, FUNCTIONS].includes(part.toLowerCase())))
+  return false
 }

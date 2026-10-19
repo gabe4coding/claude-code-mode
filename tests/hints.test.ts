@@ -1259,6 +1259,17 @@ describe('the hint-file guard', () => {
     'D=~/.claude/code-mode; echo x > $D/hints/x.md',
     'ln -s ~/.claude/code-mode /tmp/cm',
     'cp -r /tmp/x ~/.claude/code-mode/',
+    'D=a/b; printf x > ~/.claude/code-mode/hints/$D/../../x.md',
+    'cp f.md ~/.claude/code-mode/hints/*/../../x.md',
+    'cp f.md ~/.claude/code-mode/*/../hints/a.md',
+    'cp f.md ~/.claude/code-mode/[[:alpha:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/[![:digit:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/[]h]ints/a.md',
+    'ls ~/.claude/code-mode/[z-a]',
+    'cp f.md {x,~/.claude/code-mode/hints}',
+    'cp f.md {~/.claude/code-mode/hints,x}/a.md',
+    'cp f.md ~/.claude/code-mode/hints,/a.md',
+    'cp f.md ~/.claude/{code-mode/hints,x}/a.md',
   ]
   for (const command of spellings)
     test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
@@ -1272,6 +1283,13 @@ describe('the hint-file guard', () => {
     'ls ~/.claude/code-mode/metrics',
     'rg -n hints hooks/',
     'cd /src/code-mode/.claude/worktrees/x && rg -n hints hooks',
+    'ls ~/.claude/*',
+    'du -sh ~/.claude/code-mode',
+    'rg functions ~/.claude/code-mode/files',
+    'ls ~/.claude/code-mode/files && git log --grep hints',
+    'cp f.md ~/.claude/code-mode/[![:alpha:]]ints/a.md',
+    'cp f.md ~/.claude/code-mode/files/../../readme',
+    'ls /tmp/[z-a]',
   ]
   for (const command of others)
     test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))

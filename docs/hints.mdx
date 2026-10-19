@@ -210,14 +210,18 @@ model does with your MCP tools. These rules make a bad hint less probable:
 - **The guard also denies Bash commands that name a hint folder.** This includes read-only commands, because a text
   check cannot find the difference. The model can use the Read tool to read hints. The check reads quotes,
   backslashes, `/./` and `x/../` as the shell does. A glob, a brace, a variable or a command in place of a hint
-  folder name is denied. A command that names the folder `.claude/code-mode` itself is also denied, for example a
-  `cd` into it.
+  folder name is denied. A `cd` into `.claude/code-mode`, a copy into that folder, or a link to it is also denied.
 - **Each hint shows its source file.**
 
 Your own editor is not a Claude tool, so you can edit hint files by hand.
 
 These rules are not a full security boundary. The Bash check is best effort, because a shell command can make a
 path in many ways. Another plugin, a settings hook or a command that you run can also write to the hint folders.
+
+The Bash check still misses three shapes. One shape is `cd` to `~/.claude` and then `cd` to `code-mode`, in one
+call or across later calls. The Bash tool keeps the current folder across calls. One shape is a glob in place of
+`.claude`, such as `~/.c*/c*/hints`. One shape is a copy into `~/.claude` itself with `cp -r` or `tar -C`.
+
 For a stronger rule against the file tools of Claude, add a deny rule to `~/.claude/settings.json`:
 
 ```json
