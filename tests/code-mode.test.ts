@@ -1197,6 +1197,22 @@ describe('approval', () => {
     expect(server.paths).toEqual(['mcp.call'])
   })
 
+  // An ask rule is the person's "always ask me": the approval of a program does not answer it.
+  test('program: an ask rule keeps the normal tool call, so Claude Code asks', async ($, on) => {
+    const server = fakeServer(on, { mcp__fake__echo: { decision: 'ask', rule: 'mcp__fake__echo' } })
+    fakeHost(on)
+    await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__echo' }) })
+    expect(server.paths).toEqual(['tool.call'])
+  })
+
+  test('program: a refused call that an ask rule decided adds no note', async ($, on) => {
+    fakeServer(on, { mcp__fake__fail: { decision: 'ask', rule: 'mcp__fake__fail' } })
+    fakeHost(on)
+    const r = await $.tool.call({ tool: RUN, code: scenario({ tool: 'mcp__fake__fail' }) })
+    expect(textOf(r)).toContain('denied: server said no')
+    expect(textOf(r)).not.toContain('## No allow rule')
+  })
+
   test('program: an allow rule keeps the normal tool call', async ($, on) => {
     const server = fakeServer(on)
     fakeHost(on)
