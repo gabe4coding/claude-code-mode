@@ -248,8 +248,11 @@ the names of its arguments, not their values. `search_tools` then shows them for
 ```text
 ### mcp__claude_ai_Jira__searchJiraIssuesUsingJql
 Search Jira issues using JQL
-args: (argument types unknown here: names from earlier calls: {cloudId, jql, maxResults}; ToolSearch "select:mcp__claude_ai_Jira__searchJiraIssuesUsingJql" shows the schema)
+args: names from earlier calls: {cloudId, jql, maxResults}
 ```
+
+If a tool in the result has no types, the result says one time, after its first line, that ToolSearch shows the
+schema. It does not say it again for each tool.
 
 - The list has only the names that earlier calls used. It does not show the types, or which arguments are
   required.
