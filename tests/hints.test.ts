@@ -1314,6 +1314,21 @@ describe('the hint-file guard', () => {
     'cp f.md ~/.claude/code-mode/[![:alpha:]]ints/a.md',
     'cp f.md ~/.claude/code-mode/files/../../readme',
     'ls /tmp/[z-a]',
+    // A quote keeps the guarded name, and an unquoted glob or `$` still counts.
+    `cp f.md ~/.claude/code-mode/"h"ints/a.md`,
+    `cp f.md ~/.claude/code-mode/"$D"/a.md`,
+    `cp f.md ~/.claude/code-mode/'h*'/a.md`,
+    `cp f.md "$HOME"/.claude/code-mode/hints/a.md`,
+    `cp f.md '~/.claude'/h*/a.md`,
+    // `code-mode` under `.claude`, as a glob, or at the start of a relative path.
+    'rm -rf ~/.c*/code-mode',
+    'rm -rf ~/.claude/./code-mode',
+    'git -C ~/.claude/code-mode init',
+    'rm -rf code-mode',
+    'tar -xf a.tar --directory=code-mode',
+    // A link made in the same command is not there yet when the guard looks.
+    'ln -s ~/.claude /tmp/x && rm -rf /tmp/x/code-mode',
+    'ln -s ~/.clau* /tmp/x; mv /tmp/x/code-mode /tmp/y',
   ]
   for (const command of spellings)
     test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
@@ -1333,6 +1348,16 @@ describe('the hint-file guard', () => {
     `bash -c 'git commit -m "add helper functions"'`,
     'echo hello',
     'git status',
+    // A repository or path named code-mode that is not under `.claude`.
+    'git -C /Users/me/Repositories/code-mode pull --ff-only',
+    'git -C ~/.claude/plugins/cache/x/code-mode/1.0.0 log',
+    // A quoted or escaped glob, brace, or `$` is literal.
+    `curl -s -o /dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8787/mcp -d '{}'`,
+    `curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\\n' -m 10 https://connect.ngrok-agent.com`,
+    `curl -sS -o /dev/null -w '%{http_code}\\n' -m 10 https://example.com`,
+    `grep -o 'url=https://[^ ]*' /tmp/x/tasks/a.output`,
+    `codex exec --skip-git-repo-check "Use the pox MCP tool save_fn to save a function named gitlog with body: git -C \\"\\$1\\" log --oneline -3"`,
+    `echo \\$HOME \\*`,
   ]
   for (const command of others)
     test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
@@ -1341,6 +1366,29 @@ describe('the hint-file guard', () => {
     session(on)
     const r = await $.tool.call({ tool: 'Bash', command: 'cd ~/.claude/code-mode && cp /tmp/a.md hints/' })
     expect(textOf(r)).toContain('hint files and saved functions steer the model')
+  })
+
+  test('denies a Bash command that reaches code-mode through a symbolic link', async ($, on) => {
+    session(on)
+    const links: Record<string, string> = {
+      '/tmp/cm-home': `${HOME}/.claude`,
+      '/tmp/code-mode': `${HOME}/.claude`,
+    }
+    on('fs.stat', ($, e) => {
+      const link = Object.keys(links).find(l => isUnder(e.path, l))
+      if (link === undefined) throw new Error('ENOENT')
+      const realPath = links[link] + e.path.slice(link.length)
+      return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath } }
+    })
+    const bash = async (command: string) => textOf(await $.tool.call({ tool: 'Bash', command }))
+    for (const command of [
+      'rm -rf /tmp/cm-home/code-mode',
+      'mv /tmp/cm-home/Code-Mode /tmp/old',
+      'rm -rf /tmp/code-mode',
+      'rm -rf /tmp/c*/code-mode',
+    ])
+      expect(await bash(command)).toContain('hint files and saved functions steer the model')
+    expect(await bash('git -C /src/code-mode pull --ff-only')).toBe('ran')
   })
 
   test('guardedDirs skips an empty root', () => {

@@ -114,7 +114,7 @@ import {
   usedFunctions,
   type SavedFunction,
 } from './functions'
-import { codeModePath, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
+import { codeModePath, codeModePaths, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
 import { SEARCH_LIMIT, TOOL, TOOL_NAMES, parseInput, registration } from './tools'
 
 const MAX_RESULT_CHARS = 20_000
@@ -656,25 +656,49 @@ async function guardedHintDirs($: EngineInterface, home: string): Promise<string
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
 
-// True when a file tool's path lands in a hint folder: the path as written,
-// its real path, or its parent's real path (a new file is not there yet).
+const realPathOf = ($: EngineInterface, path: string): Promise<string | undefined> =>
+  $.fs.stat(path, { resolve: true }).then(
+    s => s.realPath,
+    () => undefined,
+  )
+
+// Where an absolute path can land: as written, its real path, or its parent's
+// real path (a new file is not there yet).
+async function landings($: EngineInterface, full: string): Promise<string[]> {
+  const parent = full.slice(0, full.lastIndexOf('/')) || '/'
+  const [self, dir] = await Promise.all([realPathOf($, full), realPathOf($, parent)])
+  const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
+  return candidates.filter((c): c is string => typeof c === 'string')
+}
+
+// True when a file tool's path lands in a hint folder.
 async function touchesHints($: EngineInterface, filePath: string): Promise<boolean> {
   const home = await homeOf($)
-  const full = resolvePath(filePath, home, await $.session.cwd())
-  const parent = full.slice(0, full.lastIndexOf('/')) || '/'
-  const [self, dir, dirs] = await Promise.all([
-    $.fs.stat(full, { resolve: true }).then(
-      s => s.realPath,
-      () => undefined,
-    ),
-    $.fs.stat(parent, { resolve: true }).then(
-      s => s.realPath,
-      () => undefined,
-    ),
+  const [candidates, dirs] = await Promise.all([
+    landings($, resolvePath(filePath, home, await $.session.cwd())),
     guardedHintDirs($, home),
   ])
-  const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
-  return candidates.some(c => typeof c === 'string' && dirs.some(d => isUnder(c, d)))
+  return candidates.some(c => dirs.some(d => isUnder(c, d)))
+}
+
+// True when a Bash command names a guarded folder (namesGuardedDir), or names
+// a `code-mode` folder that a symbolic link leads to code-mode's own folder
+// or to a folder above it. Case does not count: macOS ignores it.
+async function bashTouchesHints($: EngineInterface, command: string): Promise<boolean> {
+  if (namesGuardedDir(command)) return true
+  const paths = codeModePaths(command)
+  if (paths === null) return true
+  if (paths.length === 0) return false
+  const home = await homeOf($)
+  const [cwd, root] = await Promise.all([$.session.cwd(), $.session.root()])
+  const own = [home, root].filter(r => r !== '').map(r => codeModePath(r))
+  const ownReal = await Promise.all(own.map(d => realPathOf($, d)))
+  const dirs = [...own, ...ownReal.filter((r): r is string => typeof r === 'string')].map(d => d.toLowerCase())
+  const found = await Promise.all(paths.map(p => landings($, resolvePath(p, home, cwd))))
+  return found
+    .flat()
+    .map(c => c.toLowerCase())
+    .some(c => dirs.some(d => isUnder(c, d) || isUnder(d, c)))
 }
 
 // What code-mode saw in the session that made a proposal: the runs with a
@@ -1798,8 +1822,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) =>
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(failClosed)
-  on('tool.call', { tool: 'Bash' }, ($, e, next) =>
-    namesGuardedDir(e.command) ? { deny: HINT_GUARD_DENY } : next(e),
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) =>
+    (await bashTouchesHints($, e.command)) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(failClosed)
 
   // Optional: push the model to run_code by refusing its direct MCP calls.
