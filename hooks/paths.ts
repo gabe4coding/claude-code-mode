@@ -179,6 +179,25 @@ const segmentsOf = (word: string): string[] => {
   return parts
 }
 
+const absolute = (word: string): boolean => word.startsWith('/') || word.startsWith('~')
+
+// The risk of each segment of a word. `code-mode` is the guarded folder only
+// right under `.claude`, or at the start of a relative path, which can be
+// under `.claude`. So `/src/code-mode` is another folder.
+const risksOf = (word: string): Risk[] => {
+  const risks: Risk[] = []
+  for (const part of word.split('=')) {
+    let prev: Risk | null = null
+    for (const segment of segmentsOf(part)) {
+      const risk = riskOfSegment(segment)
+      const parentCanBeClaude = prev === null ? !absolute(part) : prev.claude
+      risks.push({ ...risk, app: risk.app && parentCanBeClaude })
+      prev = risk
+    }
+  }
+  return risks
+}
+
 // `{a,b}` expands with its prefix and suffix. A brace that does not close is unsafe.
 const expandBraces = (word: string): string[] | null => {
   let depth = 0
@@ -226,21 +245,36 @@ const expandBraces = (word: string): string[] | null => {
   return [word]
 }
 
-type Parsed = { commands: string[][]; redirect: boolean }
+// `commands` holds the words with each quoted or escaped glob, brace, `$`,
+// or backtick as LITERAL, since the shell does not expand it. `scripts` holds
+// the words as a shell that runs them again reads them.
+type Parsed = { commands: string[][]; scripts: string[]; redirect: boolean }
+
+// Not in any guarded name, and not a glob or an expansion.
+const LITERAL = '\uE000'
+const EXPANDS = '*?[]{}$`'
 
 // Quotes and backslashes come off. `&&`, `|`, `;`, `(`, `)`, and newlines
 // separate programs, and `<` ends a word. `>` marks an output redirection. A
 // quote that never ends is unsafe.
 const parseCommand = (command: string): Parsed | null => {
   const commands: string[][] = []
+  const scripts: string[] = []
   let words: string[] = []
   let buf = ''
+  let lit = ''
   let quote: "'" | '"' | null = null
   let redirect = false
+  const add = (ch: string, literal: boolean) => {
+    buf += ch
+    lit += literal && EXPANDS.includes(ch) ? LITERAL : ch
+  }
   const flushWord = () => {
     if (buf.length > 0) {
-      words.push(buf)
+      scripts.push(buf)
+      words.push(lit)
       buf = ''
+      lit = ''
     }
   }
   const flushCommand = () => {
@@ -252,25 +286,25 @@ const parseCommand = (command: string): Parsed | null => {
     const ch = command.charAt(i)
     if (quote === "'") {
       if (ch === "'") quote = null
-      else buf += ch
+      else add(ch, true)
       continue
     }
     if (quote === '"') {
       if (ch === '\\') {
         const next = command.charAt(i + 1)
         if (next === '') return null
-        buf += '"\\`$\n'.includes(next) ? next : ch
+        add('"\\`$\n'.includes(next) ? next : ch, true)
         if ('"\\`$\n'.includes(next)) i++
         continue
       }
       if (ch === '"') quote = null
-      else buf += ch
+      else add(ch, ch !== '$' && ch !== '`')
       continue
     }
     if (ch === '\\') {
       const next = command.charAt(i + 1)
       if (next === '') return null
-      buf += next
+      add(next, true)
       i++
       continue
     }
@@ -286,7 +320,10 @@ const parseCommand = (command: string): Parsed | null => {
     }
     if (ch === '>') {
       redirect = true
-      if (/^\d+$/.test(buf)) buf = ''
+      if (/^\d+$/.test(buf)) {
+        buf = ''
+        lit = ''
+      }
       flushWord()
       if (command.charAt(i + 1) === '>') i++
       else if (command.charAt(i + 1) === '&') i++
@@ -305,7 +342,7 @@ const parseCommand = (command: string): Parsed | null => {
       flushWord()
       continue
     }
-    buf += ch
+    add(ch, false)
   }
   if (quote !== null) return null
   flushCommand()
@@ -319,7 +356,7 @@ const parseCommand = (command: string): Parsed | null => {
     }
     if (flat.length > 0) expanded.push(flat)
   }
-  return { commands: expanded, redirect }
+  return { commands: expanded, scripts, redirect }
 }
 
 // The program name: after assignments and after sudo, env, or command.
@@ -359,8 +396,6 @@ const operandPaths = (argv: string[], from: number): string[] => {
   return paths
 }
 
-const absolute = (word: string): boolean => word.startsWith('/') || word.startsWith('~')
-
 // Programs that run a word as a script, as `bash -c` or `eval` do. A word with
 // one of the SCRIPT characters can then hide a command.
 const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'source', 'watch', 'su', 'script', 'flock']
@@ -383,10 +418,11 @@ const writesOut = (argv: string[]): boolean =>
 
 /**
  * True when a shell command could name a guarded folder. Fail closed.
- * Quotes and backslashes come off, and braces expand. A word that is
- * `hints` or `functions`, a `..`, a pattern that cannot be read, or a
- * relative path after `cd` into `.claude` is denied. A word that is
- * `code-mode` is denied unless every program is read-only, with no `>`,
+ * Quotes and backslashes come off, and braces expand. A quoted or escaped
+ * glob, brace, or `$` is literal. A word that is `hints` or `functions`, a
+ * `..`, a pattern that cannot be read, or a relative path after `cd` into
+ * `.claude` is denied. A `code-mode` under `.claude`, or at the start of a
+ * relative path, is denied unless every program is read-only, with no `>`,
  * `>>`, `tee`, or `-o`, and no program outside that list in a pipeline.
  * When the command runs a shell, a word with spaces, quotes, backslashes, or
  * shell operators is also read as a command of its own.
@@ -394,20 +430,18 @@ const writesOut = (argv: string[]): boolean =>
 export const namesGuardedDir = (command: string): boolean => {
   const parsed = parseCommand(command)
   if (parsed === null) return true
+  if (runsShell(parsed.commands) && parsed.scripts.some(word => SCRIPT.test(word) && namesGuardedDir(word))) return true
   let hints = false
   let app = false
   let unsafe = false
   let underClaude = false
   let relative = false
   let pure = parsed.commands.length > 0 && !parsed.redirect
-  const shell = runsShell(parsed.commands)
   for (const argv of parsed.commands) {
     const program = programAt(argv)
     if (program === null || !READ_ONLY.has(program.name) || writesOut(argv)) pure = false
     for (const word of argv) {
-      if (shell && SCRIPT.test(word) && namesGuardedDir(word)) return true
-      for (const segment of segmentsOf(word)) {
-        const risk = riskOfSegment(segment)
+      for (const risk of risksOf(word)) {
         hints ||= risk.hints
         app ||= risk.app
         unsafe ||= risk.unsafe
