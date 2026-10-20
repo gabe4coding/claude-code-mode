@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { TOOL } from '../hooks/tools'
-import { HOME, fakeHome as fakeHomeIn, textOf } from './fakes'
+import { HOME, approvals, fakeHome as fakeHomeIn, fakeStore, sha256, textOf } from './fakes'
 import { MARK } from '../hooks/protocol'
 import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
@@ -190,7 +190,7 @@ describe('save_function', () => {
   })
 
   test('the row shows the code, and Approve saves the function without its reason', async ($, on) => {
-    mock.store(on)
+    const store = fakeStore(on)
     const fs = fakeHome(on, { [PENDING]: PROPOSAL })
     const ui = await $.ui.mount(row)
     const drawn = JSON.stringify(await ui.drawn())
@@ -201,6 +201,7 @@ describe('save_function', () => {
       formatFunction({ name: 'searchAll', description: 'Every issue.', code: CODE }),
     )
     expect(fs.removed).toEqual([PENDING])
+    expect(approvals(store)).toEqual({ [`${DIR}/searchAll.md`]: await sha256(fs.written[`${DIR}/searchAll.md`]!) })
     expect(JSON.stringify(await ui.drawn())).toContain('Function saved')
   })
 
@@ -235,7 +236,7 @@ describe('save_function', () => {
   })
 
   test('the band lists function proposals with the hint proposals', async ($, on) => {
-    mock.store(on)
+    const store = fakeStore(on)
     const fs = fakeHome(on, { [PENDING]: PROPOSAL })
     const ui = await $.ui.mount(band)
     expect(JSON.stringify(await ui.drawn())).toContain('1 proposal for code mode: 1 function')
@@ -243,6 +244,7 @@ describe('save_function', () => {
     await ui.press({ key: 'discard-0' })
     expect(fs.removed).toEqual([PENDING])
     expect(fs.written[`${DIR}/searchAll.md`]).toBe(undefined)
+    expect(approvals(store)).toEqual({})
   })
 })
 

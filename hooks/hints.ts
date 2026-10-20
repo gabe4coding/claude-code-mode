@@ -443,6 +443,15 @@ export const decisionKey = (path: string): string => {
     : `${DECISION}${path.slice(path.lastIndexOf('/') + 1)}`.slice(0, MAX_STORE_KEY)
 }
 
+const APPROVED = 'approved:'
+
+/**
+ * The $.store key that keeps the hash of an active file's approved text. A
+ * long path keeps its end; the value holds the whole path, so a reader can
+ * tell two files with one key apart.
+ */
+export const approvalKey = (path: string): string => `${APPROVED}${path.slice(-(MAX_STORE_KEY - APPROVED.length))}`
+
 // The store keeps one decision per proposal, so a decided row still shows it
 // after a reload. It keeps the newest MAX_DECISIONS only: $.store.set rejects
 // once the store holds 4 MiB of JSON, and a decision is at most about 500 bytes.

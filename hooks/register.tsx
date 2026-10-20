@@ -7,6 +7,7 @@ import {
   activePathOf,
   appendHint,
   appendItems,
+  approvalKey,
   asCode,
   canApprove,
   codeNames,
@@ -340,6 +341,26 @@ async function readIfExists($: EngineInterface, path: string): Promise<string | 
   return (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// The approval ledger: for each active hint or function file, the SHA-256 of
+// the text an Approve wrote, so a file that another tool wrote or changed can
+// be told from an approved one. An Approve writes or removes an active file
+// only through these two. The ledger changes first: when the file step then
+// fails, the file and its hash differ, and the file counts as not approved.
+async function writeApproved($: EngineInterface, path: string, text: string): Promise<void> {
+  await $.store.set(approvalKey(path), { path, sha256: await sha256Hex(text) })
+  await $.fs.write(path, text)
+}
+
+async function removeApproved($: EngineInterface, path: string): Promise<void> {
+  await $.store.delete(approvalKey(path))
+  await $.process.run(['rm', '-f', path])
+}
+
 // What runs learn about each MCP tool, in a JSON file in ~/.claude/code-mode
 // that every session shares. `parse` drops what the plugin cannot have
 // written; `merge` gives undefined when a run learned nothing new.
@@ -525,7 +546,7 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
     let dest = path
     if (edit.kind === 'change') {
       const own = await bundledChangeFile($, userDir, file, hint)
-      await $.fs.write(own.path, withNew(own.text, edit.text))
+      await writeApproved($, own.path, withNew(own.text, edit.text))
       dest = own.path
     }
     const removed = parseRemoved(String(await $.fs.read(path).catch(() => '')))
@@ -540,7 +561,8 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
   if (dir === undefined || !path.endsWith('.md')) throw new Error(`not a hint file: ${path}`)
   const text = await readIfExists($, path)
   if (edit.kind === 'change') {
-    await $.fs.write(
+    await writeApproved(
+      $,
       path,
       (text === undefined ? undefined : replaceInFile(text, key, edit.text)) ?? withNew(text, edit.text),
     )
@@ -548,8 +570,8 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
   }
   if (text === undefined) return path
   const rest = removeFromFile(text, key)
-  if (rest === undefined) await $.process.run(['rm', '-f', path])
-  else await $.fs.write(path, rest)
+  if (rest === undefined) await removeApproved($, path)
+  else await writeApproved($, path, rest)
   return path
 }
 
@@ -570,7 +592,7 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
     current === undefined || current.trim() === ''
       ? withoutReview(proposal)
       : appendItems(current, hintItems(hint.body))
-  if (text !== current) await $.fs.write(dest, text)
+  if (text !== current) await writeApproved($, dest, text)
   await $.process.run(['rm', '-f', path])
   return dest
 }
@@ -916,7 +938,8 @@ async function saveFunction($: EngineInterface, path: string): Promise<string> {
   if (proposal === undefined || dir === undefined || !isUnder(path, `${dir}/pending`))
     throw new Error(`not a function proposal in the function folder: ${path}`)
   const dest = `${dir}/${proposal.name}.md`
-  await $.fs.write(
+  await writeApproved(
+    $,
     dest,
     formatFunction({ name: proposal.name, description: proposal.description, code: proposal.code }),
   )

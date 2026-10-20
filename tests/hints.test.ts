@@ -5,6 +5,7 @@ import {
   TRANSFER_TEXT,
   activePathOf,
   appendHint,
+  approvalKey,
   appendItems,
   bundledRef,
   canApprove,
@@ -37,7 +38,7 @@ import {
 } from '../hooks/hints'
 import { guardedDirs, namesGuardedDir } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
-import { HOME, TMP, fakeHome, textOf } from './fakes'
+import { HOME, TMP, approvals, fakeHome, fakeStore, sha256, textOf } from './fakes'
 
 const USER_DIR = `${HOME}/.claude/code-mode/hints`
 
@@ -117,6 +118,15 @@ describe('hint files', () => {
     expect(decisionKey(short)).toBe(`decision:${short}`)
     const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/pending/gmail--abcdef234567.md`
     expect(decisionKey(deep)).toBe('decision:gmail--abcdef234567.md')
+  })
+
+  // The value holds the whole path, so two deep paths with one key do not count as one file.
+  test('the approval key of an active file fits the store limit', () => {
+    const short = `${USER_DIR}/gmail.md`
+    expect(approvalKey(short)).toBe(`approved:${short}`)
+    const deep = `/${'d'.repeat(300)}/.claude/code-mode/hints/gmail.md`
+    expect(approvalKey(deep).length).toBe(256)
+    expect(approvalKey(deep).endsWith('/.claude/code-mode/hints/gmail.md')).toBe(true)
   })
 
   test('parseDecision reads each shape the store has kept, and nothing else', () => {
@@ -574,12 +584,16 @@ describe('add_hint and its approval row', () => {
     })
 
     test(`Approve activates the hint and the row says so (${surface})`, async ($, on) => {
-      mock.store(on)
+      const store = fakeStore(on)
       const fs = fakeHome(on, { [PENDING]: PROPOSAL })
       const ui = await $.ui.mount(row(surface))
       await ui.press({ key: 'approve' })
       expect(fs.written[`${USER_DIR}/things.md`]).toBe(PROPOSAL)
       expect(fs.removed).toEqual([PENDING])
+      // the SHA-256 of PROPOSAL, from shasum -a 256
+      expect(approvals(store)).toEqual({
+        [`${USER_DIR}/things.md`]: '71132cad3d36aa0761e03c9bf32a87bb4bf48b8bc2b4586cd16df5f5043aa76b',
+      })
       expect(JSON.stringify(await ui.drawn())).toContain('Hint approved')
       expect(await ui.find({ key: 'approve' })).toBe(undefined)
     })
@@ -599,12 +613,13 @@ describe('add_hint and its approval row', () => {
     })
 
     test(`Discard deletes the proposal (${surface})`, async ($, on) => {
-      mock.store(on)
+      const store = fakeStore(on)
       const fs = fakeHome(on, { [PENDING]: PROPOSAL })
       const ui = await $.ui.mount(row(surface))
       await ui.press({ key: 'discard' })
       expect(fs.removed).toEqual([PENDING])
       expect(fs.written[`${USER_DIR}/things.md`]).toBe(undefined)
+      expect(approvals(store)).toEqual({})
       expect(JSON.stringify(await ui.drawn())).toContain('Hint discarded')
     })
   }
@@ -638,6 +653,16 @@ describe('add_hint and its approval row', () => {
     expect(fs.removed).toEqual([PENDING])
   })
 
+  // Write first, and a retry finds the hint in the file, writes nothing and records nothing.
+  test('an Approve whose hash cannot be kept writes no file and keeps the proposal', async ($, on) => {
+    fakeStore(on, {}, key => (key.startsWith('approved:') ? 'the store is full' : undefined))
+    const fs = fakeHome(on, { [PENDING]: PROPOSAL })
+    const ui = await $.ui.mount(row('terminal'))
+    await ui.press({ key: 'approve' }).catch(() => undefined)
+    expect(fs.written[`${USER_DIR}/things.md`]).toBe(undefined)
+    expect(fs.removed).toEqual([])
+  })
+
   test('Approve treats an empty active file as new and writes the frontmatter', async ($, on) => {
     mock.store(on)
     const fs = fakeHome(on, { [PENDING]: PROPOSAL, [`${USER_DIR}/things.md`]: '\n  \n' })
@@ -646,17 +671,16 @@ describe('add_hint and its approval row', () => {
     expect(fs.written[`${USER_DIR}/things.md`]).toBe(PROPOSAL)
   })
 
-  test('Approve appends to an active file that exists', async ($, on) => {
-    mock.store(on)
-    const fs = fakeHome(on, {
-      [PENDING]: PROPOSAL,
-      [`${USER_DIR}/things.md`]: '---\nservers: [Things]\n---\n- Older hint.\n',
-    })
+  test('Approve appends to an active file that exists, and its hash follows the new text', async ($, on) => {
+    const path = `${USER_DIR}/things.md`
+    const older = '---\nservers: [Things]\n---\n- Older hint.\n'
+    const store = fakeStore(on, { [`approved:${path}`]: { path, sha256: await sha256(older) } })
+    const fs = fakeHome(on, { [PENDING]: PROPOSAL, [path]: older })
     const ui = await $.ui.mount(row('terminal'))
     await ui.press({ key: 'approve' })
-    expect(fs.written[`${USER_DIR}/things.md`]).toBe(
-      '---\nservers: [Things]\n---\n- Older hint.\n- Pass ids as strings.\n',
-    )
+    expect(fs.written[path]).toBe('---\nservers: [Things]\n---\n- Older hint.\n- Pass ids as strings.\n')
+    // from shasum -a 256
+    expect(approvals(store)).toEqual({ [path]: '882e61cbdd18d4e1399ddba454c30619db39c5e81d0fb3fdcb20b595d9d8afaa' })
   })
 })
 
@@ -890,14 +914,15 @@ describe('remove_hint', () => {
     expect(Object.keys(fs.written)).toEqual([])
   })
 
-  test('Approve takes the hint out of its file; the last hint removes the file', async ($, on) => {
-    mock.store(on)
+  test('Approve takes the hint out of its file; the last hint removes the file and its hash', async ($, on) => {
     const path = `${USER_DIR}/mail-approve.md`
-    const fs = fakeHome(
-      on,
-      { [path]: FILE, [`${USER_DIR}/one.md`]: '---\nservers: [Mail]\n---\n- Only one.\n' },
-      { [MAIL]: 'claude.ai Mail' },
-    )
+    const one = `${USER_DIR}/one.md`
+    const oneText = '---\nservers: [Mail]\n---\n- Only one.\n'
+    const store = fakeStore(on, {
+      [`approved:${path}`]: { path, sha256: await sha256(FILE) },
+      [`approved:${one}`]: { path: one, sha256: await sha256(oneText) },
+    })
+    const fs = fakeHome(on, { [path]: FILE, [one]: oneText }, { [MAIL]: 'claude.ai Mail' })
     await remove($, path, 'Mail returns JSON.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
@@ -906,16 +931,19 @@ describe('remove_hint', () => {
     expect(drawn).toContain('Removes this hint from `mail-approve.md`, which has 2 hints.')
     await ui.press({ key: 'approve-0' })
     expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Pass ids as strings.\n')
+    // from shasum -a 256
+    expect(approvals(store)[path]).toBe('f6ed9915774892bc67c72fe653db18a060b0a1ebbbc5149b7892b532c729062a')
 
     await $.tool.call({
       tool: TOOL.remove_hint,
       tool_use_id: 'toolu_01ONEhint23456',
-      path: `${USER_DIR}/one.md`,
+      path: one,
       text: 'Only one.',
       why: 'W.',
     } as never)
     await ui.press({ key: 'approve-0' })
-    expect(fs.removed).toContain(`${USER_DIR}/one.md`)
+    expect(fs.removed).toContain(one)
+    expect(Object.keys(approvals(store))).toEqual([path])
   })
 
   test('Approve of a bundled hint records it in removed.json, which hides it in every session', async ($, on) => {
@@ -1055,7 +1083,7 @@ describe('edit_hint', () => {
   })
 
   test('hides the old hint at once, and Approve puts the new one in its place', async ($, on) => {
-    mock.store(on)
+    const store = fakeStore(on)
     const path = `${USER_DIR}/mail-edit.md`
     const fs = fakeHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
     const r = textOf(await edit($, path, 'Mail returns JSON.', 'Mail returns TSV.'))
@@ -1071,6 +1099,7 @@ describe('edit_hint', () => {
     expect(drawn).toContain('Changes this hint in `mail-edit.md`, which has 2 hints.')
     await ui.press({ key: 'approve-0' })
     expect(fs.written[path]).toBe('---\nservers: [Mail]\n---\n- Mail returns TSV.\n- Pass ids as strings.\n')
+    expect(approvals(store)).toEqual({ [path]: await sha256(fs.written[path]!) })
   })
 
   test('the new text gets the warnings of add_hint', async ($, on) => {
@@ -1114,7 +1143,7 @@ describe('edit_hint', () => {
   })
 
   test('Approve of a bundled hint hides it and adds the new one to the user file of the same name', async ($, on) => {
-    mock.store(on)
+    const store = fakeStore(on)
     const files: Record<string, string> = {}
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-bundled-edit.md`
@@ -1128,6 +1157,10 @@ describe('edit_hint', () => {
     ])
     expect(fs.written[`${USER_DIR}/mail-bundled-edit.md`]).toBe('---\nservers: ["Mail"]\n---\n- Pass ids as numbers.\n')
     expect(fs.written[path]).toBe(undefined)
+    // the user file gets a hash; removed.json and the bundled file do not
+    expect(approvals(store)).toEqual({
+      [`${USER_DIR}/mail-bundled-edit.md`]: await sha256('---\nservers: ["Mail"]\n---\n- Pass ids as numbers.\n'),
+    })
     const shown = await search($)
     expect(shown).toContain('Pass ids as numbers.')
     expect(shown).not.toContain('Pass ids as strings.')
