@@ -426,7 +426,7 @@ const writesOut = (argv: string[]): boolean =>
  * `code-mode` under `.claude`, or at the start of a relative path, is denied
  * unless every program is read-only, with no `>`, `>>`, `tee`, or `-o`, and
  * no program outside that list in a pipeline. So is a `code-mode` elsewhere
- * when another word names `.claude`, as `ln -s` can join the two. The
+ * when another word ends in `.claude`, as `ln -s` can join the two. The
  * Bash guard resolves the other `code-mode` paths (codeModePaths).
  * When the command runs a shell, a word with spaces, quotes, backslashes, or
  * shell operators is also read as a command of its own.
@@ -448,16 +448,16 @@ export const namesGuardedDir = (command: string): boolean => {
     const program = programAt(argv)
     if (program === null || !READ_ONLY.has(program.name) || writesOut(argv)) pure = false
     for (const word of argv) {
-      let wordClaude = false
       let wordElsewhere = false
       for (const risk of risksOf(word)) {
         hints ||= risk.hints
         app ||= risk.app
         unsafe ||= risk.unsafe
-        wordClaude ||= risk.claude
         wordElsewhere ||= risk.elsewhere
       }
-      // Another word: `ln -s ~/.claude /tmp/x` makes `/tmp/x/code-mode` the guarded folder.
+      // Another word that ends in `.claude`: `ln -s ~/.claude /tmp/x` makes
+      // `/tmp/x/code-mode` the guarded folder.
+      const wordClaude = riskOfSegment(segmentsOf(word).at(-1) ?? '').claude
       joined ||= (wordClaude && elsewhere) || (wordElsewhere && claude)
       claude ||= wordClaude
       elsewhere ||= wordElsewhere
