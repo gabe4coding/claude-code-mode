@@ -1,7 +1,7 @@
 import { describe, expect, mock, test, type Engine } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { TOOL, TOOL_NAMES, parseInput, registration } from '../hooks/tools'
-import { textOf } from './fakes'
+import { fakeStore, ledger, textOf } from './fakes'
 import { formatHints, parseHint } from '../hooks/hints'
 import {
   MARK,
@@ -1441,14 +1441,14 @@ describe('hint nudge', () => {
     fakeServer(on)
     fakeHost(on)
     const dir = '/home/fake/.claude/code-mode/hints'
+    const hint = '---\nservers: [fake]\n---\n- Echo returns its arguments.\n'
+    fakeStore(on, await ledger({ [`${dir}/fake.md`]: hint }))
     on('env.get', ($, e, next) => (e.name === 'HOME' ? { value: '/home/fake' } : next(e)))
     on('fs.exists', ($, e) => ({ value: e.path === dir }))
     on('fs.list', ($, e) => ({
       value: e.path === dir ? [{ name: 'fake.md', kind: 'file', size: 1, mtimeMs: 0, isLink: false }] : [],
     }))
-    on('fs.read', ($, e, next) =>
-      e.path === `${dir}/fake.md` ? { value: '---\nservers: [fake]\n---\n- Echo returns its arguments.\n' } : next(e),
-    )
+    on('fs.read', ($, e, next) => (e.path === `${dir}/fake.md` ? { value: hint } : next(e)))
     await run($, { tool: 'mcp__fake__echo' })
     expect(await run($, { tool: 'mcp__fake__echo' })).not.toContain('Worth a hint')
   })

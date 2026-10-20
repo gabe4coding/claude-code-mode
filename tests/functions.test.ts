@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { TOOL } from '../hooks/tools'
-import { HOME, approvals, fakeHome as fakeHomeIn, fakeStore, sha256, textOf } from './fakes'
+import { HOME, approvals, approvedHome, fakeHome as fakeHomeIn, fakeStore, sha256, textOf } from './fakes'
 import { MARK } from '../hooks/protocol'
 import { TRANSFER_TEXT, pendingPathOf } from '../hooks/hints'
 import {
@@ -37,6 +37,9 @@ const TOOLS = [
 ]
 const fakeHome = (on: On, files: Record<string, string>) =>
   fakeHomeIn(on, files, {}, { sessionId: 'sess-1', tools: TOOLS })
+// fakeHome, with a ledger that approves each file in `files`.
+const approvedFakeHome = (on: On, files: Record<string, string>) =>
+  approvedHome(on, files, {}, { sessionId: 'sess-1', tools: TOOLS })
 
 describe('function files', () => {
   test('functionError accepts an async function expression with a name and a description', () => {
@@ -260,7 +263,7 @@ describe('saved functions in programs', () => {
   }
 
   test('run_code gives the sandbox only the functions the program uses', async ($, on) => {
-    fakeHome(on, { ...files })
+    await approvedFakeHome(on, { ...files })
     let input: { lib?: Record<string, string> } = {}
     on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
       input = JSON.parse(e.input ?? '{}')
@@ -273,7 +276,7 @@ describe('saved functions in programs', () => {
   })
 
   test('a run that fails in a saved function asks for a fix, once per function in a session', async ($, on) => {
-    fakeHome(on, { ...files })
+    await approvedFakeHome(on, { ...files })
     on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
       yield {
         stream: 'stdout',
@@ -287,8 +290,30 @@ describe('saved functions in programs', () => {
     expect(await run()).not.toContain('A saved function failed')
   })
 
+  test('a saved function with no hash does not reach the sandbox or search_tools, and the band lists it', async ($, on) => {
+    fakeStore(on)
+    fakeHome(on, { [`${DIR}/page.md`]: files[`${DIR}/page.md`] })
+    let input: { lib?: Record<string, string> } = {}
+    on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      input = JSON.parse(e.input ?? '{}')
+      yield { stream: 'stdout', text: `${MARK}${JSON.stringify({ t: 'done', value: '1', logs: [] })}\n` }
+      return { value: { code: 0, signal: null } }
+    })
+    await $.tool.call({ tool: TOOL.run_code, code: 'return await lib.page({ jql: "x" })' })
+    expect(input.lib).toEqual({})
+    expect(textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'search' }))).not.toContain('## Saved functions')
+    const ui = await $.ui.mount({
+      plugin: 'code-mode',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 90 } as never,
+    })
+    await ui.press({ key: 'review' })
+    expect(JSON.stringify(await ui.drawn())).toContain('**Saved function not approved**')
+  })
+
   test('search_tools lists the functions that call a found tool', async ($, on) => {
-    fakeHome(on, { ...files })
+    await approvedFakeHome(on, { ...files })
     const text = textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'search' }))
     expect(text).toContain('## Saved functions')
     expect(text).toContain('- lib.page({ cloudId, jql }): One page.')
