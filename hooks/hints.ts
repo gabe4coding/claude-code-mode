@@ -446,11 +446,14 @@ export const decisionKey = (path: string): string => {
 const APPROVED = 'approved:'
 
 /**
- * The $.store key that keeps the hash of an active file's approved text. A
- * long path keeps its end; the value holds the whole path, so a reader can
- * tell two files with one key apart.
+ * The $.store key that keeps the hash of an active file's approved text, from
+ * the SHA-256 of its whole path as hex: any path fits the key limit, and two
+ * paths that end the same get two keys. The value holds the path too.
  */
-export const approvalKey = (path: string): string => `${APPROVED}${path.slice(-(MAX_STORE_KEY - APPROVED.length))}`
+export const approvalKey = (pathSha256: string): string => `${APPROVED}${pathSha256}`
+
+/** True for a $.store key that approvalKey made. */
+export const isApprovalKey = (key: string): boolean => key.startsWith(APPROVED)
 
 // The store keeps one decision per proposal, so a decided row still shows it
 // after a reload. It keeps the newest MAX_DECISIONS only: $.store.set rejects
