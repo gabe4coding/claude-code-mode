@@ -1326,6 +1326,9 @@ describe('the hint-file guard', () => {
     'git -C ~/.claude/code-mode init',
     'rm -rf code-mode',
     'tar -xf a.tar --directory=code-mode',
+    // A link made in the same command is not there yet when the guard looks.
+    'ln -s ~/.claude /tmp/x && rm -rf /tmp/x/code-mode',
+    'ln -s ~/.clau* /tmp/x; mv /tmp/x/code-mode /tmp/y',
   ]
   for (const command of spellings)
     test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
@@ -1363,6 +1366,29 @@ describe('the hint-file guard', () => {
     session(on)
     const r = await $.tool.call({ tool: 'Bash', command: 'cd ~/.claude/code-mode && cp /tmp/a.md hints/' })
     expect(textOf(r)).toContain('hint files and saved functions steer the model')
+  })
+
+  test('denies a Bash command that reaches code-mode through a symbolic link', async ($, on) => {
+    session(on)
+    const links: Record<string, string> = {
+      '/tmp/cm-home': `${HOME}/.claude`,
+      '/tmp/code-mode': `${HOME}/.claude`,
+    }
+    on('fs.stat', ($, e) => {
+      const link = Object.keys(links).find(l => isUnder(e.path, l))
+      if (link === undefined) throw new Error('ENOENT')
+      const realPath = links[link] + e.path.slice(link.length)
+      return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath } }
+    })
+    const bash = async (command: string) => textOf(await $.tool.call({ tool: 'Bash', command }))
+    for (const command of [
+      'rm -rf /tmp/cm-home/code-mode',
+      'mv /tmp/cm-home/Code-Mode /tmp/old',
+      'rm -rf /tmp/code-mode',
+      'rm -rf /tmp/c*/code-mode',
+    ])
+      expect(await bash(command)).toContain('hint files and saved functions steer the model')
+    expect(await bash('git -C /src/code-mode pull --ff-only')).toBe('ran')
   })
 
   test('guardedDirs skips an empty root', () => {

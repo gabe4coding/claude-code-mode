@@ -208,10 +208,12 @@ model does with your MCP tools. These rules make a bad hint less probable:
 - **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
   NotebookEdit on files in the hint folders. It checks the path as written and its real path through symbolic links.
 - **The guard denies a Bash command that names a guarded folder.** The model can use the Read tool to read hints.
-  A word names `hints` or `functions` after the check removes quotes and backslashes and expands braces. A glob,
-  a brace or a `$` in quotes or after a backslash is literal text. A `code-mode` folder in `.claude`, or at the start
-  of a relative path, names a guarded folder too, unless every program is read-only. A folder named `code-mode`
-  in another place, such as a clone of this repository, does not. The read-only programs are `ls`, `du`, `cat`,
+  A word names `hints` or `functions` after the check removes quotes and backslashes and expands braces. A glob or
+  a brace in quotes or after a backslash is literal text. A `$` is literal in single quotes or after a backslash. A
+  `code-mode` folder in `.claude`, or at the start of a relative path, names a guarded folder too, unless every
+  program is read-only. A folder named `code-mode` in another place, such as a clone of this repository, does not.
+  The exceptions are a symbolic link that leads it to the code-mode folder, and a command that also names `.claude`.
+  The read-only programs are `ls`, `du`, `cat`,
   `head`, `tail`, `wc`, `stat`, `file`, `rg`, and `grep`. The program is the command word, not an argument. Each
   program in a pipeline must be on that list. A `>`, `>>`, `tee`, or `-o` removes the exception. A glob, a variable,
   or a pattern the check cannot read denies the command. A `..` in a path denies the command. A relative path after

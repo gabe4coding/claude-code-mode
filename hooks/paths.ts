@@ -183,15 +183,16 @@ const absolute = (word: string): boolean => word.startsWith('/') || word.startsW
 
 // The risk of each segment of a word. `code-mode` is the guarded folder only
 // right under `.claude`, or at the start of a relative path, which can be
-// under `.claude`. So `/src/code-mode` is another folder.
-const risksOf = (word: string): Risk[] => {
-  const risks: Risk[] = []
+// under `.claude`. So `/src/code-mode` is another folder (`elsewhere`), unless
+// a symbolic link leads it into `.claude`.
+const risksOf = (word: string): (Risk & { elsewhere: boolean })[] => {
+  const risks: (Risk & { elsewhere: boolean })[] = []
   for (const part of word.split('=')) {
     let prev: Risk | null = null
     for (const segment of segmentsOf(part)) {
       const risk = riskOfSegment(segment)
       const parentCanBeClaude = prev === null ? !absolute(part) : prev.claude
-      risks.push({ ...risk, app: risk.app && parentCanBeClaude })
+      risks.push({ ...risk, app: risk.app && parentCanBeClaude, elsewhere: risk.app && !parentCanBeClaude })
       prev = risk
     }
   }
@@ -419,11 +420,14 @@ const writesOut = (argv: string[]): boolean =>
 /**
  * True when a shell command could name a guarded folder. Fail closed.
  * Quotes and backslashes come off, and braces expand. A quoted or escaped
- * glob, brace, or `$` is literal. A word that is `hints` or `functions`, a
- * `..`, a pattern that cannot be read, or a relative path after `cd` into
- * `.claude` is denied. A `code-mode` under `.claude`, or at the start of a
- * relative path, is denied unless every program is read-only, with no `>`,
- * `>>`, `tee`, or `-o`, and no program outside that list in a pipeline.
+ * glob or brace is literal, and so is a `$` in single quotes or after a
+ * backslash. A word that is `hints` or `functions`, a `..`, a pattern that
+ * cannot be read, or a relative path after `cd` into `.claude` is denied. A
+ * `code-mode` under `.claude`, or at the start of a relative path, is denied
+ * unless every program is read-only, with no `>`, `>>`, `tee`, or `-o`, and
+ * no program outside that list in a pipeline. So is a `code-mode` elsewhere
+ * when another word names `.claude`, as `ln -s` can join the two. The
+ * Bash guard resolves the other `code-mode` paths (codeModePaths).
  * When the command runs a shell, a word with spaces, quotes, backslashes, or
  * shell operators is also read as a command of its own.
  */
@@ -434,6 +438,9 @@ export const namesGuardedDir = (command: string): boolean => {
   let hints = false
   let app = false
   let unsafe = false
+  let claude = false
+  let elsewhere = false
+  let joined = false
   let underClaude = false
   let relative = false
   let pure = parsed.commands.length > 0 && !parsed.redirect
@@ -441,11 +448,19 @@ export const namesGuardedDir = (command: string): boolean => {
     const program = programAt(argv)
     if (program === null || !READ_ONLY.has(program.name) || writesOut(argv)) pure = false
     for (const word of argv) {
+      let wordClaude = false
+      let wordElsewhere = false
       for (const risk of risksOf(word)) {
         hints ||= risk.hints
         app ||= risk.app
         unsafe ||= risk.unsafe
+        wordClaude ||= risk.claude
+        wordElsewhere ||= risk.elsewhere
       }
+      // Another word: `ln -s ~/.claude /tmp/x` makes `/tmp/x/code-mode` the guarded folder.
+      joined ||= (wordClaude && elsewhere) || (wordElsewhere && claude)
+      claude ||= wordClaude
+      elsewhere ||= wordElsewhere
     }
     if (program !== null && underClaude && program.name !== 'cd') {
       const paths = operandPaths(argv, program.index)
@@ -462,5 +477,28 @@ export const namesGuardedDir = (command: string): boolean => {
     }
   }
   if (unsafe || hints || relative) return true
-  return app && !pure
+  return (app || joined) && !pure
+}
+
+/**
+ * Each path in a command up to a `code-mode` folder, as written, or null when
+ * one has a glob or a quoted glob character. The Bash guard resolves them, as
+ * a symbolic link can lead a path such as `/tmp/x/code-mode` into `.claude`.
+ */
+export const codeModePaths = (command: string): string[] | null => {
+  const parsed = parseCommand(command)
+  if (parsed === null) return null
+  const paths: string[] = []
+  for (const argv of parsed.commands)
+    for (const word of argv)
+      for (const part of word.split('=')) {
+        const segments = part.split('/')
+        for (let i = 0; i < segments.length; i++) {
+          if (!riskOfSegment(segments[i] ?? '').app) continue
+          const path = segments.slice(0, i + 1).join('/')
+          if (/[*?[]/.test(path) || path.includes(LITERAL)) return null
+          paths.push(path)
+        }
+      }
+  return paths
 }
