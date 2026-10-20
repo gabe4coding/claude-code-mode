@@ -212,7 +212,7 @@ model does with your MCP tools. These rules make a bad hint less probable:
   a brace in quotes or after a backslash is literal text. A `$` is literal in single quotes or after a backslash. A
   `code-mode` folder in `.claude`, or at the start of a relative path, names a guarded folder too, unless every
   program is read-only. A folder named `code-mode` in another place, such as a clone of this repository, does not.
-  The exceptions are a symbolic link that leads it to the code-mode folder, and a command that also names `.claude`.
+  The exceptions are a symbolic link that leads it to the code-mode folder, and another word that ends in `.claude`.
   The read-only programs are `ls`, `du`, `cat`,
   `head`, `tail`, `wc`, `stat`, `file`, `rg`, and `grep`. The program is the command word, not an argument. Each
   program in a pipeline must be on that list. A `>`, `>>`, `tee`, or `-o` removes the exception. A glob, a variable,
