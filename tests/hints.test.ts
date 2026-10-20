@@ -1329,6 +1329,12 @@ describe('the hint-file guard', () => {
     // A link made in the same command is not there yet when the guard looks.
     'ln -s ~/.claude /tmp/x && rm -rf /tmp/x/code-mode',
     'ln -s ~/.clau* /tmp/x; mv /tmp/x/code-mode /tmp/y',
+    'ln -s ~/.claude/ /tmp/x && rm -rf /tmp/x/code-mode',
+    // Seen in sessions and still denied: a relative `code-mode` can be in
+    // `.claude`, `$(...)` runs a command, and a quoted guarded path can be written.
+    'kb page code-mode',
+    'gh issue list --repo $(git -C . remote get-url origin) --state open --limit 30',
+    `node /src/drive.mjs send 'Call edit_hint with path "/tmp/v/cwd/.claude/code-mode/hints/a.md"'`,
   ]
   for (const command of spellings)
     test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
@@ -1358,6 +1364,11 @@ describe('the hint-file guard', () => {
     `grep -o 'url=https://[^ ]*' /tmp/x/tasks/a.output`,
     `codex exec --skip-git-repo-check "Use the pox MCP tool save_fn to save a function named gitlog with body: git -C \\"\\$1\\" log --oneline -3"`,
     `echo \\$HOME \\*`,
+    // Seen in sessions: a quoted glob, and the `.claude` of a clone, not of HOME.
+    `git -C /Users/me/Repositories/plainwright branch -a --list "*daily/*"`,
+    'sed -n 25,60p /Users/me/Repositories/code-mode/.claude/worktrees/x/hooks/paths.ts',
+    'sed -n 1p /src/code-mode/.claude/worktrees/x/a.ts /src/code-mode/.claude/worktrees/x/b.ts',
+    `grep -n -E "guard|code-mode/hints|code-mode/functions|touchesHints" /src/code-mode/.claude/worktrees/x/tests/hints.test.ts`,
   ]
   for (const command of others)
     test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
