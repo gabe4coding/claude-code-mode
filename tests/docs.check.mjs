@@ -23,7 +23,7 @@ const docsIn = dir =>
     .map(f => path.join(dir, 'docs', f))
 const USER_DOCS = [path.join(ROOT, 'README.md'), ...docsIn(ROOT)]
 // Not written to the STE rules, but their links into the docs must keep working.
-const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md'].map(f => path.join(ROOT, f))
+const LINK_ONLY = ['AGENTS.md', 'CODING_STANDARDS.md', 'CONTRIBUTING.md', 'SECURITY.md'].map(f => path.join(ROOT, f))
 
 const MAX_WORDS = 25
 const FRONT_MATTER = /^---\n([\s\S]*?)\n---\n/
