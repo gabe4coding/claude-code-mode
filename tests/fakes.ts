@@ -2,6 +2,7 @@
 // session beneath the plugin, and the text of a tool result.
 
 import type { On } from 'claude-code'
+import { approvalKey, isApprovalKey } from '../hooks/hints'
 
 export const HOME = '/home/test'
 /** The folder that mktemp gives. */
@@ -10,6 +11,9 @@ export const TMP = '/tmp/cm-test'
 export type FakeHomeOptions = {
   /** Called after each write the plugin makes. */
   onWrite?: (path: string, text: string) => void
+  /** Awaited before each write the plugin makes: a test can run other work in the gap. */
+  beforeWrite?: (path: string) => Promise<void>
+
   /** The id that session.id gives. Default: no session.id hook. */
   sessionId?: string
   /** The MCP tools that tool.list gives. Default: the tools of `serverOf`. */
@@ -56,7 +60,8 @@ export const fakeHome = (
     const text = all()[e.path]
     return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
   })
-  on('fs.write', ($, e) => {
+  on('fs.write', async ($, e) => {
+    await options.beforeWrite?.(e.path)
     written[e.path] = e.text
     options.onWrite?.(e.path, e.text)
     return { value: undefined }
@@ -126,11 +131,30 @@ export const fakeStore = (
   return store
 }
 
+/** Ledger entries that approve each file at its text now, for fakeStore. */
+export const ledger = async (files: Record<string, string>): Promise<Record<string, unknown>> =>
+  Object.fromEntries(
+    await Promise.all(
+      Object.entries(files).map(async ([path, text]) => [
+        approvalKey(await sha256(path)),
+        { path, sha256: await sha256(text) },
+      ]),
+    ),
+  )
+
+/** fakeHome with a store whose ledger approves each file in `files` at its text now. */
+export const approvedHome = async (
+  on: On,
+  files: Record<string, string>,
+  serverOf: Record<string, string> = {},
+  options: FakeHomeOptions = {},
+) => ({ store: fakeStore(on, await ledger(files)), ...fakeHome(on, files, serverOf, options) })
+
 /** The approval ledger in a fake store: file path -> SHA-256 of the text an Approve wrote. */
 export const approvals = (store: Map<string, unknown>): Record<string, string> =>
   Object.fromEntries(
     [...store]
-      .filter(([k]) => k.startsWith('approved:'))
+      .filter(([k]) => isApprovalKey(k))
       .map(([, v]) => [(v as { path: string }).path, (v as { sha256: string }).sha256]),
   )
 

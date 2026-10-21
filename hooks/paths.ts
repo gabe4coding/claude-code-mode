@@ -21,10 +21,14 @@ export const functionsFolder = (home: string): string => codeModePath(home, FUNC
  * project's hints (the project's even while projectHints is off, so none can
  * be planted to load later), and the person's saved functions. Only an
  * approval writes them; the model's own tools may not. An empty root has none.
+ * The plugin's own folder holds its code and its bundled hints: it is guarded
+ * where Claude Code installed it, under HOME. A folder loaded with --plugin-dir
+ * is the person's own checkout, which they edit.
  */
-export const guardedDirs = (home: string, project: string): string[] => [
+export const guardedDirs = (home: string, project: string, pluginRoot = ''): string[] => [
   ...(home ? [hintsFolder(home), functionsFolder(home)] : []),
   ...(project ? [hintsFolder(project)] : []),
+  ...(home && pluginRoot.startsWith(`${home}/.claude/plugins/`) ? [pluginRoot] : []),
 ]
 
 // Read-only programs that may name the folder `code-mode` itself. They may not

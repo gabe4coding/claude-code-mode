@@ -28,6 +28,7 @@ import {
   type HintEdit,
   hintsFor,
   hintApplies,
+  isApprovalKey,
   isUnder,
   isUuidLike,
   kindQuestion,
@@ -203,19 +204,49 @@ async function scopeOf($: EngineInterface, path: string): Promise<HintScope> {
   return userDir !== undefined && isUnder(path, userDir) ? 'user' : 'project'
 }
 
-// A file that cannot be read, or that applies to no server, loads as nothing.
-// The debug log says which, so a person can find out why a hint never shows.
-async function readHintFiles($: EngineInterface, dir: string, scope: HintScope): Promise<Hint[]> {
+// The .md files directly in dir, with their text: '' for a file that cannot
+// be read. A folder that is not there has none; one that cannot be listed
+// gives undefined, so a caller can tell it from an empty folder.
+async function readMdFiles($: EngineInterface, dir: string): Promise<{ path: string; text: string }[] | undefined> {
   if (!(await $.fs.exists(dir).catch(() => false))) return []
-  const entries = await $.fs.list(dir).catch(err => (debugLog($, `cannot list ${dir}: ${errorText(err)}`), []))
-  const files = entries.filter(f => f.kind !== 'dir' && f.name.endsWith('.md'))
-  const texts = await Promise.all(
-    files.map(f =>
-      $.fs.read(`${dir}/${f.name}`).catch(err => (debugLog($, `cannot read ${dir}/${f.name}: ${errorText(err)}`), '')),
-    ),
+  const entries = await $.fs.list(dir).catch(err => (debugLog($, `cannot list ${dir}: ${errorText(err)}`), undefined))
+  if (entries === undefined) return undefined
+  const paths = entries.filter(f => f.kind !== 'dir' && f.name.endsWith('.md')).map(f => `${dir}/${f.name}`)
+  return Promise.all(
+    paths.map(async path => ({
+      path,
+      text: String(await $.fs.read(path).catch(err => (debugLog($, `cannot read ${path}: ${errorText(err)}`), ''))),
+    })),
   )
-  return files.map((f, i) => {
-    const hint = parseHint(String(texts[i]), `${dir}/${f.name}`, scope)
+}
+
+// Active files split by the ledger: the ones whose text an Approve wrote, and the rest.
+async function splitApproved<F extends { path: string; text: string }>(
+  $: EngineInterface,
+  files: readonly F[],
+): Promise<{ approved: F[]; unapproved: F[] }> {
+  const ok = await Promise.all(files.map(f => isApproved($, f.path, f.text)))
+  return { approved: files.filter((f, i) => ok[i]), unapproved: files.filter((f, i) => !ok[i]) }
+}
+
+// For a loader: only the approved files. The debug log names the others, so
+// a person can find out why a hint never shows.
+async function approvedFiles(
+  $: EngineInterface,
+  files: readonly { path: string; text: string }[],
+): Promise<{ path: string; text: string }[]> {
+  const { approved, unapproved } = await splitApproved($, files)
+  for (const f of unapproved) debugLog($, `${f.path} is not approved: no Approve wrote its text, so it does not load`)
+  return approved
+}
+
+// A file that cannot be read, or that applies to no server, loads as nothing.
+// The debug log says which. `active`: load only approved files (approvedFiles).
+async function readHintFiles($: EngineInterface, dir: string, scope: HintScope, active = false): Promise<Hint[]> {
+  const read = (await readMdFiles($, dir)) ?? []
+  const files = active ? await approvedFiles($, read) : read
+  return files.map(f => {
+    const hint = parseHint(f.text, f.path, scope)
     if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.edit === undefined) {
       debugLog($, `${hint.path} names no servers, identify or tools in its frontmatter, so it applies to no server`)
     }
@@ -223,9 +254,10 @@ async function readHintFiles($: EngineInterface, dir: string, scope: HintScope):
   })
 }
 
+// Bundled hints ship with the plugin; user and project hints load only when approved.
 async function loadHintFiles($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
   const dirs = await hintDirs($, projectHints)
-  return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope)))).flat()
+  return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope, d.scope !== 'bundled')))).flat()
 }
 
 // A line in the debug log (`claude --debug`). It never throws: a hook that
@@ -351,14 +383,51 @@ async function sha256Hex(text: string): Promise<string> {
 // be told from an approved one. An Approve writes or removes an active file
 // only through these two. The ledger changes first: when the file step then
 // fails, the file and its hash differ, and the file counts as not approved.
+const ledgerKey = async (path: string): Promise<string> => approvalKey(await sha256Hex(path))
+
+async function recordApproval($: EngineInterface, path: string, text: string): Promise<void> {
+  await $.store.set(await ledgerKey(path), { path, sha256: await sha256Hex(text) })
+}
+
 async function writeApproved($: EngineInterface, path: string, text: string): Promise<void> {
-  await $.store.set(approvalKey(path), { path, sha256: await sha256Hex(text) })
+  await recordApproval($, path, text)
   await $.fs.write(path, text)
 }
 
 async function removeApproved($: EngineInterface, path: string): Promise<void> {
-  await $.store.delete(approvalKey(path))
+  await $.store.delete(await ledgerKey(path))
   await $.process.run(['rm', '-f', path])
+}
+
+// Approvals run one at a time in this hooks module, which serves every
+// session of the host: two that change one file, each from its own
+// proposal, must not mix their reads, hashes and writes. Approvals from
+// another process can still overlap; then the hash and the file differ, and
+// the file waits in the band (fail closed).
+let approvalQueue: Promise<unknown> = Promise.resolve()
+function oneApprovalAtATime<T>(work: () => Promise<T>): Promise<T> {
+  const run = approvalQueue.then(work, work)
+  approvalQueue = run.catch(() => undefined)
+  return run
+}
+
+// True when the ledger has the hash of this text for this path. A ledger
+// that cannot be read approves nothing.
+async function isApproved($: EngineInterface, path: string, text: string): Promise<boolean> {
+  let entry: { path?: unknown; sha256?: unknown } | undefined
+  try {
+    entry = (await $.store.get(await ledgerKey(path))) as typeof entry
+  } catch {
+    return false
+  }
+  return entry?.path === path && entry.sha256 === (await sha256Hex(text))
+}
+
+// An Approve that merges into an active file must not approve text in it
+// that nobody reviewed: a file with text and no matching hash fails it.
+async function assertApproved($: EngineInterface, path: string, text: string | undefined): Promise<void> {
+  if (text !== undefined && text.trim() !== '' && !(await isApproved($, path, text)))
+    throw new Error(`${path} is not approved: approve or discard it in the band first`)
 }
 
 // What runs learn about each MCP tool, in a JSON file in ~/.claude/code-mode
@@ -546,6 +615,7 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
     let dest = path
     if (edit.kind === 'change') {
       const own = await bundledChangeFile($, userDir, file, hint)
+      await assertApproved($, own.path, own.text)
       await writeApproved($, own.path, withNew(own.text, edit.text))
       dest = own.path
     }
@@ -560,6 +630,7 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
   )
   if (dir === undefined || !path.endsWith('.md')) throw new Error(`not a hint file: ${path}`)
   const text = await readIfExists($, path)
+  await assertApproved($, path, text)
   if (edit.kind === 'change') {
     await writeApproved(
       $,
@@ -588,6 +659,7 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
   }
   const dest = activePathOf(path)
   const current = await readIfExists($, dest)
+  await assertApproved($, dest, current)
   const text =
     current === undefined || current.trim() === ''
       ? withoutReview(proposal)
@@ -640,7 +712,7 @@ async function decideOnce(
   deciding.add(path)
   try {
     if (!(await $.fs.exists(path).catch(() => false))) return undefined
-    const decision = await decide()
+    const decision = await oneApprovalAtATime(decide)
     await rememberDecision($, path, decision)
     $.ui.invalidate('ui.render')
     return decision
@@ -666,7 +738,7 @@ function decidePending(
 // The folders whose files steer the model (guardedDirs in paths.ts), each as
 // written and as its real path.
 async function guardedHintDirs($: EngineInterface, home: string): Promise<string[]> {
-  const dirs = guardedDirs(home, await $.session.root())
+  const dirs = guardedDirs(home, await $.session.root(), $.plugin.root)
   const real = await Promise.all(
     dirs.map(d =>
       $.fs.stat(d, { resolve: true }).then(
@@ -868,6 +940,23 @@ function functionCard(ui: Ui, f: SavedFunction, current: SavedFunction | undefin
   )
 }
 
+// The band's card of a file that is not approved: its whole text, as Approve
+// approves all of it.
+function unapprovedCard(ui: Ui, file: Unapproved) {
+  const { Box, Code, Markdown, Text } = ui
+  const what = file.kind === 'function' ? 'Saved function' : 'Hint file'
+  return (
+    <Box flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
+      <Markdown text={`**${what} not approved** · ${file.scope === 'project' ? 'this project' : 'all projects'}`} />
+      <Text dimColor>
+        This file was written or changed outside an Approve. It does not load until you approve it. Discard deletes it.
+      </Text>
+      {cardField(ui, 'File', <Markdown text={asCode(file.path)} />)}
+      {cardField(ui, 'Text', <Code source={file.text} language="markdown" />)}
+    </Box>
+  )
+}
+
 const HINT_GUARD_DENY =
   'code-mode: hint files and saved functions steer the model, so they cannot be written with file tools. Propose a hint with add_hint, a change of one with edit_hint, or a new or changed function with save_function instead.'
 
@@ -902,21 +991,62 @@ async function functionsDir($: EngineInterface): Promise<string | undefined> {
   return home ? functionsFolder(home) : undefined
 }
 
-async function readFunctionFiles($: EngineInterface, dir: string): Promise<SavedFunction[]> {
-  if (!(await $.fs.exists(dir).catch(() => false))) return []
-  const entries = await $.fs.list(dir).catch(err => (debugLog($, `cannot list ${dir}: ${errorText(err)}`), []))
-  const files = entries.filter(f => f.kind !== 'dir' && f.name.endsWith('.md'))
-  const texts = await Promise.all(files.map(f => $.fs.read(`${dir}/${f.name}`).catch(() => '')))
-  return files.flatMap((f, i) => {
-    const parsed = parseFunction(String(texts[i]), `${dir}/${f.name}`)
-    if (parsed === undefined) debugLog($, `${dir}/${f.name} is not a function file, so it does not load`)
+// `active`: load only approved files (approvedFiles).
+async function readFunctionFiles($: EngineInterface, dir: string, active = false): Promise<SavedFunction[]> {
+  const read = (await readMdFiles($, dir)) ?? []
+  const files = active ? await approvedFiles($, read) : read
+  return files.flatMap(f => {
+    const parsed = parseFunction(f.text, f.path)
+    if (parsed === undefined) debugLog($, `${f.path} is not a function file, so it does not load`)
     return parsed === undefined ? [] : [parsed]
   })
 }
 
 async function loadFunctions($: EngineInterface): Promise<SavedFunction[]> {
   const dir = await functionsDir($)
-  return dir === undefined ? [] : readFunctionFiles($, dir)
+  return dir === undefined ? [] : readFunctionFiles($, dir, true)
+}
+
+// An active hint or function file that no Approve wrote as it is now: planted
+// by another tool, changed after its Approve, or older than the ledger.
+type Unapproved = { path: string; text: string; kind: 'hint' | 'function'; scope: HintScope }
+
+// The files the band asks the person to approve or discard. On the way, it
+// drops the ledger entries of files that are gone from these folders.
+async function loadUnapproved($: EngineInterface, projectHints: boolean): Promise<Unapproved[]> {
+  const [hints, functions] = await Promise.all([hintDirs($, projectHints), functionsDir($)])
+  const dirs = [
+    ...hints.filter(d => d.scope !== 'bundled').map(d => ({ ...d, kind: 'hint' as const })),
+    ...(functions === undefined ? [] : [{ dir: functions, scope: 'user' as const, kind: 'function' as const }]),
+  ]
+  const read = await Promise.all(dirs.map(d => readMdFiles($, d.dir)))
+  const files = dirs.flatMap((d, i) => (read[i] ?? []).map(f => ({ ...f, kind: d.kind, scope: d.scope })))
+  // A folder that cannot be listed keeps its entries.
+  await pruneLedger(
+    $,
+    dirs.filter((d, i) => read[i] !== undefined).map(d => d.dir),
+    new Set(files.map(f => f.path)),
+  ).catch(err => debugLog($, `cannot prune the approval ledger: ${errorText(err)}`))
+  return (await splitApproved($, files)).unapproved
+}
+
+// The store is shared by every project: only an entry of a file directly in
+// one of these folders, and not among `present`, goes. An Approve sets the
+// hash before it writes a new file, so the prune waits for the approvals and
+// checks that the file is still missing.
+function pruneLedger($: EngineInterface, dirs: readonly string[], present: ReadonlySet<string>): Promise<void> {
+  return oneApprovalAtATime(async () => {
+    const keys = (await $.store.keys()).filter(isApprovalKey)
+    const entries = await Promise.all(keys.map(k => $.store.get(k)))
+    const inDirs = (path: string) => dirs.some(d => isUnder(path, d) && !path.slice(d.length + 1).includes('/'))
+    await Promise.all(
+      keys.map(async (key, i) => {
+        const path = (entries[i] as { path?: unknown } | undefined)?.path
+        if (typeof path !== 'string' || !inDirs(path) || present.has(path)) return
+        if (!(await $.fs.exists(path))) await $.store.delete(key)
+      }),
+    )
+  })
 }
 
 // One function file, or undefined when it is missing or not a function. For
@@ -952,6 +1082,24 @@ function decideFunction($: EngineInterface, path: string, action: Action): Promi
     const dest = action === 'approved' ? await saveFunction($, path) : undefined
     await $.process.run(['rm', '-f', path])
     return { action, dest, kind: 'function' }
+  })
+}
+
+// Approve keeps the hash of the text the band showed; Discard deletes the
+// file. Both fail when the file changed after the band drew it, so the person
+// decides on the text they read. Undefined: the file is gone. Only the band
+// decides these files, and it takes one press per drawing (decideHere).
+function decideUnapproved($: EngineInterface, file: Unapproved, action: Action): Promise<Shown | undefined> {
+  return oneApprovalAtATime(async (): Promise<Shown | undefined> => {
+    const now = await readIfExists($, file.path)
+    if (now === undefined) return undefined
+    if (now !== file.text) throw new Error(`${file.path} changed after the band showed it; review it again`)
+    if (action === 'approved') await recordApproval($, file.path, now)
+    else await removeApproved($, file.path)
+    $.ui.invalidate('ui.render')
+    return action === 'approved'
+      ? { text: `✓ File approved: ${file.path}`, color: 'green' }
+      : { text: `File discarded: ${file.path}` }
   })
 }
 
@@ -1325,19 +1473,23 @@ export const register: Register = (on, options) => {
   // Next when there are more. Nothing shows otherwise.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const [pending, functions, isOpen, result] = await Promise.all([
+    const [pending, functions, unapproved, isOpen, result] = await Promise.all([
       loadPending($, projectHints),
       loadFunctionProposals($),
+      loadUnapproved($, projectHints),
       read($, reviewOpen),
       read($, reviewResult),
     ])
-    const total = pending.length + functions.length
+    const total = pending.length + functions.length + unapproved.length
     if (total === 0) return next(e)
     const ui = $.ui.resolve(e)
     const { Box, Button, Text } = ui
     const kinds = [
       ...(pending.length === 0 ? [] : [`${pending.length} hint${pending.length === 1 ? '' : 's'}`]),
       ...(functions.length === 0 ? [] : [`${functions.length} function${functions.length === 1 ? '' : 's'}`]),
+      ...(unapproved.length === 0
+        ? []
+        : [`${unapproved.length} file${unapproved.length === 1 ? '' : 's'} not approved`]),
     ]
 
     const title = `${total} proposal${total === 1 ? '' : 's'} for code mode`
@@ -1381,17 +1533,23 @@ export const register: Register = (on, options) => {
     // A decision shortens the list: the same index then shows the next one.
     const index = Math.min(await read($, reviewIndex), total - 1)
     const go = (step: number) => update($, reviewIndex, () => (index + step + total) % total)
+    // In order: hint proposals, function proposals, files not approved.
     const hint = pending[index]
-    let decide: (action: Action) => Promise<Decision | undefined>
+    const f = functions[index - pending.length]
+    const shownOf = (d: Decision | undefined) => (d === undefined ? undefined : decisionShown(d))
+    let decide: (action: Action) => Promise<Shown | undefined>
     let card: RenderChildren
     if (hint !== undefined) {
-      decide = action => decidePending($, hint.path, action, projectHints)
+      decide = action => decidePending($, hint.path, action, projectHints).then(shownOf)
       card = hintCard(ui, hint, await cardFields($, hint), null)
-    } else {
-      // index < total, so a proposal that is not a hint is a function.
-      const f = functions[index - pending.length]!
-      decide = action => decideFunction($, f.path, action)
+    } else if (f !== undefined) {
+      decide = action => decideFunction($, f.path, action).then(shownOf)
       card = functionCard(ui, f, await readFunction($, activePathOf(f.path)), null)
+    } else {
+      // index < total, so the rest is a file not approved.
+      const file = unapproved[index - pending.length - functions.length]!
+      decide = action => decideUnapproved($, file, action)
+      card = unapprovedCard(ui, file)
     }
     // The result shows before the files change, so no redraw puts the next
     // proposal under the pointer. Only the press that sets the result counts:
@@ -1404,7 +1562,7 @@ export const register: Register = (on, options) => {
       })
       if (!isFirst) return
       const shown = await decide(action).then(
-        (d): Shown => (d === undefined ? { text: 'This proposal is no longer pending.' } : decisionShown(d)),
+        (s): Shown => s ?? { text: 'This proposal is no longer pending.' },
         (err: unknown) => ({
           text: `${action === 'approved' ? 'Approve' : 'Discard'} failed: ${errorText(err)}`,
           color: 'red' as const,
@@ -1412,8 +1570,12 @@ export const register: Register = (on, options) => {
       )
       // With no proposal left the band hides: drop the result, so the next
       // proposal does not open on it.
-      const [hintsLeft, functionsLeft] = await Promise.all([loadPending($, projectHints), loadFunctionProposals($)])
-      await update($, reviewResult, () => (hintsLeft.length + functionsLeft.length === 0 ? null : shown))
+      const left = await Promise.all([
+        loadPending($, projectHints),
+        loadFunctionProposals($),
+        loadUnapproved($, projectHints),
+      ])
+      await update($, reviewResult, () => (left.every(l => l.length === 0) ? null : shown))
     }
     // Approve and Discard above the card: a card taller than the band
     // scrolls, and buttons under it would start out of view.
