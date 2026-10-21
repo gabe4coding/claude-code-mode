@@ -8,7 +8,7 @@ Security fixes go on the default branch (`main`) and ship in the next release ta
 
 Do not open a public GitHub issue for a security problem. Examples are a sandbox escape, a secret leak, and a permission bypass.
 
-Email: REPLACE_WITH_GABE_SECURITY_EMAIL
+Email: gabry.pavanello@gmail.com
 
 Include:
 
