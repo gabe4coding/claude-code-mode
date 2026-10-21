@@ -98,6 +98,42 @@ export const fakeHome = (
   return { written, removed, checked, env }
 }
 
+/** SHA-256 of a text as hex, from the platform's digest: the expected value does not come from the plugin. */
+export const sha256 = async (text: string): Promise<string> =>
+  [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))]
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+
+/**
+ * $.store in memory, like mock.store, but the test can read what the plugin
+ * set. `refuseSet` gives the reason a set of that key fails, or undefined.
+ */
+export const fakeStore = (
+  on: On,
+  entries: Record<string, unknown> = {},
+  refuseSet: (key: string) => string | undefined = () => undefined,
+): Map<string, unknown> => {
+  const store = new Map(Object.entries(entries))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    const reason = refuseSet(e.key)
+    if (reason !== undefined) return { deny: reason }
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  return store
+}
+
+/** The approval ledger in a fake store: file path -> SHA-256 of the text an Approve wrote. */
+export const approvals = (store: Map<string, unknown>): Record<string, string> =>
+  Object.fromEntries(
+    [...store]
+      .filter(([k]) => k.startsWith('approved:'))
+      .map(([, v]) => [(v as { path: string }).path, (v as { sha256: string }).sha256]),
+  )
+
 /** The text of a tool result, or "DENY <reason>". */
 export const textOf = (r: { result?: unknown; deny?: string; text?: string }): string =>
   r.deny !== undefined
