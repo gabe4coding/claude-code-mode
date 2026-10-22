@@ -342,24 +342,29 @@ const bySession = new Map<string, SessionState>()
 
 async function sessionOf($: EngineInterface): Promise<SessionState> {
   const id = await $.session.id().catch(() => '')
+  // Without a session id, state kept under '' would reach every other session
+  // with no id: each call gets its own state, which ends with its run.
+  if (id === '') return newSessionState()
   let state = bySession.get(id)
   if (!state) {
-    state = {
-      hidden: new Set(),
-      tries: {
-        failedServers: new Set(),
-        missedSearches: [],
-        failedTries: new Map(),
-        usedTools: new Set(),
-        nudged: new Set(),
-      },
-      kept: newKept(),
-      metrics: [],
-    }
+    state = newSessionState()
     bySession.set(id, state)
   }
   return state
 }
+
+const newSessionState = (): SessionState => ({
+  hidden: new Set(),
+  tries: {
+    failedServers: new Set(),
+    missedSearches: [],
+    failedTries: new Map(),
+    usedTools: new Set(),
+    nudged: new Set(),
+  },
+  kept: newKept(),
+  metrics: [],
+})
 
 const newKept = (): Kept => ({ next: 1, results: new Map(), chars: 0, seen: new Map() })
 
@@ -1700,8 +1705,8 @@ export const register: Register = (on, options) => {
       return (await offeredNames)?.has(tool) ?? true
     }
     const state = await sessionOf($)
-    // Without a session id, the state above is shared by every session with no
-    // id: results kept there could reach another session. Keep them for this run only.
+    // Without a session id, results kept across runs could reach another session
+    // with no id. Keep them for this run only, apart from what sessionOf gives.
     const hasSession = (await $.session.id().catch(() => '')) !== ''
     const kept = hasSession ? state.kept : newKept()
     const records = new Map<number, CallRecord>()

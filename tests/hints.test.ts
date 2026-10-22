@@ -328,7 +328,7 @@ describe('hints after a failed run_code call', () => {
   const FAIL = 'mcp__cccc-3333__broken'
 
   // One run_code run with one call to a tool that fails.
-  const failedRun = async ($: Engine, on: On) => {
+  const failedRun = async ($: Engine, on: On, sessionId = 'sess-hints') => {
     on('tool.check', () => ({ decision: 'allow' as const }))
     on('model.classify', () => ({ value: 'error fix' }))
     on('tool.call', { tool: FAIL }, () => ({ deny: 'nope' }))
@@ -342,6 +342,7 @@ describe('hints after a failed run_code call', () => {
       { [`${USER_DIR}/broken.md`]: '---\nservers: [Broken]\n---\n- Broken hint.' },
       { [FAIL]: 'claude.ai Broken' },
       {
+        sessionId,
         onWrite: (path, text) => {
           if (path === `${TMP}/r1.json`) replied(text)
         },
@@ -377,6 +378,19 @@ describe('hints after a failed run_code call', () => {
     const review = parseHint(pending![1], pending![0], 'user').review
     expect(review?.seen).toBe('1 run with a failed call to this server in this session.')
     expect(review?.flags).toEqual([])
+  })
+
+  test('without a session id, the failed tries of a run do not reach the next run', async ($, on) => {
+    const { written } = await failedRun($, on, '')
+    await $.tool.call({
+      tool: TOOL.add_hint,
+      server: 'cccc-3333',
+      text: 'broken needs a page.',
+      why: 'It failed without one.',
+    })
+    const pending = Object.entries(written).find(([p]) => p.includes('/pending/'))
+    const review = parseHint(pending![1], pending![0], 'user').review
+    expect(review?.seen).toBe('No failed call to this server in this session.')
   })
 })
 
@@ -1095,7 +1109,7 @@ describe('remove_hint', () => {
 
   test('hides the hint in this session at once and proposes the removal', async ($, on) => {
     const path = `${USER_DIR}/mail-hide.md`
-    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' }, { sessionId: 'sess-hints' })
     const r = textOf(await remove($, path, 'Mail returns JSON.'))
     expect(r).toContain('Hid the hint in this session')
     expect(r).toContain(`pending: ${USER_DIR}/pending/mail-hide.remove--`)
@@ -1107,9 +1121,16 @@ describe('remove_hint', () => {
     expect(shown).toContain('Pass ids as strings.')
   })
 
+  test('without a session id, the hint is hidden only in the run that removes it', async ($, on) => {
+    const path = `${USER_DIR}/mail-no-id.md`
+    await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' }, { sessionId: '' })
+    expect(textOf(await remove($, path, 'Mail returns JSON.'))).toContain('Hid the hint in this session')
+    expect(await search($)).toContain('Mail returns JSON.')
+  })
+
   test('in a cloud session, hides the hint and gives a block to paste elsewhere', async ($, on) => {
     const path = `${USER_DIR}/mail-cloud.md`
-    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' }, { sessionId: 'sess-hints' })
     fs.env.CLAUDE_CODE_REMOTE = 'true'
     const r = textOf(await remove($, path, 'Mail returns JSON.'))
     const pending = Object.keys(fs.written)[0]!
@@ -1216,7 +1237,7 @@ describe('remove_hint', () => {
 
   test('Discard keeps the file and shows the hint again', async ($, on) => {
     const path = `${USER_DIR}/mail-keep.md`
-    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const fs = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' }, { sessionId: 'sess-hints' })
     await remove($, path, 'Mail returns JSON.')
     expect(await search($)).not.toContain('Mail returns JSON.')
     const ui = await $.ui.mount(band)
@@ -1309,7 +1330,12 @@ describe('edit_hint', () => {
 
   test('hides the old hint at once, and Approve puts the new one in its place', async ($, on) => {
     const path = `${USER_DIR}/mail-edit.md`
-    const { store, ...fs } = await approvedHome(on, { [path]: FILE }, { [MAIL]: 'claude.ai Mail' })
+    const { store, ...fs } = await approvedHome(
+      on,
+      { [path]: FILE },
+      { [MAIL]: 'claude.ai Mail' },
+      { sessionId: 'sess-hints' },
+    )
     const r = textOf(await edit($, path, 'Mail returns JSON.', 'Mail returns TSV.'))
     expect(r).toContain(`Hid the hint in this session and proposed to change it in ${path}.`)
     expect(r).toContain(`pending: ${USER_DIR}/pending/mail-edit.edit--`)
