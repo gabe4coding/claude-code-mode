@@ -2,7 +2,7 @@
 // session beneath the plugin, and the text of a tool result.
 
 import type { On } from 'claude-code'
-import { approvalKey, isApprovalKey } from '../hooks/hints'
+import { BUNDLED_LIST, approvalKey, isApprovalKey } from '../hooks/hints'
 
 export const HOME = '/home/test'
 /** The folder that mktemp gives. */
@@ -141,6 +141,15 @@ export const ledger = async (files: Record<string, string>): Promise<Record<stri
       ]),
     ),
   )
+
+/** The bundled list of the plugin's hint folder `dir`, with each file name in `files` at its text now. */
+export const bundledList = async (dir: string, files: Record<string, string>): Promise<Record<string, string>> => ({
+  [`${dir}/${BUNDLED_LIST}`]: JSON.stringify(
+    Object.fromEntries(
+      await Promise.all(Object.entries(files).map(async ([name, text]) => [name, await sha256(text)])),
+    ),
+  ),
+})
 
 /** fakeHome with a store whose ledger approves each file in `files` at its text now. */
 export const approvedHome = async (
