@@ -90,6 +90,10 @@ async ({ cloudId, jql }) => {
 
 A file that does not follow these rules does not load. The debug log (`claude --debug`) names it.
 
+The function loads only after you approve the file in the band above the prompt, as "Saved function not approved".
+This is also true after each change that you make in your editor. See
+[Files that you write or change](./hints.mdx#files-that-you-write-or-change).
+
 To remove a function, delete its file.
 
 ## Change a saved function
@@ -111,9 +115,11 @@ function. The plugin asks once for each function in a session.
 
 - **A proposal has no effect until you approve it.** This is also true for new code for a saved function. Text in
   a tool result can tell the model to propose anything. Only you can press **Approve**.
-- **The model cannot write function files.** The plugin denies `Write`, `Edit`, `NotebookEdit` and `Bash` calls
-  that name `~/.claude/code-mode/functions/`, as for the [hint folders](./hints.mdx#safety-rules). Edit the files
-  in your own editor.
+- **A function file loads only as you approved it.** A file that the model, a program or another plugin writes or
+  changes waits in the band. It loads when you approve it, as for the [hint folders](./hints.mdx#safety-rules).
+- **The model cannot write function files with its file tools.** The plugin denies `Write`, `Edit` and
+  `NotebookEdit` calls on `~/.claude/code-mode/functions/`. Bash commands are not checked: a file that Bash writes
+  waits in the band.
 - **There are no project functions.** The plugin loads functions only from your own folder. Anyone who can
   commit to a repository can put code in it.
 - **A function runs in the sandbox.** It has the same limits as the program, and each of its MCP calls gets the

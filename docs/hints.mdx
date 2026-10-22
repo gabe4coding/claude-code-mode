@@ -16,6 +16,7 @@ that its next program is correct the first time. The model sees the hints of a s
 1. Make the folder `~/.claude/code-mode/hints/` if it does not exist.
 2. Make one file for each server, for example `gmail.md`.
 3. Write the front matter and one bullet for each fact.
+4. Approve the file in the band above the prompt. See [Files that you write or change](#files-that-you-write-or-change).
 
 ```markdown
 ---
@@ -25,7 +26,8 @@ identify: [search_threads]
 - search_threads takes a Gmail search query in `query`, for example "from:me newer_than:7d".
 ```
 
-The hint applies in the next call of `search_tools` or `run_code`. You do not have to start a new session.
+The hint applies in the next call of `search_tools` or `run_code` after you approve it. You do not have to start a
+new session.
 
 To find the tool names for `identify`, ask the model to run `search_tools` for the server.
 
@@ -56,9 +58,9 @@ A list can also be JSON, for example `servers: ["Data, Dog"]`. Use JSON when a n
 
 | Source | Folder | Loads |
 | --- | --- | --- |
-| Bundled | `hints/` in the plugin | Always |
-| Your own | `~/.claude/code-mode/hints/` | Always |
-| The project | `<project>/.claude/code-mode/hints/` | Only when the option `projectHints` is on |
+| Bundled | `hints/` in the plugin | When `hints/sha256.json` in the plugin has the hash of the file as it is now |
+| Your own | `~/.claude/code-mode/hints/` | When you approved the file as it is now |
+| The project | `<project>/.claude/code-mode/hints/` | When the option `projectHints` is on, and you approved the file as it is now |
 
 The plugin bundles hints for Datadog and Jira. Each hint that the model sees shows the path of its file. Thus you
 can find and correct a bad hint.
@@ -77,7 +79,7 @@ earlier run was often a probe of the arguments or the result format. The plugin 
 session.
 
 While proposals wait, a band above the prompt shows "● 2 proposals for code mode: 1 hint, 1 function" and a
-**Review** button.
+**Review** button. The band also counts the files that are not approved, for example "1 file not approved".
 
 1. Click **Review**. The band shows one proposal at a time. Click **Previous** and **Next** to see the others.
 2. Read the hint and the review. Approve only a hint that you can write yourself. If the proposal is taller than
@@ -92,13 +94,26 @@ The band shows the proposals of all sessions, closed and headless (`claude -p`) 
 draws plugin tool results, the `add_hint` row also shows the proposal with the same buttons. The desktop app does
 not draw them, so there only the band shows proposals.
 
-To approve a proposal by hand, move its bullets into the hint file of the server. To discard it, delete its file in
-`pending/`.
+To approve a proposal by hand, move its bullets into the hint file of the server, then approve the changed file in
+the band. To discard it, delete its file in `pending/`.
+
+### Files that you write or change
+
+The plugin loads a hint file only when you approved its text as it is now. Each **Approve** keeps the SHA-256 of the
+text of the file in the plugin store. A file that has no such hash does not load. These files have no hash:
+
+- A file that you write or change in your editor.
+- A file that another program or a Bash command writes or changes.
+- A file that is older than this rule. After the update to this version, approve your files again.
+
+The band lists each of these files as "Hint file not approved", with all of its text. Click **Approve** to load the
+file as it is, or **Discard** to delete the file. If the file changes after the band shows it, Approve and Discard
+fail: review the file again. [Saved functions](./functions.mdx) follow the same rule.
 
 ### In Cowork and in cloud sessions
 
 Cowork and the cloud sessions of the web and mobile apps do not show the band. Thus you cannot approve a proposal
-there. In a cloud session, the files in `~/.claude` are also lost when the session ends.
+or a file there. In a cloud session, the files in `~/.claude` are also lost when the session ends.
 
 In these apps, the model still proposes the hint. It also shows a text block that starts with "Propose this
 code-mode hint with add_hint". To approve the hint:
@@ -167,7 +182,8 @@ The plugin does not change a bundled hint file, because each plugin update repla
 hint to `~/.claude/code-mode/hints/removed.json`, and the hint does not load again. To get the hint back, delete
 its entry from `removed.json`.
 
-To remove a hint by hand, delete its bullet from the hint file in your editor.
+To remove a hint by hand, delete its bullet from the hint file in your editor, then approve the changed file in the
+band.
 
 ## Change a hint that is wrong
 
@@ -190,7 +206,7 @@ hint to the file of the same name in `~/.claude/code-mode/hints/`, for example `
 name is for other servers or tools, the plugin writes the new hint to `jira-changed.md`. If that file is also for
 other servers or tools, it uses `jira-changed-2.md`, and so on. The card names the file.
 
-To change a hint by hand, edit its bullet in your editor.
+To change a hint by hand, edit its bullet in your editor, then approve the changed file in the band.
 
 ## Safety rules
 
@@ -205,30 +221,20 @@ model does with your MCP tools. These rules make a bad hint less probable:
   model hide a hint, but only for the current session.
 - **Each proposal shows a review.** It shows why the model proposed the hint, what the plugin saw, and warnings.
   See [The review on each card](#the-review-on-each-card).
-- **The model cannot write hint files with its own tools.** A guard in the plugin denies Write, Edit and
-  NotebookEdit on files in the hint folders. It checks the path as written and its real path through symbolic links.
-- **The guard denies a Bash command that names a guarded folder.** The model can use the Read tool to read hints.
-  A word names `hints` or `functions` after the check removes quotes and backslashes and expands braces. A glob or
-  a brace in quotes or after a backslash is literal text. A `$` is literal in single quotes or after a backslash. A
-  `code-mode` folder in `.claude`, or at the start of a relative path, names a guarded folder too, unless every
-  program is read-only. A folder named `code-mode` in another place, such as a clone of this repository, does not.
-  The exceptions are a symbolic link that leads it to the code-mode folder, and another word that ends in `.claude`.
-  The read-only programs are `ls`, `du`, `cat`,
-  `head`, `tail`, `wc`, `stat`, `file`, `rg`, and `grep`. The program is the command word, not an argument. Each
-  program in a pipeline must be on that list. A `>`, `>>`, `tee`, or `-o` removes the exception. A glob, a variable,
-  or a pattern the check cannot read denies the command. A `..` in a path denies the command. A relative path after
-  `cd` into `.claude` denies the command. If the command runs a shell, such as `bash -c`, `eval` or `source`, the
-  check also reads each quoted word as a command.
+- **A file loads only as you approved it.** A hint file that the model, a program or another plugin writes or
+  changes does not load until you approve it in the band. See
+  [Files that you write or change](#files-that-you-write-or-change). Bash commands are not checked: a file that
+  Bash writes waits in the band.
+- **The model cannot write hint files with its file tools.** A guard in the plugin denies Write, Edit and
+  NotebookEdit on files in the hint folders, so the model gets an error at once. It checks the path as written and
+  its real path through symbolic links. The guard also covers the plugin folder when Claude Code installed it under
+  `~/.claude/plugins/`. A folder that you load with `--plugin-dir` is your own copy, and the guard does not cover it.
 - **Each hint shows its source file.**
 
-Your own editor is not a Claude tool, so you can edit hint files by hand.
-
-These rules are not a full security boundary. The Bash check is best effort, because a shell command can make a
-path in many ways. Another plugin, a settings hook or a command that you run can also write to the hint folders.
-
-The Bash check still misses three shapes. The Bash tool keeps the current folder across calls. A later command that
-does not name the folders can write there. A copy into `~/.claude` itself does not name the folders. `cp -r` and
-`tar -C` are two such copies. The check does not read the code of other languages, such as `python -c` or `node -e`.
+These rules are not a full security boundary. The hashes are in a JSON file in `~/.claude/plugins/store/`. A
+program that can write to `~/.claude` can change that file, or the code of the plugin. A bundled hint has no
+Approve: it loads only when the list `hints/sha256.json` that ships with the plugin has its hash. Thus a program
+must change two files in the plugin to add a bundled hint. `removed.json` has no hash, but it can only hide a hint.
 
 For a stronger rule against the file tools of Claude, add a deny rule to `~/.claude/settings.json`:
 
