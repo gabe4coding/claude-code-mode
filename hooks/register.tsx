@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 import {
+  BUNDLED_LIST,
   HINT_KINDS,
   PROPOSAL_TEXT,
   TRANSFER_TEXT,
@@ -35,6 +36,7 @@ import {
   newHintFlags,
   normalize,
   oneLine,
+  parseBundledList,
   parseHint,
   pendingFileName,
   proposalKind,
@@ -116,7 +118,7 @@ import {
   usedFunctions,
   type SavedFunction,
 } from './functions'
-import { codeModePath, codeModePaths, functionsFolder, guardedDirs, hintsFolder, namesGuardedDir } from './paths'
+import { codeModePath, functionsFolder, guardedDirs, hintsFolder } from './paths'
 import { SEARCH_LIMIT, TOOL, TOOL_NAMES, parseInput, registration } from './tools'
 
 const MAX_RESULT_CHARS = 20_000
@@ -240,11 +242,36 @@ async function approvedFiles(
   return approved
 }
 
+type MdFiles = { path: string; text: string }[]
+
+// For the loader of bundled hints: only the files whose hash is in the
+// bundled list (BUNDLED_LIST). A list that cannot be read lists nothing.
+async function listedBundled($: EngineInterface, dir: string, files: MdFiles): Promise<MdFiles> {
+  if (files.length === 0) return []
+  const list = parseBundledList(
+    String(
+      await $.fs
+        .read(`${dir}/${BUNDLED_LIST}`)
+        .catch(err => (debugLog($, `cannot read the bundled list: ${errorText(err)}`), '')),
+    ),
+  )
+  const hashes = await Promise.all(files.map(f => sha256Hex(f.text)))
+  return files.filter((f, i) => {
+    const listed = list[f.path.slice(dir.length + 1)] === hashes[i]
+    if (!listed) debugLog($, `${f.path} is not in the bundled list ${BUNDLED_LIST} with this text, so it does not load`)
+    return listed
+  })
+}
+
 // A file that cannot be read, or that applies to no server, loads as nothing.
-// The debug log says which. `active`: load only approved files (approvedFiles).
-async function readHintFiles($: EngineInterface, dir: string, scope: HintScope, active = false): Promise<Hint[]> {
-  const read = (await readMdFiles($, dir)) ?? []
-  const files = active ? await approvedFiles($, read) : read
+// The debug log says which. `keep` drops the files that may not load.
+async function readHintFiles(
+  $: EngineInterface,
+  dir: string,
+  scope: HintScope,
+  keep: (files: MdFiles) => Promise<MdFiles> = async files => files,
+): Promise<Hint[]> {
+  const files = await keep((await readMdFiles($, dir)) ?? [])
   return files.map(f => {
     const hint = parseHint(f.text, f.path, scope)
     if (hint.servers.length + hint.identify.length + hint.tools.length === 0 && hint.edit === undefined) {
@@ -254,10 +281,13 @@ async function readHintFiles($: EngineInterface, dir: string, scope: HintScope, 
   })
 }
 
-// Bundled hints ship with the plugin; user and project hints load only when approved.
+// Bundled hints load when the list that ships with them has their hash; user
+// and project hints when an Approve wrote their text.
 async function loadHintFiles($: EngineInterface, projectHints: boolean): Promise<Hint[]> {
   const dirs = await hintDirs($, projectHints)
-  return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope, d.scope !== 'bundled')))).flat()
+  const keep = (dir: string, scope: HintScope) => (files: MdFiles) =>
+    scope === 'bundled' ? listedBundled($, dir, files) : approvedFiles($, files)
+  return (await Promise.all(dirs.map(d => readHintFiles($, d.dir, d.scope, keep(d.dir, d.scope))))).flat()
 }
 
 // A line in the debug log (`claude --debug`). It never throws: a hook that
@@ -739,22 +769,16 @@ function decidePending(
 // written and as its real path.
 async function guardedHintDirs($: EngineInterface, home: string): Promise<string[]> {
   const dirs = guardedDirs(home, await $.session.root(), $.plugin.root)
-  const real = await Promise.all(
-    dirs.map(d =>
-      $.fs.stat(d, { resolve: true }).then(
-        s => s.realPath,
-        () => undefined,
-      ),
-    ),
-  )
+  const real = await Promise.all(dirs.map(d => realPathOf($, d)))
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
 
-const realPathOf = ($: EngineInterface, path: string): Promise<string | undefined> =>
-  $.fs.stat(path, { resolve: true }).then(
+function realPathOf($: EngineInterface, path: string): Promise<string | undefined> {
+  return $.fs.stat(path, { resolve: true }).then(
     s => s.realPath,
     () => undefined,
   )
+}
 
 // Where an absolute path can land: as written, its real path, or its parent's
 // real path (a new file is not there yet).
@@ -767,32 +791,12 @@ async function landings($: EngineInterface, full: string): Promise<string[]> {
 
 // True when a file tool's path lands in a hint folder.
 async function touchesHints($: EngineInterface, filePath: string): Promise<boolean> {
-  const home = await homeOf($)
+  const [home, cwd] = await Promise.all([homeOf($), $.session.cwd()])
   const [candidates, dirs] = await Promise.all([
-    landings($, resolvePath(filePath, home, await $.session.cwd())),
+    landings($, resolvePath(filePath, home, cwd)),
     guardedHintDirs($, home),
   ])
   return candidates.some(c => dirs.some(d => isUnder(c, d)))
-}
-
-// True when a Bash command names a guarded folder (namesGuardedDir), or names
-// a `code-mode` folder that a symbolic link leads to code-mode's own folder
-// or to a folder above it. Case does not count: macOS ignores it.
-async function bashTouchesHints($: EngineInterface, command: string): Promise<boolean> {
-  if (namesGuardedDir(command)) return true
-  const paths = codeModePaths(command)
-  if (paths === null) return true
-  if (paths.length === 0) return false
-  const home = await homeOf($)
-  const [cwd, root] = await Promise.all([$.session.cwd(), $.session.root()])
-  const own = [home, root].filter(r => r !== '').map(r => codeModePath(r))
-  const ownReal = await Promise.all(own.map(d => realPathOf($, d)))
-  const dirs = [...own, ...ownReal.filter((r): r is string => typeof r === 'string')].map(d => d.toLowerCase())
-  const found = await Promise.all(paths.map(p => landings($, resolvePath(p, home, cwd))))
-  return found
-    .flat()
-    .map(c => c.toLowerCase())
-    .some(c => dirs.some(d => isUnder(c, d) || isUnder(d, c)))
 }
 
 // What code-mode saw in the session that made a proposal: the runs with a
@@ -1991,11 +1995,10 @@ export const register: Register = (on, options) => {
     return { result: `${formatOutcome(outcome, calls, stderr, MAX_RESULT_CHARS, report)}${tail}` }
   }).catch(failClosed)
 
-  // Guard: an active hint or a saved function is just a file, so the model
-  // must not write one with its own tools, or the approval step means nothing. File tools
-  // are checked by path; Bash by whether the command names a hint folder,
-  // which is best effort (a shell can spell a path many ways). The person's
-  // own editor is not a Claude tool and is not affected.
+  // Guard: the file tools may not write a hint or a function file, checked
+  // by path, so the model gets an early error. The approval ledger is what
+  // keeps a file from loading: a file that any other tool or program writes
+  // (Bash, a script, the person's editor) waits in the band until approved.
   // A guard that fails denies the call it guards (next.called: it already passed).
   // Each tool has its own registration, so `claude plugin validate` lists it.
   on('tool.call', { tool: 'Write' }, async ($, e, next) =>
@@ -2006,9 +2009,6 @@ export const register: Register = (on, options) => {
   ).catch(failClosed)
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) =>
     (await touchesHints($, e.notebook_path)) ? { deny: HINT_GUARD_DENY } : next(e),
-  ).catch(failClosed)
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) =>
-    (await bashTouchesHints($, e.command)) ? { deny: HINT_GUARD_DENY } : next(e),
   ).catch(failClosed)
 
   // Optional: push the model to run_code by refusing its direct MCP calls.

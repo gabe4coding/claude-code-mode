@@ -76,18 +76,19 @@ Cause: the program called a built-in tool, such as `Bash`, or a code-mode tool. 
 
 ### "hint files and saved functions steer the model, so they cannot be written with file tools"
 
-Cause: the model tried to write a hint file or a function file, or ran a Bash command that names their folders.
-The [guard](./hints.mdx#safety-rules) denies this.
+Cause: the model tried to write a hint file or a function file with Write, Edit or NotebookEdit. The
+[guard](./hints.mdx#safety-rules) denies this.
 
 Fix: let the model propose the hint with `add_hint` or the function with `save_function`, then approve it in the
-band. Or edit the file in your own editor.
+band. Or edit the file in your own editor, then approve the changed file in the band.
 
 ### "lib.… is not a saved function"
 
 Cause: the program called a saved function that does not exist, or that did not load.
 
-Fix: let the model run `search_tools` to see the saved functions. If you wrote the file yourself, start Claude Code
-with `claude --debug`. The debug log names each function file that does not load.
+Fix: let the model run `search_tools` to see the saved functions. If you wrote or changed the file yourself, approve
+it in the band first. If it still does not load, start Claude Code with `claude --debug`. The debug log names each
+function file that does not load, and why.
 
 ### "no MCP server in this session offers resources"
 

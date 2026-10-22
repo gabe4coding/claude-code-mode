@@ -455,6 +455,26 @@ export const approvalKey = (pathSha256: string): string => `${APPROVED}${pathSha
 /** True for a $.store key that approvalKey made. */
 export const isApprovalKey = (key: string): boolean => key.startsWith(APPROVED)
 
+/**
+ * The file in the plugin's hints/ folder that lists the SHA-256 of each
+ * bundled hint file's text, by file name. A bundled file loads only when the
+ * list has the hash of its text, so a file planted in the folder does not
+ * load. `node scripts/bundled-hints.mjs` writes it; tests/docs.check.mjs fails
+ * when it is out of date.
+ */
+export const BUNDLED_LIST = 'sha256.json'
+
+/** File name -> hash from the text of a bundled list; {} for a text that is not one. */
+export const parseBundledList = (text: string): Record<string, string> => {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+    return Object.fromEntries(Object.entries(value).filter(([, hash]) => typeof hash === 'string'))
+  } catch {
+    return {}
+  }
+}
+
 // The store keeps one decision per proposal, so a decided row still shows it
 // after a reload. It keeps the newest MAX_DECISIONS only: $.store.set rejects
 // once the store holds 4 MiB of JSON, and a decision is at most about 500 bytes.

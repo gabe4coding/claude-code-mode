@@ -33,9 +33,9 @@ node $D clean <dir>          # after you read the evidence
 `reply` alone. One run with Haiku costs less than $0.01.
 
 Options: `--settings <json>` for plugin options and permission rules, `--max-output-tokens 5000` to make Claude Code
-save a large result to a file, `--base <dir>` for the run folder, `--tools Bash` with `--allow Bash` to drive the Bash
-guard (the run is `--restricted`, which removes Bash otherwise). Probe the guard only with read-only commands: a
-command that the guard lets through runs on this machine.
+save a large result to a file, `--base <dir>` for the run folder, `--tools Bash` with `--allow Bash` to let the model
+use Bash (the run is `--restricted`, which removes Bash otherwise). A Bash command runs on this machine: write only
+in the run folder.
 
 Fake server tools: `search_messages` (pages), `list_issues`, `query_logs`, `create_ticket`, `get_deploys`. The data
 is in `bench/data.mjs`.
@@ -80,5 +80,7 @@ node $D band stop <dir>                                 # stops tmux and cleans 
   keeps only the code-mode lines.
 - Without `blockDirectMcp`, the model can call `ToolSearch` to load the fake tools. That is not a direct MCP call:
   check `toolUses` for `mcp__{srv}__*`.
-- The plugin denies Bash commands that name its hint folders or its function folder. Use `band files` or the Read
-  tool. Never drive `add_hint` with scope `user`: it writes a real proposal to `~/.claude`.
+- To test the approval ledger, plant a file in the run's project hint folder (`<dir>/cwd/.claude/code-mode/hints/`).
+  The band also lists the person's own files in `~/.claude` that have no hash: never press Approve or Discard on
+  them. Discard deletes a real file.
+- Never drive `add_hint` with scope `user`: it writes a real proposal to `~/.claude`.

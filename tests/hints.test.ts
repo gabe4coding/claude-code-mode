@@ -36,9 +36,9 @@ import {
   withReview,
   withoutReview,
 } from '../hooks/hints'
-import { guardedDirs, namesGuardedDir } from '../hooks/paths'
+import { guardedDirs } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
-import { HOME, TMP, approvals, approvedHome, fakeHome, fakeStore, ledger, sha256, textOf } from './fakes'
+import { HOME, TMP, approvals, approvedHome, bundledList, fakeHome, fakeStore, ledger, sha256, textOf } from './fakes'
 
 // The test kit has setTimeout. The hook types that tsconfig loads do not: hooks use $.clock.
 declare function setTimeout(fn: (value: unknown) => void, ms: number): unknown
@@ -997,6 +997,22 @@ describe('the approval ledger', () => {
     expect(approvals(store)).toEqual({ [path]: await sha256(fs.written[path]!) })
   })
 
+  // A bundled file has no Approve: the list that ships with the plugin approves it.
+  test('a bundled hint loads only while the bundled list has the hash of its text', async ($, on) => {
+    const logs: string[] = []
+    on('ui.log', ($, e) => (logs.push(e.text), { value: undefined }))
+    const files: Record<string, string> = {}
+    const fs = fakeHome(on, files, servers)
+    const planted = `${await bundledDir($, fs.checked)}/mail.md`
+    files[planted] = TEXT
+    expect(await search($)).not.toContain('Mail hint body.')
+    expect(logs.some(l => l.includes(`${planted} is not in the bundled list`))).toBe(true)
+    await addBundled(files, planted, TEXT)
+    expect(await search($)).toContain('Mail hint body.')
+    files[planted] = TEXT.replace('Mail hint body.', 'Mail hint changed.')
+    expect(await search($)).not.toContain('Mail hint')
+  })
+
   test('two deep paths that end the same keep two approvals', { options: { projectHints: true } }, async ($, on) => {
     const tail = `${'r'.repeat(300)}/.claude/code-mode/hints/mail.md`
     const [one, two] = [`/one/${tail}`, `/two/${tail}`]
@@ -1033,6 +1049,12 @@ describe('the approval ledger', () => {
 const bundledDir = async ($: Engine, checked: readonly string[]): Promise<string> => {
   await search($)
   return checked.find(p => p.endsWith('/hints') && p !== USER_DIR)!
+}
+// A bundled hint file with its hash in the bundled list, as the plugin ships it.
+const addBundled = async (files: Record<string, string>, path: string, text: string): Promise<void> => {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  files[path] = text
+  Object.assign(files, await bundledList(dir, { [path.slice(dir.length + 1)]: text }))
 }
 
 describe('remove_hint', () => {
@@ -1152,7 +1174,7 @@ describe('remove_hint', () => {
     const files: Record<string, string> = {}
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-bundled.md`
-    files[path] = FILE
+    await addBundled(files, path, FILE)
     await remove($, path, 'Pass ids as strings.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
@@ -1169,7 +1191,7 @@ describe('remove_hint', () => {
       [`${USER_DIR}/removed.json`]: JSON.stringify([{ file: 'mail-gone.md', hint: 'Mail returns JSON.' }]),
     }
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
-    files[`${await bundledDir($, fs.checked)}/mail-gone.md`] = FILE
+    await addBundled(files, `${await bundledDir($, fs.checked)}/mail-gone.md`, FILE)
     const shown = await search($)
     expect(shown).not.toContain('Mail returns JSON.')
     expect(shown).toContain('Pass ids as strings.')
@@ -1349,7 +1371,7 @@ describe('edit_hint', () => {
     const files: Record<string, string> = {}
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-bundled-edit.md`
-    files[path] = FILE
+    await addBundled(files, path, FILE)
     await edit($, path, 'Pass ids as strings.', 'Pass ids as numbers.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
@@ -1373,7 +1395,7 @@ describe('edit_hint', () => {
     const files: Record<string, string> = { [`${USER_DIR}/mail-narrow.md`]: NARROW }
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-narrow.md`
-    files[path] = FILE
+    await addBundled(files, path, FILE)
     await edit($, path, 'Pass ids as strings.', 'Pass ids as numbers.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
@@ -1394,7 +1416,7 @@ describe('edit_hint', () => {
     }
     const fs = fakeHome(on, files, { [MAIL]: 'claude.ai Mail' })
     const path = `${await bundledDir($, fs.checked)}/mail-both.md`
-    files[path] = FILE
+    await addBundled(files, path, FILE)
     await edit($, path, 'Pass ids as strings.', 'Pass ids as numbers.')
     const ui = await $.ui.mount(band)
     await ui.press({ key: 'review' })
@@ -1457,10 +1479,8 @@ describe('the hint-file guard', () => {
     ['Write', { file_path: `${USER_DIR}/pending/../gmail.md`, content: 'x' }],
     ['Edit', { file_path: '.claude/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
     ['Edit', { file_path: '/repo/src/../.claude/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
-    ['Bash', { command: 'echo "- x" >> ~/.claude/code-mode/hints/gmail.md' }],
     ['Write', { file_path: '~/.claude/code-mode/functions/searchAll.md', content: 'x' }],
     ['Write', { file_path: `${HOME}/.claude/code-mode/functions/pending/x--a.md`, content: 'x' }],
-    ['Bash', { command: 'cp /tmp/f.md ~/.claude/code-mode/functions/' }],
   ] as const
   for (const [tool, input] of denied) {
     test(`denies ${tool} ${JSON.stringify(input).slice(0, 60)}`, async ($, on) => {
@@ -1470,185 +1490,18 @@ describe('the hint-file guard', () => {
     })
   }
 
-  // Each spelling of a guarded folder that the shell reads as the same path.
-  const spellings = [
-    'cp f.md ~/.claude/code-mode/./hints/a.md',
-    'cp f.md ~/.claude/code-mode//hints/a.md',
-    'cp f.md ~/.claude/code-mode/files/../hints/a.md',
-    'cp f.md ~/.claude/code-mode/hi""nts/a.md',
-    "cp f.md ~/.claude/code-mode/'hints'/a.md",
-    'cp f.md ~/.claude/code-mode/hin\\ts/a.md',
-    'cp f.md ~/.claude/Code-Mode/Hints/a.md',
-    'cp f.md ~/.claude/code-mode/h*/a.md',
-    'cp f.md ~/.claude/code-mode/hint?/a.md',
-    'cp f.md ~/.claude/code-mode/[h]ints/a.md',
-    'cp f.md ~/.claude/code-mode/{hints,x}/a.md',
-    'D=hints; cp f.md ~/.claude/code-mode/$D/a.md',
-    'cp f.md ~/.claude/code-mode/$(echo hints)/a.md',
-    'cp f.md ~/.claude/code-mode/`echo hints`/a.md',
-    'cp f.md ~/.claude/code-*/hints/a.md',
-    'cp f.md ~/.claude/*/functions/a.md',
-    'cd ~/.claude/code-mode && cp /tmp/a.md hints/',
-    'cd ~/.claude/code-mode/files && cp /tmp/a.md ../functions/x.md',
-    'D=~/.claude/code-mode; echo x > $D/hints/x.md',
-    'ln -s ~/.claude/code-mode /tmp/cm',
-    'cp -r /tmp/x ~/.claude/code-mode/',
-    'D=a/b; printf x > ~/.claude/code-mode/hints/$D/../../x.md',
-    'cp f.md ~/.claude/code-mode/hints/*/../../x.md',
-    'cp f.md ~/.claude/code-mode/*/../hints/a.md',
-    'cp f.md ~/.claude/code-mode/[[:alpha:]]ints/a.md',
-    'cp f.md ~/.claude/code-mode/[![:digit:]]ints/a.md',
-    'cp f.md ~/.claude/code-mode/[]h]ints/a.md',
-    'ls ~/.claude/code-mode/[z-a]',
-    'cp f.md {x,~/.claude/code-mode/hints}',
-    'cp f.md {~/.claude/code-mode/hints,x}/a.md',
-    'cp f.md ~/.claude/code-mode/hints,/a.md',
-    'cp f.md ~/.claude/{code-mode/hints,x}/a.md',
-    // The program is the command word, not an argument named like a reader.
-    'cp -r hints ls ~/.claude/code-mode/',
-    'mv du ~/.claude/code-mode/hints/a.md /tmp/a.md',
-    'env ls=1 cp f.md ~/.claude/code-mode/hints/a.md',
-    'sudo cp f.md ~/.claude/code-mode/functions/a.md',
-    // A brace expands inside one word (`hi{nts,other}` is `hints`).
-    'tee ~/.claude/code-mode/hi{nts,other}/x.md',
-    'cp f.md ~/.claude/code-mode/hi{nts,other}/x.md',
-    'cp f.md ~/.claude/code-mode/func{tions,x}/a.md',
-    'cp f.md ~/.claude/code-mode/{fu,func}tions/a.md',
-    // A flag does not hide the path after it.
-    'cd ~/.claude/code-mode/files && rm -f ../hints/x.md',
-    'cd ~/.claude/code-mode && rm -rf -- hints/a.md',
-    'cd ~/.claude/plugins && cp a ../code-mode/hints/a.md',
-    'ls ~/.claude/code-mode > /tmp/out',
-    // A quoted word can be a script that a shell runs again.
-    "bash -c 'rm -rf ~/.claude/code-mode;'",
-    "bash -c 'rm -rf ~/.claude/code-mode .'",
-    `bash -c 'rm -rf ~/.claude/"code-mode"'`,
-    "bash -c 'rm -rf ~/.claude/code\\-mode'",
-    `sh -c "bash -c 'rm -rf ~/.claude/code\\\\-mode'"`,
-    "eval 'cd ~/.claude;rm -rf code-mode'",
-    "echo 'rm -rf ~/.claude/code-mode;' | sh",
-    "find /tmp -exec /bin/sh -c 'rm -rf ~/.claude/code-mode;' \\;",
-    "/bin/b?sh -c 'rm -rf ~/.claude/code-mode;'",
-    "watch 'rm -rf ~/.claude/code-mode;'",
-    "su -c 'rm -rf ~/.claude/code-mode;'",
-    "source <(echo 'rm -rf ~/.claude/code-mode;')",
-    ". <(echo 'rm -rf ~/.claude/code-mode;')",
-    `env -S "bash -c 'rm -rf ~/.claude/code-mode;'"`,
-    // A parenthesis or `<` ends a word.
-    '(rm -rf ~/.claude/code-mode)',
-    'rm -rf ~/.claude/code-mode</dev/null',
-    'cat <(rm -rf ~/.claude/code-mode)',
-    // These named a guarded word, used `..`, or could not be read. They now deny.
-    'mv ~/.claude/code-mode/files/abc/issues.csv ./issues.csv',
-    'rg -n hints hooks/',
-    'cd /src/code-mode/.claude/worktrees/x && rg -n hints hooks',
-    'ls ~/.claude/*',
-    'rg functions ~/.claude/code-mode/files',
-    'ls ~/.claude/code-mode/files && git log --grep hints',
-    'cp f.md ~/.claude/code-mode/[![:alpha:]]ints/a.md',
-    'cp f.md ~/.claude/code-mode/files/../../readme',
-    'ls /tmp/[z-a]',
-    // A quote keeps the guarded name, and an unquoted glob or `$` still counts.
-    `cp f.md ~/.claude/code-mode/"h"ints/a.md`,
-    `cp f.md ~/.claude/code-mode/"$D"/a.md`,
-    `cp f.md ~/.claude/code-mode/'h*'/a.md`,
-    `cp f.md "$HOME"/.claude/code-mode/hints/a.md`,
-    `cp f.md '~/.claude'/h*/a.md`,
-    // `code-mode` under `.claude`, as a glob, or at the start of a relative path.
-    'rm -rf ~/.c*/code-mode',
-    'rm -rf ~/.claude/./code-mode',
-    'git -C ~/.claude/code-mode init',
-    'rm -rf code-mode',
-    'tar -xf a.tar --directory=code-mode',
-    // A link made in the same command is not there yet when the guard looks.
-    'ln -s ~/.claude /tmp/x && rm -rf /tmp/x/code-mode',
-    'ln -s ~/.clau* /tmp/x; mv /tmp/x/code-mode /tmp/y',
-    'ln -s ~/.claude/ /tmp/x && rm -rf /tmp/x/code-mode',
-    // Seen in sessions and still denied: a relative `code-mode` can be in
-    // `.claude`, `$(...)` runs a command, and a quoted guarded path can be written.
-    'kb page code-mode',
-    'gh issue list --repo $(git -C . remote get-url origin) --state open --limit 30',
-    `node /src/drive.mjs send 'Call edit_hint with path "/tmp/v/cwd/.claude/code-mode/hints/a.md"'`,
-  ]
-  for (const command of spellings)
-    test(`namesGuardedDir: ${command}`, () => expect(namesGuardedDir(command)).toBe(true))
-
-  // Benign commands. A read-only program may name `code-mode`, not `hints` or `functions`.
-  const others = [
-    'ls ~/.claude',
-    'cat ~/.claude/*.json',
-    'cat ~/.claude/code-mode/files/abc/functions.csv',
-    'ls ~/.claude/code-mode/metrics',
-    'du -sh ~/.claude/code-mode',
-    'command ls ~/.claude/code-mode/metrics',
-    "grep -n 'code mode' ~/.claude/code-mode/metrics/a.log",
-    // Without a shell, a quoted word is not read again.
-    `git commit -m "don't stop"`,
-    `git commit -m "add helper functions; fix hints"`,
-    `bash -c 'git commit -m "add helper functions"'`,
-    'echo hello',
-    'git status',
-    // A repository or path named code-mode that is not under `.claude`.
-    'git -C /Users/me/Repositories/code-mode pull --ff-only',
-    'git -C ~/.claude/plugins/cache/x/code-mode/1.0.0 log',
-    // A quoted or escaped glob, brace, or `$` is literal.
-    `curl -s -o /dev/null -w '%{http_code}\\n' -X POST http://127.0.0.1:8787/mcp -d '{}'`,
-    `curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\\n' -m 10 https://connect.ngrok-agent.com`,
-    `curl -sS -o /dev/null -w '%{http_code}\\n' -m 10 https://example.com`,
-    `grep -o 'url=https://[^ ]*' /tmp/x/tasks/a.output`,
-    `codex exec --skip-git-repo-check "Use the pox MCP tool save_fn to save a function named gitlog with body: git -C \\"\\$1\\" log --oneline -3"`,
-    `echo \\$HOME \\*`,
-    // Seen in sessions: a quoted glob, and the `.claude` of a clone, not of HOME.
-    `git -C /Users/me/Repositories/plainwright branch -a --list "*daily/*"`,
-    'sed -n 25,60p /Users/me/Repositories/code-mode/.claude/worktrees/x/hooks/paths.ts',
-    'sed -n 1p /src/code-mode/.claude/worktrees/x/a.ts /src/code-mode/.claude/worktrees/x/b.ts',
-    `grep -n -E "guard|code-mode/hints|code-mode/functions|touchesHints" /src/code-mode/.claude/worktrees/x/tests/hints.test.ts`,
-  ]
-  for (const command of others)
-    test(`namesGuardedDir lets through: ${command}`, () => expect(namesGuardedDir(command)).toBe(false))
-
-  test('denies a Bash command that reaches a hint folder through cd', async ($, on) => {
-    session(on)
-    const r = await $.tool.call({ tool: 'Bash', command: 'cd ~/.claude/code-mode && cp /tmp/a.md hints/' })
-    expect(textOf(r)).toContain('hint files and saved functions steer the model')
-  })
-
-  test('denies a Bash command that reaches code-mode through a symbolic link', async ($, on) => {
-    session(on)
-    const links: Record<string, string> = {
-      '/tmp/cm-home': `${HOME}/.claude`,
-      '/tmp/code-mode': `${HOME}/.claude`,
-    }
-    on('fs.stat', ($, e) => {
-      const link = Object.keys(links).find(l => isUnder(e.path, l))
-      if (link === undefined) throw new Error('ENOENT')
-      const realPath = links[link] + e.path.slice(link.length)
-      return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath } }
-    })
-    const bash = async (command: string) => textOf(await $.tool.call({ tool: 'Bash', command }))
-    for (const command of [
-      'rm -rf /tmp/cm-home/code-mode',
-      'mv /tmp/cm-home/Code-Mode /tmp/old',
-      'rm -rf /tmp/code-mode',
-      'rm -rf /tmp/c*/code-mode',
-    ])
-      expect(await bash(command)).toContain('hint files and saved functions steer the model')
-    expect(await bash('git -C /src/code-mode pull --ff-only')).toBe('ran')
-  })
-
   test('guardedDirs skips an empty root', () => {
     expect(guardedDirs('', '/repo')).toEqual(['/repo/.claude/code-mode/hints'])
     expect(guardedDirs(HOME, '')).toHaveLength(2)
   })
 
-  // A folder added to guardedDirs is guarded for each file tool and for Bash.
+  // A folder added to guardedDirs is guarded for each file tool.
   for (const dir of guardedDirs(HOME, '/repo')) {
     test(`guards ${dir}`, async ($, on) => {
       session(on)
       const calls = [
         { tool: 'Write', file_path: `${dir}/a.md`, content: 'x' },
         { tool: 'Edit', file_path: `${dir}/pending/a.md`, old_string: 'a', new_string: 'b' },
-        { tool: 'Bash', command: `cat ${dir}/a.md` },
       ]
       for (const call of calls)
         expect(textOf(await $.tool.call(call as never))).toContain('hint files and saved functions steer the model')
@@ -1661,7 +1514,15 @@ describe('the hint-file guard', () => {
     expect(textOf(await $.tool.call({ tool: 'Edit', file_path: 'README.md', old_string: 'a', new_string: 'b' }))).toBe(
       'edited',
     )
-    expect(textOf(await $.tool.call({ tool: 'Bash', command: 'ls ~/.claude' }))).toBe('ran')
+  })
+
+  // The ledger, not the text of a command, keeps a file that Bash wrote from
+  // loading (see 'the approval ledger'), so Bash is not checked.
+  test('runs a Bash command that names a guarded folder', async ($, on) => {
+    session(on)
+    // a write into a hint folder, and a command that the old text check denied by mistake
+    for (const command of ['cp /tmp/f.md ~/.claude/code-mode/hints/', 'git -C /src/code-mode/.claude/worktrees/x log'])
+      expect(textOf(await $.tool.call({ tool: 'Bash', command }))).toBe('ran')
   })
 
   test('a guard that fails denies the call and says why in the debug log', async ($, on) => {

@@ -20,10 +20,10 @@ The full repo is the plugin. Claude Code loads the hooks module from `hooks/hook
 | `hooks/paths.ts` | Pure helpers for the folders in `.claude/code-mode`, and the list of folders that the guard protects. |
 | `hooks/tools.ts` | The table of the plugin's tools: the description, the input schema and the place of each one, the full ids, and the typed input of a call. |
 | `runtime/runner.mjs` | The sandbox. It runs in its own Node process. |
-| `hints/` | The bundled hints. |
+| `hints/` | The bundled hints, and `sha256.json`: the hash of each one. After you change a bundled hint, run `node scripts/bundled-hints.mjs`. |
 | `tests/` | The tests of the hooks, the sandbox and the docs, and a smoke test with real Claude Code. |
 | `bench/` | The output projection bench: a fake MCP server, its data with traps, and the runner. |
-| `scripts/` | `projection-report.mjs`: compares your runs with output projection on and off, from the metrics files. |
+| `scripts/` | `projection-report.mjs`: compares your runs with output projection on and off, from the metrics files. `bundled-hints.mjs`: writes `hints/sha256.json`. |
 | `docs/` | The user docs. |
 
 ## Format

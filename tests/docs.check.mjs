@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bundledListOnDisk, bundledListText } from '../scripts/bundled-hints.mjs'
 import { runChecks } from './check.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -197,6 +198,14 @@ const tests = {
         ]
       })
     assert.deepEqual(problems, [], problems.join('\n'))
+  },
+  'the bundled list has the hash of each bundled hint': () => {
+    // A bundled hint that is not in the list does not load (BUNDLED_LIST in hooks/hints.ts).
+    assert.equal(
+      bundledListOnDisk(),
+      bundledListText(),
+      'hints/sha256.json is out of date: run node scripts/bundled-hints.mjs',
+    )
   },
   'links and anchors resolve': () => {
     const problems = [...USER_DOCS, ...LINK_ONLY].flatMap(linkProblems)

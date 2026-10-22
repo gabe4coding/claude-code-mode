@@ -16,8 +16,10 @@ value goes back into the context. The whole repo is the plugin (marketplace sour
   writes it when the plugin loads from a folder. It is not in git.
 
 ## Rules
-- The plugin guards the hint folders in `~/.claude` and in the project, and the function folder in `~/.claude`:
-  Write, Edit, and Bash commands that name them are denied. To change code or tests that name these folders, use
-  the Edit tool: the guard checks its file path, while a Bash command that names a folder is denied. To test a hint, use the bundled `hints/` or the fake host `fakeHome` in `tests/fakes.ts`.
+- A user or project hint file and a saved function load only when the approval ledger in `$.store` has the hash of
+  their text (`docs/hints.mdx`, "Files that you write or change"). Write, Edit and NotebookEdit on these folders
+  are denied. A file written another way does not load until the person approves it in the band, so never write
+  one to make a test or a run work: use the bundled `hints/`, or the fakes `fakeHome` and `approvedHome` in
+  `tests/fakes.ts`.
 - Before every commit, do the verification loop in `CODING_STANDARDS.md`: `/simplify`, `/code-review`, the
   checks, then `/verify`.
