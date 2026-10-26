@@ -123,6 +123,16 @@ Claude sees a short list of keys and titles, not every full issue.
 
 Issues and PRs welcome. If code-mode saves you tokens, a ⭐ helps others find it.
 
+## Related Claude Code plugins
+
+The same author maintains these plugins. Each plugin installs and works alone.
+
+- [plain](https://github.com/gabe4coding/plain): end-to-end tests in plain English. Playwright does the actions and the Jev model decides.
+- [puredori](https://github.com/gabe4coding/puredori): shapes AI work into small PRs that a person can review.
+- [loadout](https://github.com/gabe4coding/loadout): hides the tools, skills and MCP instructions that the task does not need.
+- [shall](https://github.com/gabe4coding/shall): engineering standards (RFC 2119) that agents apply, with checks that post to PRs.
+- [retroagent](https://github.com/gabe4coding/retroagent): syncs your Claude Code and Codex sessions to a private repo and searches them.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
