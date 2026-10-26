@@ -4,7 +4,7 @@
 //
 //   node tests/runner.integration.mjs
 
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -34,6 +34,20 @@ const LAUNCH = [
 ].join('\n')
 const MKTEMP = ['mktemp', '-d', '-t', 'code-mode.XXXXXX']
 const MARK = '\u0001cm '
+
+// The host reads stdout with takeMessages. Node 22.13 runs this file with no
+// type stripping, so ask for it once and load the real helper.
+let takeMessages
+try {
+  ;({ takeMessages } = await import('../hooks/protocol.ts'))
+} catch (err) {
+  if (process.env.CODE_MODE_STRIP === '1' || err?.code !== 'ERR_UNKNOWN_FILE_EXTENSION') throw err
+  const again = spawnSync(process.execPath, ['--experimental-strip-types', fileURLToPath(import.meta.url)], {
+    stdio: 'inherit',
+    env: { ...process.env, CODE_MODE_STRIP: '1' },
+  })
+  process.exit(again.status ?? 1)
+}
 
 const echo = m =>
   m.t === 'resources'
@@ -76,11 +90,13 @@ const run = (
     child.stdin.on('error', () => {}) // a launch that ends early does not read stdin
     child.stdin.end(JSON.stringify({ code, timeoutMs, lib }))
     let buffer = ''
+    let stdout = ''
     let stderr = ''
     let calls = 0
     let outcome
     child.stderr.on('data', d => (stderr += d))
     child.stdout.on('data', d => {
+      stdout += d
       buffer += d
       let i
       while ((i = buffer.indexOf('\n')) >= 0) {
@@ -99,7 +115,7 @@ const run = (
     })
     child.on('close', (exit, signal) => {
       fs.rmSync(xdir, { recursive: true, force: true })
-      resolve({ exit, signal, calls, outcome, stderr })
+      resolve({ exit, signal, calls, outcome, stderr, stdout })
     })
   })
 }
@@ -171,6 +187,20 @@ const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8')
 const value = r => (r.outcome?.t === 'done' ? JSON.parse(r.outcome.value) : undefined)
 const failure = r => (r.outcome?.t === 'error' ? r.outcome.message : undefined)
 
+// A return of n characters must come back as one whole done line. takeMessages
+// keeps a line only when it ends in a newline, the same rule as the host.
+const wholeThroughPipe = async n => {
+  const r = await run(`return ${JSON.stringify('x'.repeat(n))}`, { timeoutMs: 15_000 })
+  const { messages, rest } = takeMessages(r.stdout)
+  const done = messages.filter(m => m.t === 'done')
+  assert.equal(
+    done.length,
+    1,
+    `exit ${r.exit} stdout ${r.stdout.length} rest ${rest.length} newline ${r.stdout.endsWith('\n')}`,
+  )
+  assert.equal(JSON.parse(done[0].value).length, n)
+}
+
 const cases = {
   'the copies match the plugin': () => {
     const src = read('hooks/register.tsx')
@@ -221,6 +251,10 @@ const cases = {
   },
 
   'returns a value': async () => assert.equal(value(await run('return 1 + 1')), 2),
+
+  'make it fail: a 200000-char return arrives whole through a pipe': async () => wholeThroughPipe(200_000),
+
+  'make it fail: a 1000000-char return arrives whole through a pipe': async () => wholeThroughPipe(1_000_000),
 
   'parallel calls and console': async () => {
     const r = await run(`
