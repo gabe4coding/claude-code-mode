@@ -32,14 +32,21 @@ const xdir = process.argv[2]
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const timeoutMs = Number(input.timeoutMs) || 60_000
 
-const emit = msg => process.stdout.write(MARK + JSON.stringify(msg) + '\n')
-
 let finished = false
+const lineOf = msg => MARK + JSON.stringify(msg) + '\n'
+// A message after finish (a late call) is dropped. The result line is the last
+// line this process writes, so a later write cannot cut it.
+const emit = msg => {
+  if (finished) return
+  process.stdout.write(lineOf(msg))
+}
+
+// A pipe takes the line in the background. process.exit drops a write that is
+// still queued, so a line larger than the pipe buffer never reaches the host.
 const finish = msg => {
   if (finished) return
   finished = true
-  emit(msg)
-  process.exit(0)
+  process.stdout.write(lineOf(msg), () => process.exit(0))
 }
 
 // Host side of the bridge: the context calls post(kind, a, b, c) with strings.
