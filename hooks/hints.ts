@@ -13,6 +13,7 @@
 // its body is that one hint. A change proposal is a removal with the new
 // text of the hint in `replace`.
 
+import { normalizePath } from './paths'
 import { splitToolName } from './protocol'
 
 export type HintScope = 'bundled' | 'user' | 'project'
@@ -494,13 +495,7 @@ export const staleDecisionKeys = (keys: readonly string[], key: string, max = MA
 export const resolvePath = (path: string, home: string, cwd: string): string => {
   const full =
     path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
-  const parts: string[] = []
-  for (const part of full.split('/')) {
-    if (part === '' || part === '.') continue
-    if (part === '..') parts.pop()
-    else parts.push(part)
-  }
-  return `/${parts.join('/')}`
+  return normalizePath(full)
 }
 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */

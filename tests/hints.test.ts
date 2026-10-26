@@ -267,6 +267,12 @@ describe('hints in the tools', () => {
     expect(text).toContain('Mail hint body.')
   })
 
+  test('a user hint loads when HOME ends in a slash', async ($, on) => {
+    const { env } = await approvedHome(on, hintFile, { [MAIL]: 'claude.ai Mail' })
+    env.HOME = `${HOME}/`
+    expect(textOf(await $.tool.call({ tool: TOOL.search_tools, query: 'send' }))).toContain('Mail hint body.')
+  })
+
   test('search_tools finds hints by identify when the server is named by UUID', async ($, on) => {
     await approvedHome(
       on,
@@ -1527,9 +1533,9 @@ describe('the hint-file guard', () => {
     expect(isUnder('/a/bc', '/a/b')).toBe(false)
   })
 
-  const session = (on: On) => {
-    fakeHome(on, {})
-    on('session.root', () => ({ value: '/repo' }))
+  const session = (on: On, home = HOME, root = '/repo') => {
+    fakeHome(on, {}).env.HOME = home
+    on('session.root', () => ({ value: root }))
     on('session.cwd', () => ({ value: '/repo' }))
     // stands for the file tools: a call that gets past the guard is written
     on('tool.call', { tool: 'Write' }, () => ({ result: 'written' }))
@@ -1610,6 +1616,32 @@ describe('the hint-file guard', () => {
     expect(isUnderAnyCase('/a/BC', '/a/b')).toBe(false)
     // the other callers of isUnder give access, so they keep the exact folder
     expect(isUnder('/a/B/c', '/a/b')).toBe(false)
+  })
+
+  // HOME and the project root as the environment gives them, with a trailing
+  // or double slash; the folders do not exist yet, so no real path helps.
+  for (const home of ['/home/u/', '/', '/home//u']) {
+    test(`guards the folders when HOME is ${home}`, async ($, on) => {
+      session(on, home, '/repo/')
+      for (const file_path of [
+        '~/.claude/code-mode/hints/x.md',
+        '~/.claude/code-mode/functions/x.md',
+        '/repo/.claude/code-mode/hints/x.md',
+      ])
+        expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
+          'hint files and saved functions steer the model',
+        )
+    })
+  }
+
+  test('guardedDirs normalizes its roots', () => {
+    const installed = '/home/u/.claude/plugins/cache/code-mode/1.0.0'
+    expect(guardedDirs('/home//u/', '/repo/', `${installed}/`)).toEqual([
+      '/home/u/.claude/code-mode/hints',
+      '/home/u/.claude/code-mode/functions',
+      '/repo/.claude/code-mode/hints',
+      installed,
+    ])
   })
 
   test('lets other files through', async ($, on) => {
