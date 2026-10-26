@@ -492,10 +492,11 @@ export const staleDecisionKeys = (keys: readonly string[], key: string, max = MA
 }
 
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
-export const resolvePath = (path: string, home: string, cwd: string): string =>
-  normalizePath(
-    path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`,
-  )
+export const resolvePath = (path: string, home: string, cwd: string): string => {
+  const full =
+    path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
+  return normalizePath(full)
+}
 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */
 export const isUnder = (path: string, dir: string): boolean =>
