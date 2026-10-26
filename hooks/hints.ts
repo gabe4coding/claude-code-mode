@@ -13,6 +13,7 @@
 // its body is that one hint. A change proposal is a removal with the new
 // text of the hint in `replace`.
 
+import { normalizePath } from './paths'
 import { splitToolName } from './protocol'
 
 export type HintScope = 'bundled' | 'user' | 'project'
@@ -491,17 +492,10 @@ export const staleDecisionKeys = (keys: readonly string[], key: string, max = MA
 }
 
 /** An absolute, normalized path: `~` is home, a relative path is under cwd, `.` and `..` are resolved. */
-export const resolvePath = (path: string, home: string, cwd: string): string => {
-  const full =
-    path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`
-  const parts: string[] = []
-  for (const part of full.split('/')) {
-    if (part === '' || part === '.') continue
-    if (part === '..') parts.pop()
-    else parts.push(part)
-  }
-  return `/${parts.join('/')}`
-}
+export const resolvePath = (path: string, home: string, cwd: string): string =>
+  normalizePath(
+    path === '~' || path.startsWith('~/') ? home + path.slice(1) : path.startsWith('/') ? path : `${cwd}/${path}`,
+  )
 
 /** True when `path` is `dir` or inside it (both absolute and normalized). */
 export const isUnder = (path: string, dir: string): boolean =>
