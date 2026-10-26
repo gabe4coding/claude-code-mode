@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -613,6 +614,18 @@ def test_the_latest_summary_is_the_one_that_counts():
     assert rt.review_passed([_greptile()], "abc", [older, newer], []) is True
     fresh_low = _summary(score=1, updated_at="2026-10-19T02:00:00Z")
     assert rt.review_passed([_greptile()], "abc", [newer, fresh_low], []) is False
+
+
+def test_pull_request_target_checkouts_keep_no_token():
+    # The job token of a pull_request_target run can write, so no checkout there leaves it in the git config.
+    for path in (HERE.parent / "workflows").glob("*.yml"):
+        text = path.read_text(encoding="utf-8")
+        if "pull_request_target" not in text:
+            continue
+        for name, job in yaml.safe_load(text)["jobs"].items():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    assert (step.get("with") or {}).get("persist-credentials") is False, f"{path.name}: {name}"
 
 
 def test_pull_request_target_workflows_have_no_secrets():
