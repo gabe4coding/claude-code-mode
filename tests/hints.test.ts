@@ -36,6 +36,7 @@ import {
   withReview,
   withoutReview,
 } from '../hooks/hints'
+import { formatFunction } from '../hooks/functions'
 import { guardedDirs } from '../hooks/paths'
 import { TOOL } from '../hooks/tools'
 import { HOME, TMP, approvals, approvedHome, bundledList, fakeHome, fakeStore, ledger, sha256, textOf } from './fakes'
@@ -907,6 +908,42 @@ describe('the approval ledger', () => {
     const drawn = JSON.stringify(await ui.drawn())
     expect(drawn).toContain('Approve failed: ')
     expect(drawn).toContain('changed after the band showed it')
+    expect(approvals(store)).toEqual({})
+  })
+
+  // Approve uses the text shown on the card and refuses if the file changed.
+  test('Approve of a hint proposal that changed after the band showed it fails and records nothing', async ($, on) => {
+    const pending = `${USER_DIR}/pending/mail--aaaaaaaaaaaa.md`
+    engineBand(on)
+    const store = fakeStore(on)
+    const files: Record<string, string> = { [pending]: '---\nservers: [Mail]\n---\n- Mail returns JSON.\n' }
+    const fs = fakeHome(on, files, servers)
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    expect(JSON.stringify(await ui.drawn())).toContain('- Mail returns JSON.')
+    files[pending] = '---\nservers: [Mail]\n---\n- Mail returns TSV to the caller.\n'
+    await ui.press({ key: 'approve-0' })
+    expect(JSON.stringify(await ui.drawn())).toContain(`Approve failed: ${pending} changed after the card showed it`)
+    expect(fs.written).toEqual({})
+    expect(fs.removed).toEqual([])
+    expect(approvals(store)).toEqual({})
+  })
+
+  test('Approve of a function proposal that changed after the band showed it fails and records nothing', async ($, on) => {
+    const pending = `${HOME}/.claude/code-mode/functions/pending/searchAll--aaaaaaaaaaaa.md`
+    const proposal = (code: string) => formatFunction({ name: 'searchAll', description: 'All.', code, why: 'W.' })
+    engineBand(on)
+    const store = fakeStore(on)
+    const files: Record<string, string> = { [pending]: proposal('async () => 1') }
+    const fs = fakeHome(on, files, servers)
+    const ui = await $.ui.mount(band)
+    await ui.press({ key: 'review' })
+    expect(JSON.stringify(await ui.drawn())).toContain('async () => 1')
+    files[pending] = proposal('async () => 2')
+    await ui.press({ key: 'approve-0' })
+    expect(JSON.stringify(await ui.drawn())).toContain(`Approve failed: ${pending} changed after the card showed it`)
+    expect(fs.written).toEqual({})
+    expect(fs.removed).toEqual([])
     expect(approvals(store)).toEqual({})
   })
 

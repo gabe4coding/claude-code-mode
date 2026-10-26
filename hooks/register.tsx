@@ -685,8 +685,13 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
 // Approve: merge the proposal's bullets into the active file beside pending/
 // (or move the whole file when there is none yet), then remove the proposal.
 // A bullet the file has already is not added again (see appendItems).
-async function approvePending($: EngineInterface, path: string, projectHints: boolean): Promise<string> {
-  const proposal = String(await $.fs.read(path))
+// `proposal` is the text the card showed (see shownText).
+async function approvePending(
+  $: EngineInterface,
+  path: string,
+  proposal: string,
+  projectHints: boolean,
+): Promise<string> {
   const hint = parseHint(proposal, path, 'user')
   if (hint.edit !== undefined) {
     const dest = await approveRemoval($, hint, hint.edit, projectHints)
@@ -707,8 +712,8 @@ async function approvePending($: EngineInterface, path: string, projectHints: bo
 
 // Discard: delete the proposal. A discarded removal also shows the hint
 // again in the session that hid it.
-async function discardPending($: EngineInterface, path: string): Promise<void> {
-  const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
+async function discardPending($: EngineInterface, path: string, proposal: string): Promise<void> {
+  const hint = parseHint(proposal, path, 'user')
   if (hint.edit !== undefined)
     for (const { hidden } of bySession.values()) hidden.delete(hiddenKey(hint.edit.ref, hintKey(hint.body)))
   await $.process.run(['rm', '-f', path])
@@ -757,16 +762,29 @@ async function decideOnce(
   }
 }
 
+// The proposal text that a card showed, when its file still has it. Approve
+// and Discard act on this text and fail when the file changed after the card
+// drew it, so the person decides on the text they read (as decideUnapproved).
+async function shownText($: EngineInterface, path: string, shown: string): Promise<string> {
+  if ((await readIfExists($, path)) !== shown)
+    throw new Error(`${path} changed after the card showed it; review it again`)
+  return shown
+}
+
 function decidePending(
   $: EngineInterface,
   path: string,
+  shown: string,
   action: Action,
   projectHints: boolean,
 ): Promise<Decision | undefined> {
   return decideOnce($, path, async () => {
-    const hint = parseHint(String(await $.fs.read(path).catch(() => '')), path, 'user')
+    const proposal = await shownText($, path, shown)
+    const hint = parseHint(proposal, path, 'user')
     const dest =
-      action === 'approved' ? await approvePending($, path, projectHints) : (await discardPending($, path), undefined)
+      action === 'approved'
+        ? await approvePending($, path, proposal, projectHints)
+        : (await discardPending($, path, proposal), undefined)
     return { action, dest, kind: proposalKind(hint) }
   })
 }
@@ -1072,9 +1090,10 @@ async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[
 
 // Approve: the proposal becomes functions/<name>.md, without its reason, and
 // replaces a function with that name. An Approve that cannot write it fails
-// and keeps the proposal.
-async function saveFunction($: EngineInterface, path: string): Promise<string> {
-  const [proposal, dir] = await Promise.all([readFunction($, path), functionsDir($)])
+// and keeps the proposal. `text` is the text the card showed (see shownText).
+async function saveFunction($: EngineInterface, path: string, text: string): Promise<string> {
+  const proposal = parseFunction(text, path)
+  const dir = await functionsDir($)
   if (proposal === undefined || dir === undefined || !isUnder(path, `${dir}/pending`))
     throw new Error(`not a function proposal in the function folder: ${path}`)
   const dest = `${dir}/${proposal.name}.md`
@@ -1087,9 +1106,15 @@ async function saveFunction($: EngineInterface, path: string): Promise<string> {
 }
 
 // Approve saves the function; both then remove the proposal.
-function decideFunction($: EngineInterface, path: string, action: Action): Promise<Decision | undefined> {
+function decideFunction(
+  $: EngineInterface,
+  path: string,
+  shown: string,
+  action: Action,
+): Promise<Decision | undefined> {
   return decideOnce($, path, async () => {
-    const dest = action === 'approved' ? await saveFunction($, path) : undefined
+    const text = await shownText($, path, shown)
+    const dest = action === 'approved' ? await saveFunction($, path, text) : undefined
     await $.process.run(['rm', '-f', path])
     return { action, dest, kind: 'function' }
   })
@@ -1369,13 +1394,15 @@ export const register: Register = (on, options) => {
     const { Text } = ui
     const decision = parseDecision(await $.store.get(decisionKey(path)))
     if (decision !== undefined) return shownLine(ui, decisionShown(decision))
-    const [proposal, current] = await Promise.all([readFunction($, path), readFunction($, activePathOf(path))])
-    if (proposal === undefined) return <Text dimColor>Function proposal is no longer pending.</Text>
+    const [text, current] = await Promise.all([readIfExists($, path), readFunction($, activePathOf(path))])
+    const proposal = text === undefined ? undefined : parseFunction(text, path)
+    if (text === undefined || proposal === undefined)
+      return <Text dimColor>Function proposal is no longer pending.</Text>
     return functionCard(
       ui,
       proposal,
       current,
-      cardButtons(ui, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, action)),
+      cardButtons(ui, { approve: 'approve', discard: 'discard' }, action => decideFunction($, path, text, action)),
     )
   })
 
@@ -1464,14 +1491,15 @@ export const register: Register = (on, options) => {
       if (decision !== undefined) return shownLine(ui, decisionShown(decision))
       if (!(await $.fs.exists(path))) return <Text dimColor>Hint proposal is no longer pending.</Text>
 
-      const hint = parseHint(String(await $.fs.read(path)), path, await scopeOf($, path))
+      const text = String(await $.fs.read(path))
+      const hint = parseHint(text, path, await scopeOf($, path))
       const note = 'Claude sees approved hints in later sessions. Approve only what you would write yourself.'
       return hintCard(
         ui,
         hint,
         await cardFields($, hint),
         cardButtons(ui, { approve: 'approve', discard: 'discard' }, action =>
-          decidePending($, path, action, projectHints),
+          decidePending($, path, text, action, projectHints),
         ),
         note,
       )
@@ -1549,12 +1577,17 @@ export const register: Register = (on, options) => {
     const shownOf = (d: Decision | undefined) => (d === undefined ? undefined : decisionShown(d))
     let decide: (action: Action) => Promise<Shown | undefined>
     let card: RenderChildren
+    // The card and its buttons take the text of one read of the file.
     if (hint !== undefined) {
-      decide = action => decidePending($, hint.path, action, projectHints).then(shownOf)
-      card = hintCard(ui, hint, await cardFields($, hint), null)
+      const text = (await readIfExists($, hint.path)) ?? ''
+      const drawn = parseHint(text, hint.path, hint.scope)
+      decide = action => decidePending($, hint.path, text, action, projectHints).then(shownOf)
+      card = hintCard(ui, drawn, await cardFields($, drawn), null)
     } else if (f !== undefined) {
-      decide = action => decideFunction($, f.path, action).then(shownOf)
-      card = functionCard(ui, f, await readFunction($, activePathOf(f.path)), null)
+      const text = (await readIfExists($, f.path)) ?? ''
+      const drawn = parseFunction(text, f.path) ?? f
+      decide = action => decideFunction($, f.path, text, action).then(shownOf)
+      card = functionCard(ui, drawn, await readFunction($, activePathOf(f.path)), null)
     } else {
       // index < total, so the rest is a file not approved.
       const file = unapproved[index - pending.length - functions.length]!
