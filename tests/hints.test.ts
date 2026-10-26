@@ -1634,6 +1634,23 @@ describe('the hint-file guard', () => {
     })
   }
 
+  // A case alias under such a HOME: the guard normalizes the roots and folds
+  // letter case, both at once.
+  for (const home of ['/home/u/', '/home//u']) {
+    test(`guards a case alias when HOME is ${home}`, async ($, on) => {
+      session(on, home, '/repo/')
+      for (const file_path of [
+        '~/.Claude/Code-Mode/hints/x.md',
+        '~/.claude/code-mode/FUNCTIONS/x.md',
+        '/HOME/U/.claude/code-mode/hints/x.md',
+        '/repo/.CLAUDE/code-mode/hints/x.md',
+      ])
+        expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
+          'hint files and saved functions steer the model',
+        )
+    })
+  }
+
   test('guardedDirs normalizes its roots', () => {
     const installed = '/home/u/.claude/plugins/cache/code-mode/1.0.0'
     expect(guardedDirs('/home//u/', '/repo/', `${installed}/`)).toEqual([
