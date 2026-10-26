@@ -685,7 +685,7 @@ async function approveRemoval($: EngineInterface, hint: Hint, edit: HintEdit, pr
 // Approve: merge the proposal's bullets into the active file beside pending/
 // (or move the whole file when there is none yet), then remove the proposal.
 // A bullet the file has already is not added again (see appendItems).
-// `proposal` is the text the card showed (see shownText).
+// `proposal` is the text the card showed (see cardText).
 async function approvePending(
   $: EngineInterface,
   path: string,
@@ -765,7 +765,7 @@ async function decideOnce(
 // The proposal text that a card showed, when its file still has it. Approve
 // and Discard act on this text and fail when the file changed after the card
 // drew it, so the person decides on the text they read (as decideUnapproved).
-async function shownText($: EngineInterface, path: string, shown: string): Promise<string> {
+async function cardText($: EngineInterface, path: string, shown: string): Promise<string> {
   if ((await readIfExists($, path)) !== shown)
     throw new Error(`${path} changed after the card showed it; review it again`)
   return shown
@@ -779,7 +779,7 @@ function decidePending(
   projectHints: boolean,
 ): Promise<Decision | undefined> {
   return decideOnce($, path, async () => {
-    const proposal = await shownText($, path, shown)
+    const proposal = await cardText($, path, shown)
     const hint = parseHint(proposal, path, 'user')
     const dest =
       action === 'approved'
@@ -1090,7 +1090,7 @@ async function loadFunctionProposals($: EngineInterface): Promise<SavedFunction[
 
 // Approve: the proposal becomes functions/<name>.md, without its reason, and
 // replaces a function with that name. An Approve that cannot write it fails
-// and keeps the proposal. `text` is the text the card showed (see shownText).
+// and keeps the proposal. `text` is the text the card showed (see cardText).
 async function saveFunction($: EngineInterface, path: string, text: string): Promise<string> {
   const proposal = parseFunction(text, path)
   const dir = await functionsDir($)
@@ -1113,7 +1113,7 @@ function decideFunction(
   action: Action,
 ): Promise<Decision | undefined> {
   return decideOnce($, path, async () => {
-    const text = await shownText($, path, shown)
+    const text = await cardText($, path, shown)
     const dest = action === 'approved' ? await saveFunction($, path, text) : undefined
     await $.process.run(['rm', '-f', path])
     return { action, dest, kind: 'function' }
