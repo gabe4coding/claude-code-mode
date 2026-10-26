@@ -1126,6 +1126,26 @@ describe('output projection', () => {
     expect(again).toContain('#3 mcp__fake__echo')
   })
 
+  test('make it fail: a result cut only after pretty print is kept for recall', ON, async ($, on) => {
+    on('session.id', () => ({ value: 'sess-p' }))
+    fakeServer(on)
+    const host = fakeHost(on)
+    const rows = Array.from({ length: 800 }, (_, i) => ({ id: i, ok: true }))
+    expect(JSON.stringify(rows).length).toBeLessThan(20_000)
+    expect(JSON.stringify(rows, null, 2).length).toBeGreaterThan(20_000)
+    const cut = textOf(await $.tool.call({ tool: RUN, code: returning(rows) }))
+    expect(cut).toContain('await recall(')
+    expect(cut.slice(cut.lastIndexOf('…'))).toBe(
+      '… [11092 more characters cut; await recall(1) returns the whole result: return a part of it]\n\n--- console (1 lines) ---\nhello\n\n--- 0 MCP calls: 0 characters in, 17k out ---',
+    )
+    const note = cut.match(/await recall\((\d+)\)/)
+    expect(note).not.toBeNull()
+    await $.tool.call({ tool: RUN, code: scenario({ recall: Number(note?.[1]) }) })
+    const reply = JSON.parse(host.written[`${XDIR}/r1.json`]!)
+    expect(reply.value).toHaveLength(800)
+    expect(reply.value[799]).toEqual({ id: 799, ok: true })
+  })
+
   test('a result shape is saved and search_tools shows it in a later session', ON, async ($, on) => {
     fakeServer(on)
     const files = fakeHost(on).written

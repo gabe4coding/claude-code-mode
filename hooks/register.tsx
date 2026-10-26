@@ -92,6 +92,7 @@ import {
   savedResultOf,
   savedReply,
   shapeOf,
+  shownText,
   splitToolName,
   takeMessages,
   toValue,
@@ -1978,9 +1979,13 @@ export const register: Register = (on, options) => {
     // A result too large to show is kept whole, so the next program can page it.
     const returned = outcome?.t === 'done' ? outcome.value : undefined
     const outChars = returned?.length ?? 0
-    const isCut = outChars > MAX_RESULT_CHARS
+    // Cut on the shown text. outChars stays the raw length, for the metrics.
+    // With no session id the store dies with this run, so the clip names no recall.
+    const isCut = returned !== undefined && shownText(returned).length > MAX_RESULT_CHARS
     const wholeRef =
-      projection && isCut && returned !== undefined ? keep(kept, returned, await $.clock.now()) : undefined
+      hasSession && projection && isCut && returned !== undefined
+        ? keep(kept, returned, await $.clock.now())
+        : undefined
     const report: Projection | undefined = projection ? { calls: callRecords, recalls, recalled, wholeRef } : undefined
     if (opts.metrics === true) {
       await writeMetrics($, state, {
