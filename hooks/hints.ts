@@ -507,6 +507,18 @@ export const resolvePath = (path: string, home: string, cwd: string): string => 
 export const isUnder = (path: string, dir: string): boolean =>
   path === dir || path.startsWith(`${dir.replace(/\/$/, '')}/`)
 
+// A path as a case-insensitive volume (the macOS default) compares it: one
+// letter case, and one Unicode form, as APFS also ignores the form of a name.
+const foldCase = (path: string): string => path.normalize('NFD').toUpperCase().toLowerCase().normalize('NFD')
+
+/**
+ * isUnder for any letter case: on a case-insensitive volume, `~/.claude/Code-Mode/hints`
+ * is the hint folder. Only the guard uses it. On a case-sensitive volume, it
+ * also matches another folder with that name in other case, so it denies too
+ * much, never too little.
+ */
+export const isUnderAnyCase = (path: string, dir: string): boolean => isUnder(foldCase(path), foldCase(dir))
+
 /** True for a server named by UUID, as the desktop app names claude.ai connectors: no name to read. */
 export const isUuidLike = (server: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(server)
 
