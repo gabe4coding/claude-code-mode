@@ -193,7 +193,8 @@ const clip = (text: string, max: number, whole?: number): string => {
   return `${text.slice(0, max)}\n… [${text.length - max} more characters cut; ${fix}]`
 }
 
-const pretty = (json: string): string => {
+/** The text the host shows for a return value: formatted JSON, or the raw text when it is not JSON. */
+export const shownText = (json: string): string => {
   try {
     return JSON.stringify(JSON.parse(json), null, 2) ?? 'null'
   } catch {
@@ -214,7 +215,7 @@ export const formatOutcome = (
     parts.push('Error: the sandbox exited without a result.')
     if (stderr.trim() !== '') parts.push(`stderr:\n${clip(stderr.trim(), 2000)}`)
   } else if (outcome.t === 'done') {
-    parts.push(clip(pretty(outcome.value), maxChars, projection?.wholeRef))
+    parts.push(clip(shownText(outcome.value), maxChars, projection?.wholeRef))
   } else {
     const message = /^\w*Error: /.test(outcome.message) ? outcome.message : `Error: ${outcome.message}`
     parts.push(clip(message, 4000))

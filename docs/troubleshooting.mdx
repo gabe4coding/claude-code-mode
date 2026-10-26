@@ -64,7 +64,7 @@ wait in the queue. A program runs at most 8 calls at one time.
 
 ### "more characters cut, return less data"
 
-Cause: the return value is longer than 20,000 characters.
+Cause: the shown text is longer than 20,000 characters.
 
 Fix: the model must return only the fields that it needs. If you see this often, ask the model to filter in the
 program. If the note gives a `recall(n)` number, the next program can return a part of the whole value with no new
