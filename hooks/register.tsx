@@ -31,6 +31,7 @@ import {
   hintApplies,
   isApprovalKey,
   isUnder,
+  isUnderAnyCase,
   isUuidLike,
   kindQuestion,
   newHintFlags,
@@ -829,14 +830,15 @@ async function landings($: EngineInterface, full: string): Promise<string[]> {
   return candidates.filter((c): c is string => typeof c === 'string')
 }
 
-// True when a file tool's path lands in a hint folder.
+// True when a file tool's path lands in a hint folder, in any letter case
+// (isUnderAnyCase): a case-insensitive volume opens the folder for each.
 async function touchesHints($: EngineInterface, filePath: string): Promise<boolean> {
   const [home, cwd] = await Promise.all([homeOf($), $.session.cwd()])
   const [candidates, dirs] = await Promise.all([
     landings($, resolvePath(filePath, home, cwd)),
     guardedHintDirs($, home),
   ])
-  return candidates.some(c => dirs.some(d => isUnder(c, d)))
+  return candidates.some(c => dirs.some(d => isUnderAnyCase(c, d)))
 }
 
 // What code-mode saw in the session that made a proposal: the runs with a
