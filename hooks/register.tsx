@@ -120,7 +120,7 @@ import {
   usedFunctions,
   type SavedFunction,
 } from './functions'
-import { codeModePath, functionsFolder, guardedDirs, hintsFolder } from './paths'
+import { codeModePath, functionsFolder, guardedDirs, hintsFolder, normalizePath } from './paths'
 import { SEARCH_LIMIT, TOOL, TOOL_NAMES, parseInput, registration } from './tools'
 
 const MAX_RESULT_CHARS = 20_000
@@ -791,10 +791,10 @@ function decidePending(
 }
 
 // The folders whose files steer the model (guardedDirs in paths.ts), each as
-// written and as its real path.
+// written and in real form: HOME or a root can be a symbolic link.
 async function guardedHintDirs($: EngineInterface, home: string): Promise<string[]> {
   const dirs = guardedDirs(home, await $.session.root(), $.plugin.root)
-  const real = await Promise.all(dirs.map(d => realPathOf($, d)))
+  const real = await Promise.all(dirs.map(d => realFormOf($, d)))
   return [...dirs, ...real.filter((r): r is string => typeof r === 'string')]
 }
 
@@ -805,12 +805,28 @@ function realPathOf($: EngineInterface, path: string): Promise<string | undefine
   )
 }
 
-// Where an absolute path can land: as written, its real path, or its parent's
-// real path (a new file is not there yet).
+// An absolute path in real form: the real path of its nearest folder that
+// exists, then the rest of the path. A write makes the missing folders under
+// that real folder, so a symbolic link above them decides where it lands.
+async function realFormOf($: EngineInterface, path: string): Promise<string | undefined> {
+  for (let head = path; ; head = head.slice(0, head.lastIndexOf('/')) || '/') {
+    const real = await realPathOf($, head)
+    if (real !== undefined) return normalizePath(`${real}/${path.slice(head.length)}`)
+    if (head === '/') return undefined
+  }
+}
+
+// Where an absolute path can land: as written, in real form, or under its
+// parent's real form. The file itself can be a symbolic link out of the folder,
+// and the write still names a file in that folder.
 async function landings($: EngineInterface, full: string): Promise<string[]> {
   const parent = full.slice(0, full.lastIndexOf('/')) || '/'
-  const [self, dir] = await Promise.all([realPathOf($, full), realPathOf($, parent)])
-  const candidates = [full, self, dir === undefined ? undefined : `${dir}/${full.slice(parent.length + 1)}`]
+  const [self, dir] = await Promise.all([realFormOf($, full), realFormOf($, parent)])
+  const candidates = [
+    full,
+    self,
+    dir === undefined ? undefined : normalizePath(`${dir}/${full.slice(parent.length + 1)}`),
+  ]
   return candidates.filter((c): c is string => typeof c === 'string')
 }
 
