@@ -227,7 +227,9 @@ model does with your MCP tools. These rules make a bad hint less probable:
   Bash writes waits in the band.
 - **The model cannot write hint files with its file tools.** A guard in the plugin denies Write, Edit and
   NotebookEdit on files in the hint folders, so the model gets an error at once. It checks the path as written and
-  its real path through symbolic links. The guard also covers the plugin folder when Claude Code installed it under
+  in real form: the real path of the nearest folder that exists, through symbolic links, then the rest of the path.
+  The hint folders get the same check, so a link in HOME or in a path to a new folder does not change the result.
+  The guard also covers the plugin folder when Claude Code installed it under
   `~/.claude/plugins/`. A folder that you load with `--plugin-dir` is your own copy, and the guard does not cover it.
 - **Each hint shows its source file.**
 
