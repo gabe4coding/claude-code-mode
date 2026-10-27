@@ -1603,9 +1603,9 @@ describe('the hint-file guard', () => {
     ])
   })
 
-  // Folders on disk and symbolic links (path -> target), for fs.stat: a path
-  // resolves when each link on it is followed and the end is a folder.
-  const disk = (on: On, folders: readonly string[], links: Record<string, string>) =>
+  // Folders and files on disk and symbolic links (path -> target), for fs.stat:
+  // a path resolves when each link on it is followed and the end exists.
+  const disk = (on: On, folders: readonly string[], links: Record<string, string>, files: readonly string[] = []) =>
     on('fs.stat', ($, e) => {
       let real = e.path
       for (let changed = true; changed; ) {
@@ -1616,8 +1616,9 @@ describe('the hint-file guard', () => {
             changed = true
           }
       }
-      if (!folders.includes(real)) return { deny: `ENOENT ${e.path}` }
-      return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
+      const kind = folders.includes(real) ? 'dir' : files.includes(real) ? 'file' : undefined
+      if (kind === undefined) return { deny: `ENOENT ${e.path}` }
+      return { value: { kind, size: 0, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
     })
 
   // A link to a folder that exists, and missing folders after it: the write
@@ -1637,6 +1638,23 @@ describe('the hint-file guard', () => {
       expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
         'hint files and saved functions steer the model',
       )
+  })
+
+  // A hint file that is itself a link out of the folder, reached by a linked
+  // folder: the write names a file in the hint folder, so the guard keeps the
+  // real form of the parent folder.
+  test('guards a hint file that is a link, through a linked folder', async ($, on) => {
+    session(on)
+    const hints = `${HOME}/.claude/code-mode/hints`
+    disk(
+      on,
+      ['/', '/repo', '/tmp', '/home', HOME, `${HOME}/.claude`, `${HOME}/.claude/code-mode`, hints],
+      { '/repo/cm': `${HOME}/.claude/code-mode`, [`${hints}/x.md`]: '/tmp/x.md' },
+      ['/tmp/x.md'],
+    )
+    expect(textOf(await $.tool.call({ tool: 'Write', file_path: 'cm/hints/x.md', content: 'x' }))).toContain(
+      'hint files and saved functions steer the model',
+    )
   })
 
   test('lets a path through a link to another folder', async ($, on) => {

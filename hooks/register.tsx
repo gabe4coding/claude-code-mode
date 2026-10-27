@@ -815,10 +815,18 @@ async function realFormOf($: EngineInterface, path: string): Promise<string | un
   }
 }
 
-// Where an absolute path can land: as written, or in real form.
+// Where an absolute path can land: as written, in real form, or under its
+// parent's real form. The file itself can be a symbolic link out of the folder,
+// and the write still names a file in that folder.
 async function landings($: EngineInterface, full: string): Promise<string[]> {
-  const real = await realFormOf($, full)
-  return real === undefined ? [full] : [full, real]
+  const parent = full.slice(0, full.lastIndexOf('/')) || '/'
+  const [self, dir] = await Promise.all([realFormOf($, full), realFormOf($, parent)])
+  const candidates = [
+    full,
+    self,
+    dir === undefined ? undefined : normalizePath(`${dir}/${full.slice(parent.length + 1)}`),
+  ]
+  return candidates.filter((c): c is string => typeof c === 'string')
 }
 
 // True when a file tool's path lands in a hint folder.
