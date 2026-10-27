@@ -17,6 +17,7 @@ import {
   hintItems,
   hintRef,
   isUnder,
+  isUnderAnyCase,
   parseDecision,
   parseHint,
   pendingFileName,
@@ -1550,6 +1551,8 @@ describe('the hint-file guard', () => {
     ['Edit', { file_path: '/repo/src/../.claude/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
     ['Write', { file_path: '~/.claude/code-mode/functions/searchAll.md', content: 'x' }],
     ['Write', { file_path: `${HOME}/.claude/code-mode/functions/pending/x--a.md`, content: 'x' }],
+    ['Write', { file_path: '~/.claude/Code-Mode/hints/x.md', content: 'x' }],
+    ['Edit', { file_path: '.CLAUDE/code-mode/hints/a.md', old_string: 'a', new_string: 'b' }],
   ] as const
   for (const [tool, input] of denied) {
     test(`denies ${tool} ${JSON.stringify(input).slice(0, 60)}`, async ($, on) => {
@@ -1577,6 +1580,44 @@ describe('the hint-file guard', () => {
     })
   }
 
+  // A case-insensitive volume, the macOS default, opens a guarded folder in
+  // any letter case.
+  const caseAliases = (dir: string) => [
+    dir.replace('/.claude/', '/.Claude/'),
+    dir.replace('/code-mode/', '/Code-Mode/'),
+    dir.toUpperCase(),
+  ]
+  for (const dir of guardedDirs(HOME, '/repo')) {
+    test(`guards ${dir} in other letter case`, async ($, on) => {
+      session(on)
+      for (const alias of caseAliases(dir)) {
+        const calls = [
+          { tool: 'Write', file_path: `${alias}/a.md`, content: 'x' },
+          { tool: 'Edit', file_path: `${alias}/pending/a.md`, old_string: 'a', new_string: 'b' },
+        ]
+        for (const call of calls)
+          expect(textOf(await $.tool.call(call as never))).toContain('hint files and saved functions steer the model')
+      }
+    })
+  }
+
+  // The plugin folder of the test kit is not under HOME, so this test checks
+  // the comparison that the guard makes.
+  test('guards the installed plugin folder in other letter case', () => {
+    const installed = `${HOME}/.claude/plugins/cache/claude-code-mode/code-mode/0.12.11`
+    const dirs = guardedDirs(HOME, '/repo', installed)
+    for (const alias of caseAliases(installed))
+      expect(dirs.some(d => isUnderAnyCase(resolvePath(`${alias}/hooks/x.mjs`, HOME, '/repo'), d))).toBe(true)
+  })
+
+  test('isUnderAnyCase ignores letter case and Unicode form, and isUnder does not', () => {
+    expect(isUnderAnyCase('/Users/Me/.Claude/Code-Mode/HINTS/x.md', '/Users/me/.claude/code-mode/hints')).toBe(true)
+    expect(isUnderAnyCase('/Users/Jose\u0301/x.md', '/Users/Jos\u00e9')).toBe(true)
+    expect(isUnderAnyCase('/a/BC', '/a/b')).toBe(false)
+    // the other callers of isUnder give access, so they keep the exact folder
+    expect(isUnder('/a/B/c', '/a/b')).toBe(false)
+  })
+
   // HOME and the project root as the environment gives them, with a trailing
   // or double slash; the folders do not exist yet, so no real path helps.
   for (const home of ['/home/u/', '/', '/home//u']) {
@@ -1586,6 +1627,23 @@ describe('the hint-file guard', () => {
         '~/.claude/code-mode/hints/x.md',
         '~/.claude/code-mode/functions/x.md',
         '/repo/.claude/code-mode/hints/x.md',
+      ])
+        expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
+          'hint files and saved functions steer the model',
+        )
+    })
+  }
+
+  // A case alias under such a HOME: the guard normalizes the roots and folds
+  // letter case, both at once.
+  for (const home of ['/home/u/', '/home//u']) {
+    test(`guards a case alias when HOME is ${home}`, async ($, on) => {
+      session(on, home, '/repo/')
+      for (const file_path of [
+        '~/.Claude/Code-Mode/hints/x.md',
+        '~/.claude/code-mode/FUNCTIONS/x.md',
+        '/HOME/U/.claude/code-mode/hints/x.md',
+        '/repo/.CLAUDE/code-mode/hints/x.md',
       ])
         expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
           'hint files and saved functions steer the model',
