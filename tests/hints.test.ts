@@ -1603,6 +1603,64 @@ describe('the hint-file guard', () => {
     ])
   })
 
+  // Folders on disk and symbolic links (path -> target), for fs.stat: a path
+  // resolves when each link on it is followed and the end is a folder.
+  const disk = (on: On, folders: readonly string[], links: Record<string, string>) =>
+    on('fs.stat', ($, e) => {
+      let real = e.path
+      for (let changed = true; changed; ) {
+        changed = false
+        for (const [link, target] of Object.entries(links))
+          if (real === link || real.startsWith(`${link}/`)) {
+            real = target + real.slice(link.length)
+            changed = true
+          }
+      }
+      if (!folders.includes(real)) return { deny: `ENOENT ${e.path}` }
+      return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: real !== e.path, realPath: real } }
+    })
+
+  // A link to a folder that exists, and missing folders after it: the write
+  // makes them under the real folder, so the guard resolves that folder.
+  test('guards a path through a link whose next folders do not exist yet', async ($, on) => {
+    session(on)
+    disk(on, ['/', '/repo', '/home', HOME, `${HOME}/.claude`, `${HOME}/.claude/code-mode`], {
+      '/repo/cm': `${HOME}/.claude/code-mode`,
+      '/repo/up': HOME,
+    })
+    for (const file_path of [
+      'cm/hints/x.md',
+      'cm/hints/a/b/x.md',
+      'cm/functions/x.md',
+      'up/.claude/code-mode/hints/x.md',
+    ])
+      expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
+        'hint files and saved functions steer the model',
+      )
+  })
+
+  test('lets a path through a link to another folder', async ($, on) => {
+    session(on)
+    disk(on, ['/', '/repo', '/tmp', '/tmp/out'], { '/repo/out': '/tmp/out' })
+    expect(textOf(await $.tool.call({ tool: 'Write', file_path: 'out/a/b/x.md', content: 'x' }))).toBe('written')
+  })
+
+  // HOME is a link and the hint folder does not exist yet: the guarded folder
+  // also has a real form, so a path by HOME's real path is guarded.
+  test('guards the folders by their real path when HOME is a link', async ($, on) => {
+    session(on, '/links/home')
+    disk(on, ['/', '/home', HOME, `${HOME}/.claude`], { '/links/home': HOME })
+    for (const file_path of [
+      `${HOME}/.claude/code-mode/hints/x.md`,
+      `${HOME}/.claude/code-mode/functions/x.md`,
+      '/links/home/.claude/code-mode/hints/x.md',
+    ])
+      expect(textOf(await $.tool.call({ tool: 'Write', file_path, content: 'x' }))).toContain(
+        'hint files and saved functions steer the model',
+      )
+    expect(textOf(await $.tool.call({ tool: 'Write', file_path: `${HOME}/notes/x.md`, content: 'x' }))).toBe('written')
+  })
+
   test('lets other files through', async ($, on) => {
     session(on)
     expect(textOf(await $.tool.call({ tool: 'Write', file_path: '/repo/src/a.ts', content: 'x' }))).toBe('written')
