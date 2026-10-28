@@ -188,6 +188,17 @@ describe('protocol', () => {
     expect(Object.is(toValue(undefined, '-0'), -0)).toBe(true)
   })
 
+  test('make it fail: invalid JSON with a long integer stays the original text', () => {
+    // An unquoted key, and a trailing comma. A scan must not make either valid.
+    const raw = ['{9007199254740993:1}', '[1234567890123456789,]']
+    for (const text of raw) {
+      expect(toValue(undefined, text)).toBe(text)
+      expect(savedReply('text', text)).toEqual({ ok: true, value: text })
+      expect(savedReply('unknown', text)).toEqual({ ok: true, value: text })
+      expect(savedReply('json', text)).toEqual({ ok: false, error: 'the saved result is not whole' })
+    }
+  })
+
   test('splitToolName splits at the first double underscore', () => {
     expect(splitToolName('mcp__claude_ai_Jira__get_issue')).toEqual({ server: 'claude_ai_Jira', name: 'get_issue' })
     expect(splitToolName('mcp__fcef2cd1-7ad6__atlassianUserInfo')).toEqual({
