@@ -78,6 +78,7 @@ What a call gives:
 
 - If the tool gives structured content, the call gives that object.
 - If the tool gives text that is JSON, the call gives the parsed value.
+- An integer that a number does not hold exactly arrives as text. Its digits stay exact.
 - Else the call gives the text.
 - If the call fails or a permission rule denies it, the call throws an `Error`. The program can catch it.
 
