@@ -178,7 +178,7 @@ def test_publish_on_version(monkeypatch):
 
 @pytest.mark.parametrize("path", [".github/risk.yml", "LICENSE", ".gitleaks.toml", ".githooks/pre-commit",
                                   ".github/workflows/review.yml", ".github/workflows/risk.yml",
-                                  ".github/scripts/risk_tier.py", "CODEOWNERS"])
+                                  ".github/scripts/risk_tier.py", "CODEOWNERS", "RISK.md"])
 def test_hard_paths(path):
     assert tier(f(path, ["x"]))["tier"] == "T2-hard"
 
