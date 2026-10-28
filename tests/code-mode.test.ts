@@ -116,6 +116,78 @@ describe('protocol', () => {
     expect(toValue(undefined, 'plain')).toBe('plain')
   })
 
+  test('toValue keeps the digits of an integer a number cannot hold', () => {
+    // 2^53 + 1, and a 19-digit id: bare, in an object, and in an array.
+    expect(toValue(undefined, '9007199254740993')).toBe('9007199254740993')
+    expect(toValue(undefined, '1234567890123456789')).toBe('1234567890123456789')
+    const huge = `1${'0'.repeat(400)}`
+    expect(toValue(undefined, huge)).toBe(huge)
+    expect(toValue(undefined, `-${huge}`)).toBe(`-${huge}`)
+    expect(toValue(undefined, '{"id":1234567890123456789}')).toEqual({ id: '1234567890123456789' })
+    expect(toValue(undefined, '{"id":9007199254740993}')).toEqual({ id: '9007199254740993' })
+    expect(toValue(undefined, '[9007199254740993]')).toEqual(['9007199254740993'])
+    expect(toValue(undefined, '[1234567890123456789]')).toEqual(['1234567890123456789'])
+    expect(toValue(undefined, '[-1234567890123456789]')).toEqual(['-1234567890123456789'])
+    expect(toValue(undefined, '[1.5,1e21,9007199254740993]')).toEqual([1.5, 1e21, '9007199254740993'])
+    expect(toValue(undefined, ' { "id" : 1234567890123456789 } ')).toEqual({ id: '1234567890123456789' })
+    expect(toValue(undefined, '{"exact":9007199254740992,"id":9007199254740993}')).toEqual({
+      exact: 9007199254740992,
+      id: '9007199254740993',
+    })
+    expect(toValue(undefined, '{"s":"a\\"b\\\\c","id":1234567890123456789}')).toEqual({
+      s: 'a"b\\c',
+      id: '1234567890123456789',
+    })
+    expect(toValue(undefined, '{"rows":[{"id":9007199254740993}]}')).toEqual({
+      rows: [{ id: '9007199254740993' }],
+    })
+    // The host sends the value to the sandbox with JSON.stringify. The digits survive that trip.
+    const sent = JSON.parse(JSON.stringify(toValue(undefined, '{"id":1234567890123456789}')))
+    expect(sent).toEqual({ id: '1234567890123456789' })
+  })
+
+  test('toValue parses safe JSON the same way as JSON.parse', () => {
+    const same = [
+      '0',
+      '1',
+      '-1',
+      '42',
+      '-42',
+      '9007199254740991',
+      '-9007199254740991',
+      '9007199254740992',
+      '-9007199254740992',
+      '1.5',
+      '-1.5',
+      '0.1',
+      '1.0',
+      '1e21',
+      '1e+21',
+      '-1.5e2',
+      '1E-2',
+      '1e309',
+      '9007199254740993e0',
+      '9007199254740993.0',
+      '"12345678901234567890"',
+      '"id 1234567890123456789"',
+      '{"9007199254740993":1}',
+      '{"s":"a\\"b\\\\c","n":1}',
+      '{"a":1,"b":[2,3.5,true,null]}',
+      'true',
+      'false',
+      'null',
+      '  [1, 2]  ',
+    ]
+    const mismatches = same.filter(text => {
+      const got = toValue(undefined, text)
+      const want = JSON.parse(text)
+      if (want !== null && typeof want === 'object') return JSON.stringify(got) !== JSON.stringify(want)
+      return !Object.is(got, want)
+    })
+    expect(mismatches).toEqual([])
+    expect(Object.is(toValue(undefined, '-0'), -0)).toBe(true)
+  })
+
   test('splitToolName splits at the first double underscore', () => {
     expect(splitToolName('mcp__claude_ai_Jira__get_issue')).toEqual({ server: 'claude_ai_Jira', name: 'get_issue' })
     expect(splitToolName('mcp__fcef2cd1-7ad6__atlassianUserInfo')).toEqual({
@@ -206,6 +278,12 @@ describe('protocol', () => {
     expect(savedReply('unknown', JSON.stringify(messages))).toEqual(value(messages))
     // JSON that does not parse was cut.
     expect(savedReply('json', '{"cut": ')).toEqual({ ok: false, error: 'the saved result is not whole' })
+    // A saved JSON file is the same text as a live result, so a large id keeps its digits.
+    expect(savedReply('json', '{"id":1234567890123456789}')).toEqual({
+      ok: true,
+      value: { id: '1234567890123456789' },
+    })
+    expect(savedReply('json', '[9007199254740993]')).toEqual({ ok: true, value: ['9007199254740993'] })
   })
 
   test('hintNudge names the servers that work now and the searches that missed', () => {
