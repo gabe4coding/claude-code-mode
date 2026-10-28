@@ -18,6 +18,8 @@ generated: []
 # T2-hard: nothing lowers it.
 hard:
   - .github/risk.yml
+  # The R0 and R2 rules of the review: a PR must not loosen them as docs.
+  - RISK.md
   - .github/scripts/risk_tier.py
   - .github/scripts/general_review.py
   - .github/workflows/review.yml
