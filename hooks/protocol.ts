@@ -104,12 +104,12 @@ export const mcpReply = (r: McpResultLike): Reply => {
   return { ok: true, value: toValue({ structuredContent: r.structuredContent }, text) }
 }
 
-// JSON.parse rounds an integer it cannot store, and it reports no error. A
-// reviver can read the source text (Node 21 and later), but a reviver slows
-// every parse. Quote only an integer whose digits differ from that number,
-// then use the plain parse. A string (a key is one), a decimal and an exponent
+// JSON.parse rounds an integer it cannot store, and it reports no error. It
+// also decides validity: a scan must not turn invalid text into JSON. After a
+// successful parse, quote only an integer whose digits differ from that
+// number, then parse again. A string (a key is one), a decimal and an exponent
 // stay as they are. An integer of 15 digits or fewer always fits, so text
-// with no 16-digit run skips the scan.
+// with no 16-digit run keeps the first parse.
 const LONG_DIGITS = /\d{16}/
 const JSON_INTEGER = /^-?(?:0|[1-9]\d*)$/
 
@@ -191,7 +191,13 @@ const quoteUnsafeIntegers = (text: string): string => {
   return parts.join('')
 }
 
-const parseToolJson = (text: string): unknown => JSON.parse(quoteUnsafeIntegers(text))
+const parseToolJson = (text: string): unknown => {
+  const parsed = JSON.parse(text)
+  if (!LONG_DIGITS.test(text)) return parsed
+  const quoted = quoteUnsafeIntegers(text)
+  if (quoted === text) return parsed
+  return JSON.parse(quoted)
+}
 
 /** What the script receives for a tool result: structured data when there is any. */
 export const toValue = (result: unknown, text: string | undefined): unknown => {
