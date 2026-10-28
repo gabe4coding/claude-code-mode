@@ -3,6 +3,14 @@ R0: ["runtime/**", "tests/runner.integration.mjs", "hooks/**", "hints/**", "AGEN
 R2: ["docs/configuration.mdx", "docs/development.mdx", "docs/functions.mdx", "docs/hints.mdx", "docs/how-it-works.mdx", "docs/installation.mdx", "docs/troubleshooting.mdx", "docs/usage.mdx", "docs/assets/**", "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", ".github/ISSUE_TEMPLATE/**", "bench/**", "scripts/projection-report.mjs"]
 ---
 
+The review level of a PR comes from the files that it changes:
+
+- R0: a changed file matches an R0 glob. Gabe reviews all of the PR.
+- R2: each changed file matches an R2 glob. The PR merges without a human read.
+- R1: any other PR. It gets the normal review.
+
+The front matter on the base branch applies, so a PR cannot change its own level.
+
 ## Critical
 
 - `runtime/**`, `tests/runner.integration.mjs`: the sandbox. `runtime/runner.mjs` runs the model's program, and its
@@ -51,6 +59,7 @@ R2: ["docs/configuration.mdx", "docs/development.mdx", "docs/functions.mdx", "do
   fail in real Claude Code. Fix: a CI job with an API key secret that runs `node tests/smoke.e2e.mjs` on PRs that
   change `hooks/` or `runtime/`, and in the weekly schedule.
 - Two rule sets for review risk: `.github/risk.yml` (T0, T1, T2; advisory, never fails a PR) and this file (R0, R2).
-  They can drift: `risk.yml` has `hooks/**`, `hints/**` and `AGENTS.md` only as T1, and here they are R0. Fix: a test
-  in `.github/scripts/test_risk_tier.py` that fails when an R0 glob of this file is not in `hard` or `soft` of
-  `risk.yml`, or make `risk_tier.py` read the front matter of this file.
+  `.github/scripts/test_risk_md.py` fails when an R0 file is docs (T0) in `risk.yml`. Other drift is not checked:
+  `risk.yml` has `hooks/**`, `hints/**` and `AGENTS.md` only as T1, and here they are R0. Fix: extend that test to
+  fail when an R0 file is not in `hard` or `soft` of `risk.yml`, or make `risk_tier.py` read the front matter of
+  this file.
