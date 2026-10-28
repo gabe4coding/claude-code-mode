@@ -104,6 +104,95 @@ export const mcpReply = (r: McpResultLike): Reply => {
   return { ok: true, value: toValue({ structuredContent: r.structuredContent }, text) }
 }
 
+// JSON.parse rounds an integer it cannot store, and it reports no error. A
+// reviver can read the source text (Node 21 and later), but a reviver slows
+// every parse. Quote only an integer whose digits differ from that number,
+// then use the plain parse. A string (a key is one), a decimal and an exponent
+// stay as they are. An integer of 15 digits or fewer always fits, so text
+// with no 16-digit run skips the scan.
+const LONG_DIGITS = /\d{16}/
+const JSON_INTEGER = /^-?(?:0|[1-9]\d*)$/
+
+const QUOTE = '"'.charCodeAt(0)
+const SLASH = '\\'.charCodeAt(0)
+const MINUS = '-'.charCodeAt(0)
+const PLUS = '+'.charCodeAt(0)
+const DOT = '.'.charCodeAt(0)
+const EXP = 'e'.charCodeAt(0)
+const EXP_CAP = 'E'.charCodeAt(0)
+
+const isDigit = (code: number): boolean => code >= 48 && code <= 57
+
+const skipDigits = (text: string, i: number): number => {
+  while (i < text.length && isDigit(text.charCodeAt(i))) i++
+  return i
+}
+
+/** True when this integer token is not the number JSON.parse would keep. */
+const integerLosesDigits = (token: string): boolean => {
+  if (!JSON_INTEGER.test(token)) return false
+  const asNumber = Number(token)
+  if (!Number.isFinite(asNumber)) return true
+  return BigInt(asNumber) !== BigInt(token)
+}
+
+/** The same JSON text, with each rounded integer written as a string of its digits. */
+const quoteUnsafeIntegers = (text: string): string => {
+  if (!LONG_DIGITS.test(text)) return text
+  const parts: string[] = []
+  let from = 0
+  let i = 0
+  let quoted = false
+  const keep = (to: number) => {
+    if (to > from) parts.push(text.slice(from, to))
+    from = to
+  }
+  while (i < text.length) {
+    const code = text.charCodeAt(i)
+    // A string, escapes included. Digits in it, and a key, stay quoted.
+    if (code === QUOTE) {
+      i++
+      while (i < text.length) {
+        const next = text.charCodeAt(i)
+        if (next === SLASH) {
+          i += 2
+          continue
+        }
+        i++
+        if (next === QUOTE) break
+      }
+      continue
+    }
+    if (code !== MINUS && !isDigit(code)) {
+      i++
+      continue
+    }
+    const start = i
+    if (code === MINUS) i++
+    if (!isDigit(text.charCodeAt(i))) continue
+    i = skipDigits(text, i)
+    if (text.charCodeAt(i) === DOT) i = skipDigits(text, i + 1)
+    const exp = text.charCodeAt(i)
+    if (exp === EXP || exp === EXP_CAP) {
+      i++
+      const sign = text.charCodeAt(i)
+      if (sign === PLUS || sign === MINUS) i++
+      i = skipDigits(text, i)
+    }
+    const token = text.slice(start, i)
+    if (!integerLosesDigits(token)) continue
+    keep(start)
+    parts.push(`"${token}"`)
+    from = i
+    quoted = true
+  }
+  if (!quoted) return text
+  keep(text.length)
+  return parts.join('')
+}
+
+const parseToolJson = (text: string): unknown => JSON.parse(quoteUnsafeIntegers(text))
+
 /** What the script receives for a tool result: structured data when there is any. */
 export const toValue = (result: unknown, text: string | undefined): unknown => {
   if (result !== null && typeof result === 'object' && 'structuredContent' in result) {
@@ -113,7 +202,7 @@ export const toValue = (result: unknown, text: string | undefined): unknown => {
   const raw = text ?? (typeof result === 'string' ? result : undefined)
   if (raw === undefined) return result ?? null
   try {
-    return JSON.parse(raw)
+    return parseToolJson(raw)
   } catch {
     return raw
   }
@@ -175,7 +264,7 @@ export const savedReply = (format: SavedResult['format'], fileText: string): Rep
   if (format === 'text') return { ok: true, value: toValue(undefined, fileText) }
   let parsed: unknown
   try {
-    parsed = JSON.parse(fileText)
+    parsed = parseToolJson(fileText)
   } catch {
     // JSON that does not parse was cut; text that is not JSON is the result.
     if (format === 'unknown') return { ok: true, value: fileText }
