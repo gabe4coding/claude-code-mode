@@ -1,6 +1,6 @@
 # Risk tier of each pull request: the deterministic rules of .github/scripts/risk_tier.py.
 # Shadow week: advisory and NOT a required check. It posts the tier as the "risk tier" check
-# and as a risk:* label, and never merges, approves or fails a PR.
+# and never merges, approves or fails a PR.
 # Kill switch: the repo variable AUTOMERGE=off makes every PR T2-hard.
 #
 # Trust: on `pull_request` GitHub runs the PR's own copy of this file, so a PR could post any tier.
@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: read
       issues: read # the Greptile summary comment
-      pull-requests: write # read review comments; write the risk:* label
+      pull-requests: write # read review comments
       checks: write # read check runs; write the "risk tier" check run
     steps:
       # The base branch: this file, .github/risk.yml and the classifier as the base has them.
@@ -112,19 +112,6 @@ jobs:
             "$RUNNER_TEMP/risk.json" >> "$GITHUB_OUTPUT"
           if [ "$AUTOMERGE" = "off" ]; then echo "::notice title=risk::AUTOMERGE=off: every PR is T2-hard."; fi
           cat "$RUNNER_TEMP/risk.md" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Label
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          LABEL: ${{ steps.tier.outputs.label }}
-        run: |
-          for old in $(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name | select(startswith("risk:"))'); do
-            [ "$old" = "$LABEL" ] || gh api -X DELETE "repos/$REPO/issues/$PR/labels/$old" > /dev/null
-          done
-          gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=$LABEL" > /dev/null
 
       - name: Check run "risk tier"
         continue-on-error: true
